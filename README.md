@@ -7,26 +7,27 @@ faz o raycasting real contra o modelo `.glb` e serve o dashboard (Three.js).
 
 ## Estrutura
 
+```text
 dashboard_oiticica_test/
-├── install_desktop.sh # instala tudo (Debian/Ubuntu/Zorin)
+├── install_desktop.sh            # instala tudo (Debian/Ubuntu/Zorin)
 ├── controller/
-│ ├── .env.example # modelo de credenciais (o .env real fica fora do Git)
-│ ├── config.py # lê o .env e aplica os padrões
-│ ├── onvif_ptz.py # wrapper ONVIF (detecta espaços absoluto/relativo/contínuo)
-│ ├── controller.py # motor de movimento, telemetria, YOLO, API local
-│ ├── calibrar_curso.py # mede o curso mecânico real em graus
-│ ├── best.pt # (você copia) modelo YOLO de rachaduras
-│ └── requirements.txt
+│   ├── .env.example               # modelo de credenciais (o .env real fica fora do Git)
+│   ├── config.py                  # lê o .env e aplica os padrões
+│   ├── onvif_ptz.py               # wrapper ONVIF (detecta espaços absoluto/relativo/contínuo)
+│   ├── controller.py              # motor de movimento, telemetria, YOLO, API local
+│   ├── calibrar_curso.py          # mede o curso mecânico real em graus
+│   ├── best.pt                    # (você copia) modelo YOLO de rachaduras
+│   └── requirements.txt
 └── server/
-├── glb_geo.py # georreferenciamento + raycasting + ângulos PTZ
-├── server.py # API/WebSocket, cone, /api/aim, /api/locate
-├── prepare_model.sh # remove compressão Draco do .glb (rodar 1x)
-├── static/
-│ ├── model.glb # (você copia) modelo 3D da barragem
-│ └── dashboard.html # Three.js: modelo, cone, vídeo, histórico
-├── history/ # detecções salvas (criado em runtime)
-└── requirements.txt
-
+    ├── glb_geo.py                 # georreferenciamento + raycasting + ângulos PTZ
+    ├── server.py                  # API/WebSocket, cone, /api/aim, /api/locate
+    ├── prepare_model.sh           # remove compressão Draco do .glb (rodar 1x)
+    ├── static/
+    │   ├── model.glb               # (você copia) modelo 3D da barragem
+    │   └── dashboard.html          # Three.js: modelo, cone, vídeo, histórico
+    ├── history/                    # detecções salvas (criado em runtime)
+    └── requirements.txt
+```
 
 ## 0. Pré-requisitos
 
