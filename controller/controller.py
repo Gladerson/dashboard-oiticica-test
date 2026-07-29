@@ -1,26 +1,23 @@
 # ============================================================================
-# controller.py - Controlador da câmera (roda no desktop; futuramente no Raspberry)
+# controller.py - Controlador da câmera
 #
-# Responsabilidades:
-#   1. Conecta na câmera via ONVIF e move para o ponto zero (home).
-#   2. Envia continuamente a posição PTZ atual para o server (dashboard).
-#   3. Captura o RTSP, roda YOLO (best.pt) e, ao detectar rachadura,
-#      avisa o server com a posição PTZ + imagem + máscara.
-#   4. Expõe uma API local (FastAPI) para:
-#        - receber comandos de movimentação vindos do dashboard (via server)
-#        - servir o stream MJPEG cru para o dashboard poder exibir a imagem
+# Modelo de movimento (v3): os endpoints NÃO falam com a câmera. Eles apenas
+# registram uma "intenção de movimento" com prazo de validade. Uma única
+# thread (PTZMotion) compara a intenção com o estado já aplicado e emite
+# ContinuousMove/Stop. Isso elimina a corrida entre /continuous e /stop que
+# fazia a câmera andar sem parar, e garante parada automática se o dashboard
+# sumir (a intenção expira).
 # ============================================================================
 import base64
-import io
 import threading
 import time
 from datetime import datetime, timezone
 
 import cv2
-import numpy as np
 import requests
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from ultralytics import YOLO
@@ -28,8 +25,9 @@ from ultralytics import YOLO
 import config
 from onvif_ptz import PTZController
 
-# ----------------------------------------------------------------------------
-# Estado compartilhado entre threads
+ZERO = (0.0, 0.0, 0.0)
+
+
 # ----------------------------------------------------------------------------
 class SharedState:
     def __init__(self):
@@ -39,56 +37,169 @@ class SharedState:
         self.zoom_pct = 0.0
         self.last_frame_jpeg = None
         self.last_detection_time = 0.0
+        self.fast_until = 0.0
 
 
 state = SharedState()
-ptz = PTZController(config.CAMERA_IP, config.ONVIF_PORT, config.ONVIF_USER, config.ONVIF_PASSWORD)
 
-print(">> Conectado à câmera ONVIF. Faixas detectadas:")
-print(f"   pan: [{ptz.pan_min}, {ptz.pan_max}] normalizado={ptz.pan_normalized}")
-print(f"   tilt: [{ptz.tilt_min}, {ptz.tilt_max}] normalizado={ptz.tilt_normalized}")
-print(f"   zoom: [{ptz.zoom_min}, {ptz.zoom_max}]")
+ptz_cmd = PTZController(
+    config.CAMERA_IP, config.ONVIF_PORT, config.ONVIF_USER, config.ONVIF_PASSWORD,
+    label="cmd", pan_deg_range=config.PAN_DEG_RANGE, tilt_deg_range=config.TILT_DEG_RANGE,
+)
+print(">> Conectado à câmera ONVIF.")
+print(ptz_cmd.describe())
+
+if config.PTZ_SEPARATE_CONNECTIONS:
+    ptz_tel = PTZController(
+        config.CAMERA_IP, config.ONVIF_PORT, config.ONVIF_USER, config.ONVIF_PASSWORD,
+        label="tel", pan_deg_range=config.PAN_DEG_RANGE, tilt_deg_range=config.TILT_DEG_RANGE,
+    )
+    print(">> Conexão ONVIF dedicada à telemetria criada.")
+else:
+    ptz_tel = ptz_cmd
+    print(">> Usando uma única conexão ONVIF (PTZ_SEPARATE_CONNECTIONS=false).")
+
+
+def marcar_movimento():
+    with state.lock:
+        state.fast_until = time.time() + config.PTZ_FAST_WINDOW_SECONDS
+
+
+# ----------------------------------------------------------------------------
+# Motor de movimento: única thread que emite ContinuousMove/Stop
+# ----------------------------------------------------------------------------
+class PTZMotion:
+    def __init__(self, ptz, tick=None):
+        self.ptz = ptz
+        self.tick = tick or config.PTZ_MOTION_TICK_SECONDS
+        self._lock = threading.Lock()
+        self._intent = ZERO
+        self._expires = 0.0
+        self._applied = ZERO          # o que a câmera está fazendo agora
+        self._precisa_stop = False    # força um Stop mesmo se já achamos que parou
+
+    # -- chamado pelos endpoints (retorna instantaneamente) ------------------
+    def solicitar(self, pan, tilt, zoom, hold_s):
+        with self._lock:
+            self._intent = (float(pan), float(tilt), float(zoom))
+            self._expires = time.time() + float(hold_s)
+        marcar_movimento()
+
+    def parar(self):
+        with self._lock:
+            self._intent = ZERO
+            self._expires = 0.0
+            self._precisa_stop = True   # garante o Stop mesmo em corrida
+        marcar_movimento()
+
+    def em_movimento(self):
+        with self._lock:
+            return self._applied != ZERO
+
+    # -- thread ------------------------------------------------------------
+    def loop(self):
+        while True:
+            time.sleep(self.tick)
+            with self._lock:
+                ativo = time.time() < self._expires
+                alvo = self._intent if ativo else ZERO
+                forcar = self._precisa_stop
+                self._precisa_stop = False
+
+            if alvo == self._applied and not forcar:
+                continue
+
+            try:
+                if alvo == ZERO:
+                    if self._applied != ZERO or forcar:
+                        self.ptz.stop()
+                        self._applied = ZERO
+                elif self.ptz.has_continuous:
+                    self.ptz.move_continuous(*alvo)
+                    self._applied = alvo
+                else:
+                    # Fallback para câmeras sem ContinuousMove: passos repetidos
+                    # enquanto a intenção estiver viva.
+                    self.ptz.move_relative(
+                        alvo[0] * config.PAN_STEP_DEG,
+                        alvo[1] * config.TILT_STEP_DEG,
+                        alvo[2] * config.ZOOM_STEP_PCT,
+                    )
+                    self._applied = ZERO   # passo é pontual, não é estado
+            except Exception as e:
+                print(f"[motion] erro ao aplicar {alvo}: {e}")
+                # Em caso de erro tentando mover, tenta parar por segurança.
+                try:
+                    self.ptz.stop()
+                except Exception:
+                    pass
+                self._applied = ZERO
+
+
+motion = PTZMotion(ptz_cmd)
+
+if not ptz_cmd.has_continuous:
+    print("   AVISO: câmera sem ContinuousMove; usando passos repetidos como fallback.")
 
 print(">> Movendo para o ponto zero (home) das coordenadas ONVIF...")
-ptz.go_home()
-time.sleep(3)  # dá tempo do motor físico se mover antes de checar/começar a telemetria
+ptz_cmd.go_home()
+time.sleep(3)
 
-_pan_chk, _tilt_chk, _zoom_chk = ptz.get_status()
-print(f">> Status lido de volta após o home: pan={_pan_chk:.2f}° tilt={_tilt_chk:.2f}° zoom={_zoom_chk:.2f}%")
-if abs(_pan_chk) > 1.0 or abs(_tilt_chk) > 1.0:
-    print("   AVISO: a câmera não reportou pan/tilt ~0 após o home. Isso pode ser normal se o")
-    print("   motor ainda estivesse em movimento (aumente o time.sleep acima) ou pode indicar que")
-    print("   o 'zero ONVIF' desta câmera não coincide com o centro mecânico esperado - confira")
-    print("   fisicamente para onde ela está apontando.")
+_p, _t, _z = ptz_cmd.get_status()
+print(f">> Status após o home: pan={_p:.2f}° tilt={_t:.2f}° zoom={_z:.2f}%")
+if abs(_p) > 1.0 or abs(_t) > 1.0:
+    print("   AVISO: a câmera não reportou pan/tilt ~0 após o home.")
 
 
-# ----------------------------------------------------------------------------
-# Thread 1: telemetria PTZ contínua -> server
 # ----------------------------------------------------------------------------
 def telemetry_loop():
+    session = requests.Session()
+    last = (None, None, None)
+    last_sent_at = 0.0
+
     while True:
+        agora = time.time()
+        with state.lock:
+            rapido = agora < state.fast_until
+        # durante o movimento, poll rápido para o cone acompanhar
+        intervalo = (config.PTZ_POLL_FAST_SECONDS if (rapido or motion.em_movimento())
+                     else config.PTZ_POLL_INTERVAL_SECONDS)
+
         try:
-            pan_deg, tilt_deg, zoom_pct = ptz.get_status()
+            pan_deg, tilt_deg, zoom_pct = ptz_tel.get_status()
             with state.lock:
                 state.pan_deg, state.tilt_deg, state.zoom_pct = pan_deg, tilt_deg, zoom_pct
-            payload = {
-                "coord_p": round(pan_deg, 2),
-                "coord_t": round(tilt_deg, 2),
-                "coord_z": round(zoom_pct, 2),
-                "detect": False,
-            }
-            requests.post(f"{config.SERVER_URL}/api/telemetry", json=payload, timeout=2)
+
+            mudou = (
+                last[0] is None
+                or abs(pan_deg - last[0]) > 0.05
+                or abs(tilt_deg - last[1]) > 0.05
+                or abs(zoom_pct - last[2]) > 0.2
+            )
+            if mudou or (agora - last_sent_at) > 1.0:
+                session.post(
+                    f"{config.SERVER_URL}/api/telemetry",
+                    json={
+                        "coord_p": round(pan_deg, 2),
+                        "coord_t": round(tilt_deg, 2),
+                        "coord_z": round(zoom_pct, 2),
+                        "detect": False,
+                    },
+                    timeout=2,
+                )
+                last = (pan_deg, tilt_deg, zoom_pct)
+                last_sent_at = agora
         except Exception as e:
             print(f"[telemetry] erro: {e}")
-        time.sleep(config.PTZ_POLL_INTERVAL_SECONDS)
+
+        time.sleep(intervalo)
 
 
-# ----------------------------------------------------------------------------
-# Thread 2: captura RTSP + inferência YOLO + alerta de rachadura
 # ----------------------------------------------------------------------------
 def detection_loop():
     model = YOLO(config.YOLO_MODEL_PATH)
-    cap = cv2.VideoCapture(config.RTSP_URL)
+    cap = cv2.VideoCapture(config.RTSP_URL, cv2.CAP_FFMPEG)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     frame_count = 0
 
     if not cap.isOpened():
@@ -98,15 +209,15 @@ def detection_loop():
     while True:
         ok, frame = cap.read()
         if not ok:
-            print("[detection] falha ao ler frame, tentando reconectar...")
+            print("[detection] falha ao ler frame, reconectando...")
             cap.release()
             time.sleep(2)
-            cap = cv2.VideoCapture(config.RTSP_URL)
+            cap = cv2.VideoCapture(config.RTSP_URL, cv2.CAP_FFMPEG)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             continue
 
         frame_count += 1
 
-        # atualiza o frame cru pro stream MJPEG (sempre, independente de inferência)
         ok_jpeg, buf = cv2.imencode(".jpg", frame)
         if ok_jpeg:
             with state.lock:
@@ -115,48 +226,55 @@ def detection_loop():
         if frame_count % config.YOLO_INFER_EVERY_N_FRAMES != 0:
             continue
 
+        # Não vale inferir com a câmera em movimento: sai borrado e a posição
+        # PTZ associada à detecção seria imprecisa.
+        if motion.em_movimento():
+            continue
+
         results = model.predict(frame, conf=config.YOLO_CONF_THRESHOLD, verbose=False)
         result = results[0]
 
-        has_crack = result.boxes is not None and len(result.boxes) > 0
-        if not has_crack:
+        if result.boxes is None or len(result.boxes) == 0:
             continue
 
         now = time.time()
         with state.lock:
             since_last = now - state.last_detection_time
         if since_last < config.DETECTION_COOLDOWN_SECONDS:
-            continue  # evita floodar o server
+            continue
 
         with state.lock:
             state.last_detection_time = now
             pan_deg, tilt_deg, zoom_pct = state.pan_deg, state.tilt_deg, state.zoom_pct
 
-        # imagem com a máscara de segmentação desenhada (plot() já desenha boxes+masks)
         annotated = result.plot()
         ok_orig, buf_orig = cv2.imencode(".jpg", frame)
         ok_mask, buf_mask = cv2.imencode(".jpg", annotated)
 
-        payload = {
-            "coord_p": round(pan_deg, 2),
-            "coord_t": round(tilt_deg, 2),
-            "coord_z": round(zoom_pct, 2),
-            "detect": True,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "image_b64": base64.b64encode(buf_orig.tobytes()).decode() if ok_orig else None,
-            "mask_image_b64": base64.b64encode(buf_mask.tobytes()).decode() if ok_mask else None,
-        }
         try:
-            requests.post(f"{config.SERVER_URL}/api/detection", json=payload, timeout=5)
+            requests.post(
+                f"{config.SERVER_URL}/api/detection",
+                json={
+                    "coord_p": round(pan_deg, 2),
+                    "coord_t": round(tilt_deg, 2),
+                    "coord_z": round(zoom_pct, 2),
+                    "detect": True,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "image_b64": base64.b64encode(buf_orig.tobytes()).decode() if ok_orig else None,
+                    "mask_image_b64": base64.b64encode(buf_mask.tobytes()).decode() if ok_mask else None,
+                },
+                timeout=5,
+            )
             print(f"[detection] rachadura detectada! p={pan_deg} t={tilt_deg} z={zoom_pct}")
         except Exception as e:
             print(f"[detection] erro ao avisar o server: {e}")
 
 
 # ----------------------------------------------------------------------------
-# API local: recebe comandos do dashboard (via server) e serve o MJPEG
-# ----------------------------------------------------------------------------
 app = FastAPI(title="Camera Controller API")
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+)
 
 
 class MoveCommand(BaseModel):
@@ -165,17 +283,71 @@ class MoveCommand(BaseModel):
     zoom_delta: float = 0.0
 
 
+class ContinuousCommand(BaseModel):
+    pan_speed: float = 0.0
+    tilt_speed: float = 0.0
+    zoom_speed: float = 0.0
+    hold_ms: int = 800     # a intenção morre sozinha depois disso
+
+
+class AbsoluteCommand(BaseModel):
+    pan_deg: float
+    tilt_deg: float
+    zoom_pct: float
+
+
+@app.get("/status")
+def status():
+    with state.lock:
+        return {
+            "coord_p": state.pan_deg,
+            "coord_t": state.tilt_deg,
+            "coord_z": state.zoom_pct,
+            "has_continuous": ptz_cmd.has_continuous,
+            "moving": motion.em_movimento(),
+        }
+
+
+@app.post("/command/continuous")
+def command_continuous(cmd: ContinuousCommand):
+    hold = max(0.2, min(3.0, cmd.hold_ms / 1000.0))
+    motion.solicitar(cmd.pan_speed, cmd.tilt_speed, cmd.zoom_speed, hold)
+    return {"status": "ok"}
+
+
+@app.post("/command/stop")
+def command_stop():
+    motion.parar()
+    return {"status": "ok"}
+
+
 @app.post("/command")
 def command(cmd: MoveCommand):
-    new_pan, new_tilt, new_zoom = ptz.move_relative(cmd.pan_delta, cmd.tilt_delta, cmd.zoom_delta)
+    motion.parar()
+    marcar_movimento()
+    p, t, z = ptz_cmd.move_relative(cmd.pan_delta, cmd.tilt_delta, cmd.zoom_delta)
     with state.lock:
-        state.pan_deg, state.tilt_deg, state.zoom_pct = new_pan, new_tilt, new_zoom
-    return {"coord_p": new_pan, "coord_t": new_tilt, "coord_z": new_zoom}
+        state.pan_deg, state.tilt_deg, state.zoom_pct = p, t, z
+    return {"coord_p": p, "coord_t": t, "coord_z": z}
+
+
+@app.post("/command/absolute")
+def command_absolute(cmd: AbsoluteCommand):
+    motion.parar()
+    time.sleep(config.PTZ_MOTION_TICK_SECONDS * 2)  # deixa o Stop sair antes
+    marcar_movimento()
+    p, t, z = ptz_cmd.move_absolute(cmd.pan_deg, cmd.tilt_deg, cmd.zoom_pct)
+    with state.lock:
+        state.pan_deg, state.tilt_deg, state.zoom_pct = p, t, z
+    return {"coord_p": p, "coord_t": t, "coord_z": z}
 
 
 @app.post("/command/home")
 def command_home():
-    ptz.go_home()
+    motion.parar()
+    time.sleep(config.PTZ_MOTION_TICK_SECONDS * 2)
+    marcar_movimento()
+    ptz_cmd.go_home()
     return {"status": "ok"}
 
 
@@ -190,11 +362,21 @@ def mjpeg_generator():
 
 @app.get("/video_feed")
 def video_feed():
-    return StreamingResponse(mjpeg_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
+    return StreamingResponse(
+        mjpeg_generator(), media_type="multipart/x-mixed-replace; boundary=frame"
+    )
 
 
 # ----------------------------------------------------------------------------
 if __name__ == "__main__":
+    threading.Thread(target=motion.loop, daemon=True).start()
     threading.Thread(target=telemetry_loop, daemon=True).start()
     threading.Thread(target=detection_loop, daemon=True).start()
-    uvicorn.run(app, host=config.CONTROLLER_API_HOST, port=config.CONTROLLER_API_PORT)
+    try:
+        uvicorn.run(app, host=config.CONTROLLER_API_HOST, port=config.CONTROLLER_API_PORT)
+    finally:
+        try:
+            ptz_cmd.stop()   # nunca deixa a câmera girando ao encerrar
+            print(">> Stop enviado ao encerrar.")
+        except Exception:
+            pass

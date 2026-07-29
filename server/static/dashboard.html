@@ -16,21 +16,25 @@
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, sans-serif; }
   #app { display:grid; grid-template-columns: 1fr 360px; grid-template-rows: 60vh 40vh; height:100vh; }
-  #viewport { grid-column:1; grid-row:1/3; position:relative; }
+  #viewport { grid-column:1; grid-row:1/3; position:relative; overflow:hidden; }
   #video-panel { grid-column:2; grid-row:1; border-left:1px solid var(--border); padding:12px; overflow:auto; }
   #history-panel { grid-column:2; grid-row:2; border-left:1px solid var(--border); border-top:1px solid var(--border); padding:12px; overflow:auto; }
   h2 { font-size:14px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 8px; }
   #video-feed { width:100%; border-radius:8px; border:1px solid var(--border); background:#000; }
   #ptz-controls { display:grid; grid-template-columns: repeat(3, 44px); grid-gap:6px; margin-top:12px; justify-content:center; }
-  #ptz-controls button {
+  #ptz-controls button, #zoom-row button {
     background:var(--panel); border:1px solid var(--border); color:var(--text);
     border-radius:6px; padding:10px 0; cursor:pointer; font-size:16px;
+    user-select:none; -webkit-user-select:none; touch-action:none;
   }
-  #ptz-controls button:hover { background:#1a2740; border-color:var(--accent); }
-  #ptz-controls button:disabled, #zoom-row button:disabled { opacity:.4; cursor:wait; }
+  #ptz-controls button:hover, #zoom-row button:hover { background:#1a2740; border-color:var(--accent); }
+  #ptz-controls button.active, #zoom-row button.active { background:#1e3a5f; border-color:var(--accent); }
   #zoom-row { display:flex; gap:8px; justify-content:center; margin-top:8px; }
+  #zoom-row button { padding:10px 14px; font-size:13px; }
   #telemetry { margin-top:12px; font-size:12px; color:var(--muted); line-height:1.6; }
   #telemetry b { color:var(--text); }
+  #hint { margin-top:10px; font-size:11px; color:var(--muted); line-height:1.5; border-top:1px solid var(--border); padding-top:8px; }
+  #hint kbd { background:#1a2740; border:1px solid var(--border); border-radius:3px; padding:1px 5px; font-size:10px; }
   .history-item { display:flex; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); cursor:pointer; }
   .history-item img { width:64px; height:44px; object-fit:cover; border-radius:4px; }
   .history-item .meta { font-size:11px; color:var(--muted); }
@@ -38,6 +42,19 @@
   #overlay-badge {
     position:absolute; top:12px; left:12px; background:rgba(0,0,0,.5);
     padding:6px 10px; border-radius:6px; font-size:12px; color:var(--muted);
+    pointer-events:none;
+  }
+  #status-toast {
+    position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
+    background:rgba(8,14,26,.92); border:1px solid var(--border);
+    padding:8px 14px; border-radius:8px; font-size:12px; color:var(--text);
+    opacity:0; transition:opacity .25s; pointer-events:none;
+  }
+  #status-toast.show { opacity:1; }
+  #sel-box {
+    position:absolute; border:1.5px solid var(--accent); background:rgba(79,163,255,.12);
+    border-radius:3px; display:none; pointer-events:none;
+    box-shadow:0 0 18px rgba(79,163,255,.35);
   }
   #modal { position:fixed; inset:0; background:rgba(0,0,0,.8); display:none; align-items:center; justify-content:center; z-index:10; }
   #modal.open { display:flex; }
@@ -49,25 +66,32 @@
 <body>
 <div id="app">
   <div id="viewport">
-    <div id="overlay-badge">Barragem Oiticica - teste local</div>
+    <div id="overlay-badge">Barragem Oiticica &mdash; Shift + arrastar para dar close</div>
+    <div id="sel-box"></div>
+    <div id="status-toast"></div>
   </div>
 
   <div id="video-panel">
     <h2>Câmera ao vivo</h2>
-    <img id="video-feed" src="http://127.0.0.1:8090/video_feed" onerror="this.style.opacity=0.3" />
+    <img id="video-feed" onerror="this.style.opacity=0.3" />
     <div id="ptz-controls">
-      <span></span><button data-cmd="tilt_delta:5">▲</button><span></span>
-      <button data-cmd="pan_delta:-5">◀</button><button id="btn-home">⌂</button><button data-cmd="pan_delta:5">▶</button>
-      <span></span><button data-cmd="tilt_delta:-5">▼</button><span></span>
+      <span></span><button data-axis="tilt" data-dir="1">▲</button><span></span>
+      <button data-axis="pan" data-dir="-1">◀</button><button id="btn-home">⌂</button><button data-axis="pan" data-dir="1">▶</button>
+      <span></span><button data-axis="tilt" data-dir="-1">▼</button><span></span>
     </div>
     <div id="zoom-row">
-      <button data-cmd="zoom_delta:-10">Zoom −</button>
-      <button data-cmd="zoom_delta:10">Zoom +</button>
+      <button data-axis="zoom" data-dir="-1">Zoom −</button>
+      <button data-axis="zoom" data-dir="1">Zoom +</button>
     </div>
     <div id="telemetry">
       Pan: <b id="tel-pan">--</b>° &nbsp;
       Tilt: <b id="tel-tilt">--</b>° &nbsp;
       Zoom: <b id="tel-zoom">--</b>%
+    </div>
+    <div id="hint">
+      <b>Segure</b> os botões (ou as <kbd>setas</kbd> / <kbd>+</kbd> <kbd>−</kbd>)
+      para mover continuamente.<br/>
+      <kbd>Shift</kbd> + arrastar no modelo 3D: enquadra a região e dá close.
     </div>
   </div>
 
@@ -100,6 +124,12 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const SERVER_BASE = window.location.origin;
 
+// Velocidades do ContinuousMove (-1..1). Ajuste ao gosto/curso da câmera.
+const SPEED = { pan: 0.55, tilt: 0.45, zoom: 0.5 };
+
+let CONTROLLER_BASE = null;   // preenchido pelo /api/camera_info
+let usarProxy = false;        // vira true se falar direto com o controller falhar
+
 // ---------------------------------------------------------------------
 // Cena Three.js
 // ---------------------------------------------------------------------
@@ -111,91 +141,223 @@ const camera3d = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport
 camera3d.position.set(30, 30, 30);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(viewport.clientWidth, viewport.clientHeight);
 viewport.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera3d, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-const dir = new THREE.DirectionalLight(0xffffff, 1);
-dir.position.set(50, 80, 50);
-scene.add(dir);
+scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+dirLight.position.set(50, 80, 50);
+scene.add(dirLight);
 let groundGrid = new THREE.GridHelper(200, 40, 0x223049, 0x162138);
 scene.add(groundGrid);
 
-let camMarkerPos = new THREE.Vector3();
-let baseForward = new THREE.Vector3(0, 0, -1);
-let coneMesh, coneApexOffset = 0;
-let hitMarker;
+const camMarkerPos = new THREE.Vector3();
+let modelRoot = null;
+const raycaster = new THREE.Raycaster();
 
-// O server manda posições em coordenadas "cruas" do modelo (X=leste, Y=norte,
-// Z=altura, igual ao UTM). O Three.js renderiza em Y-up. Em vez de converter
-// cada ponto na mão, colocamos TUDO (modelo + marcadores + cone) dentro de um
-// único grupo e rotacionamos o grupo uma vez -- assim nada desalinha entre si.
+// Tudo (modelo + marcadores + cone) dentro de um grupo rotacionado uma vez:
+// o server trabalha em Z-up (UTM), o Three.js renderiza em Y-up.
 const worldGroup = new THREE.Group();
-worldGroup.rotation.x = -Math.PI / 2; // Z (altura real) -> Y (altura visual)
+worldGroup.rotation.x = -Math.PI / 2;
 scene.add(worldGroup);
+
+// ---------------------------------------------------------------------
+// Cone volumétrico que se molda ao objeto
+// ---------------------------------------------------------------------
+let coneMesh = null, coneGeo = null, coneOutline = null, coneAxis = null;
+let ringN = 0;
+let curRing = null, tgtRing = null;
+let curCenter = new THREE.Vector3(), tgtCenter = new THREE.Vector3();
+let temFootprint = false;
+
+let hitMarker, hitRing;
+
+const coneMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    uColor: { value: new THREE.Color(0x66b8ff) },
+    uOpacity: { value: 0.55 },
+  },
+  vertexShader: `
+    attribute float aT;
+    varying float vT;
+    void main() {
+      vT = aT;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: `
+    uniform vec3 uColor;
+    uniform float uOpacity;
+    varying float vT;
+    void main() {
+      // quase invisível junto da lente, ganhando corpo perto da superfície
+      float a = pow(clamp(vT, 0.0, 1.0), 2.2);
+      gl_FragColor = vec4(uColor, uOpacity * (0.02 + 0.98 * a));
+    }`,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  side: THREE.DoubleSide,
+});
+
+function buildConeGeometry(n) {
+  if (coneMesh) { worldGroup.remove(coneMesh); coneGeo.dispose(); }
+  if (coneOutline) { worldGroup.remove(coneOutline); coneOutline.geometry.dispose(); }
+  if (coneAxis) { worldGroup.remove(coneAxis); coneAxis.geometry.dispose(); }
+
+  ringN = n;
+  const total = n + 2;                        // 0 = ápice, 1..n = anel, n+1 = centro
+  const positions = new Float32Array(total * 3);
+  const tAttr = new Float32Array(total);
+  tAttr[0] = 0.0;
+  for (let i = 1; i <= n; i++) tAttr[i] = 1.0;
+  tAttr[n + 1] = 0.75;
+
+  const idx = [];
+  for (let i = 0; i < n; i++) {
+    const a = 1 + i;
+    const b = 1 + ((i + 1) % n);
+    idx.push(0, a, b);           // parede lateral do cone
+    idx.push(n + 1, b, a);       // "tampa" que se molda à superfície
+  }
+
+  coneGeo = new THREE.BufferGeometry();
+  coneGeo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  coneGeo.setAttribute("aT", new THREE.BufferAttribute(tAttr, 1));
+  coneGeo.setIndex(idx);
+
+  coneMesh = new THREE.Mesh(coneGeo, coneMaterial);
+  coneMesh.frustumCulled = false;
+  worldGroup.add(coneMesh);
+
+  // contorno do footprint (a "pegada" na parede)
+  const outlineGeo = new THREE.BufferGeometry();
+  outlineGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  coneOutline = new THREE.LineLoop(outlineGeo, new THREE.LineBasicMaterial({
+    color: 0x9ad4ff, transparent: true, opacity: 0.85, depthWrite: false,
+  }));
+  coneOutline.frustumCulled = false;
+  worldGroup.add(coneOutline);
+
+  // eixo óptico (ápice -> ponto central), bem discreto
+  const axisGeo = new THREE.BufferGeometry();
+  axisGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
+  coneAxis = new THREE.Line(axisGeo, new THREE.LineBasicMaterial({
+    color: 0x4fa3ff, transparent: true, opacity: 0.35, depthWrite: false,
+  }));
+  coneAxis.frustumCulled = false;
+  worldGroup.add(coneAxis);
+
+  curRing = new Float32Array(n * 3);
+  tgtRing = new Float32Array(n * 3);
+}
+
+function setConeTarget(cone) {
+  if (!cone || !cone.ring || !cone.ring.length) return;
+  if (cone.ring.length !== ringN) buildConeGeometry(cone.ring.length);
+
+  for (let i = 0; i < ringN; i++) {
+    tgtRing[i * 3 + 0] = cone.ring[i][0];
+    tgtRing[i * 3 + 1] = cone.ring[i][1];
+    tgtRing[i * 3 + 2] = cone.ring[i][2];
+  }
+  tgtCenter.set(cone.center[0], cone.center[1], cone.center[2]);
+
+  if (!temFootprint) {           // primeira vez: sem animação
+    curRing.set(tgtRing);
+    curCenter.copy(tgtCenter);
+    temFootprint = true;
+  }
+
+  // cone mais discreto quando o raio central não encosta em nada
+  coneMaterial.uniforms.uOpacity.value = cone.hit ? 0.55 : 0.2;
+  coneOutline.material.opacity = cone.hit ? 0.85 : 0.25;
+
+  if (hitMarker) {
+    hitMarker.position.copy(tgtCenter);
+    hitRing.position.copy(tgtCenter);
+    hitMarker.visible = hitRing.visible = !!cone.hit;
+  }
+}
+
+function applyConeFrame() {
+  if (!temFootprint || !coneGeo) return;
+
+  const k = 0.22;   // suavização: o cone "desliza" em vez de pular
+  for (let i = 0; i < curRing.length; i++) {
+    curRing[i] += (tgtRing[i] - curRing[i]) * k;
+  }
+  curCenter.lerp(tgtCenter, k);
+
+  const pos = coneGeo.attributes.position.array;
+  pos[0] = camMarkerPos.x; pos[1] = camMarkerPos.y; pos[2] = camMarkerPos.z;
+  for (let i = 0; i < ringN; i++) {
+    pos[(1 + i) * 3 + 0] = curRing[i * 3 + 0];
+    pos[(1 + i) * 3 + 1] = curRing[i * 3 + 1];
+    pos[(1 + i) * 3 + 2] = curRing[i * 3 + 2];
+  }
+  pos[(ringN + 1) * 3 + 0] = curCenter.x;
+  pos[(ringN + 1) * 3 + 1] = curCenter.y;
+  pos[(ringN + 1) * 3 + 2] = curCenter.z;
+  coneGeo.attributes.position.needsUpdate = true;
+
+  const opos = coneOutline.geometry.attributes.position.array;
+  opos.set(curRing);
+  coneOutline.geometry.attributes.position.needsUpdate = true;
+
+  const apos = coneAxis.geometry.attributes.position.array;
+  apos[0] = camMarkerPos.x; apos[1] = camMarkerPos.y; apos[2] = camMarkerPos.z;
+  apos[3] = curCenter.x;    apos[4] = curCenter.y;    apos[5] = curCenter.z;
+  coneAxis.geometry.attributes.position.needsUpdate = true;
+
+  if (hitMarker && hitMarker.visible) {
+    hitMarker.position.copy(curCenter);
+    hitRing.position.copy(curCenter);
+    hitRing.lookAt(camMarkerPos);
+  }
+}
 
 function buildCameraRig() {
   const marker = new THREE.Mesh(
-    new THREE.SphereGeometry(0.6, 16, 16),
-    new THREE.MeshStandardMaterial({ color: 0x4fa3ff })
+    new THREE.SphereGeometry(0.5, 20, 20),
+    new THREE.MeshStandardMaterial({ color: 0x4fa3ff, emissive: 0x11304f })
   );
   marker.position.copy(camMarkerPos);
   worldGroup.add(marker);
 
   hitMarker = new THREE.Mesh(
-    new THREE.SphereGeometry(0.5, 16, 16),
-    new THREE.MeshStandardMaterial({ color: 0xff5c5c, emissive: 0x330000 })
+    new THREE.SphereGeometry(0.28, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xff6b6b })
   );
   hitMarker.visible = false;
   worldGroup.add(hitMarker);
-}
 
-function updateCone(pan_deg, tilt_deg, zoom_pct) {
-  if (coneMesh) worldGroup.remove(coneMesh);
-
-  // zoom 0% (aberto/grande angular) -> cone largo | zoom 100% (fechado/tele) -> cone estreito
-  const halfAngleDeg = THREE.MathUtils.lerp(18, 2, zoom_pct / 100);
-  const length = 40;
-  const radius = length * Math.tan(THREE.MathUtils.degToRad(halfAngleDeg));
-
-  const geo = new THREE.ConeGeometry(radius, length, 24, 1, true);
-  geo.translate(0, -length / 2, 0); // ápice no (0,0,0)
-  const mat = new THREE.MeshBasicMaterial({ color: 0x4fa3ff, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
-  coneMesh = new THREE.Mesh(geo, mat);
-
-  // Direção calculada no MESMO referencial "cru" (Z=altura) usado pelo
-  // server, já que o cone vive dentro do worldGroup, que faz a rotação
-  // visual pra todo mundo de uma vez só.
-  const up = new THREE.Vector3(0, 0, 1);
-  const right = new THREE.Vector3().crossVectors(baseForward, up).normalize();
-
-  const dir = baseForward.clone()
-    .applyAxisAngle(up, THREE.MathUtils.degToRad(pan_deg))
-    .applyAxisAngle(right, THREE.MathUtils.degToRad(tilt_deg))
-    .normalize();
-
-  // cone aponta por padrão em -Y (seu próprio eixo local); alinhar com "dir"
-  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir);
-  coneMesh.quaternion.copy(quat);
-  coneMesh.position.copy(camMarkerPos);
-  worldGroup.add(coneMesh);
+  hitRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.5, 0.75, 40),
+    new THREE.MeshBasicMaterial({
+      color: 0xff5c5c, transparent: true, opacity: 0.75,
+      side: THREE.DoubleSide, depthWrite: false,
+    })
+  );
+  hitRing.visible = false;
+  worldGroup.add(hitRing);
 }
 
 // ---------------------------------------------------------------------
-// Carrega modelo real + posição real da câmera
+// Carregamento do modelo
 // ---------------------------------------------------------------------
 function frameOn(box) {
-  // Enquadra a câmera Three.js (de navegação) para olhar para o conteúdo de "box",
-  // ajustando near/far à escala real do modelo (evita "sumir" em coordenadas grandes).
-  const size = new THREE.Vector3();
-  box.getSize(size);
-  const center = new THREE.Vector3();
-  box.getCenter(center);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const center = new THREE.Vector3(); box.getCenter(center);
   const radius = Math.max(size.length(), 5);
 
-  camera3d.position.copy(center).add(new THREE.Vector3(0.6, 0.5, 0.6).normalize().multiplyScalar(radius * 1.2));
+  camera3d.position.copy(center).add(
+    new THREE.Vector3(0.6, 0.5, 0.6).normalize().multiplyScalar(radius * 1.2)
+  );
   camera3d.near = Math.max(radius / 1000, 0.01);
   camera3d.far = radius * 50;
   camera3d.updateProjectionMatrix();
@@ -206,79 +368,59 @@ function frameOn(box) {
 
 async function init() {
   const info = await fetch(`${SERVER_BASE}/api/camera_info`).then(r => r.json());
-  console.log("camera_info recebido do server:", info);
+  console.log("camera_info:", info);
+
   camMarkerPos.set(...info.camera_local_pos);
-  baseForward = new THREE.Vector3(...info.base_forward);
+  CONTROLLER_BASE = (info.controller_url || "").replace(/\/$/, "");
+  document.getElementById("video-feed").src = `${CONTROLLER_BASE}/video_feed`;
 
   buildCameraRig();
-  updateCone(0, 0, 0);
-
-  // Enquadra já na posição da câmera (mesmo antes/independente do GLB terminar de
-  // carregar), assim dá pra ver a esfera azul mesmo se o modelo falhar.
-  // Usamos o worldGroup (não a posição crua) porque o Box3 já aplica a rotação.
+  buildConeGeometry(info.cone_ring_rays || 24);
   frameOn(new THREE.Box3().setFromObject(worldGroup));
 
-  const loader = new GLTFLoader();
+  // estado inicial do cone, sem esperar a primeira telemetria
+  fetch(`${SERVER_BASE}/api/view?pan=0&tilt=0&zoom=0`)
+    .then(r => r.json())
+    .then(v => setConeTarget(v.cone))
+    .catch(() => {});
 
+  const loader = new GLTFLoader();
   const dracoLoader = new DRACOLoader();
   dracoLoader.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.6/");
   loader.setDRACOLoader(dracoLoader);
-
   const ktx2Loader = new KTX2Loader();
   ktx2Loader.setTranscoderPath("https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/libs/basis/");
   ktx2Loader.detectSupport(renderer);
   loader.setKTX2Loader(ktx2Loader);
-
   loader.setMeshoptDecoder(MeshoptDecoder);
 
-  // Checagem explícita antes de tentar carregar: distingue "arquivo não existe/vazio"
-  // de "arquivo existe mas o parser falhou" (compressão não suportada, etc.)
   try {
     const head = await fetch(`${SERVER_BASE}/model/model.glb`, { method: "HEAD" });
     const size = head.headers.get("content-length");
-    console.log(`HEAD /model/model.glb -> status ${head.status}, tamanho ${size ? (size / 1e6).toFixed(1) + " MB" : "desconhecido"}`);
-    if (!head.ok) {
-      console.error("O server respondeu que /model/model.glb NÃO existe ou não pôde ser lido. " +
-        "Confirme se o arquivo está em server/static/model.glb.");
-    }
-  } catch (e) {
-    console.error("Falha ao checar /model/model.glb:", e);
-  }
+    console.log(`HEAD /model/model.glb -> ${head.status}, ${size ? (size / 1e6).toFixed(1) + " MB" : "?"}`);
+  } catch (e) { console.error("Falha ao checar /model/model.glb:", e); }
 
   loader.load(
     `${SERVER_BASE}/model/model.glb`,
     (gltf) => {
-      console.log("GLB carregado com sucesso.", gltf);
-      worldGroup.add(gltf.scene);
+      modelRoot = gltf.scene;
+      worldGroup.add(modelRoot);
       const fullBox = new THREE.Box3().setFromObject(worldGroup);
-      console.log("Bounding box do grupo (modelo + câmera), já rotacionado:", fullBox.min, fullBox.max);
       if (fullBox.isEmpty()) {
-        console.warn("Modelo carregou mas a bounding box está vazia (geometria ausente?).");
+        console.warn("Modelo carregou mas a bounding box está vazia.");
         return;
       }
-
-      // Grid deixa de ser fixo na origem: passa a acompanhar a base e o
-      // tamanho real do que foi carregado, pra não dar impressão de modelo
-      // "flutuando" desconectado do plano de referência.
       scene.remove(groundGrid);
-      const modelBox = new THREE.Box3().setFromObject(gltf.scene);
-      const size = new THREE.Vector3();
-      modelBox.getSize(size);
-      const center = new THREE.Vector3();
-      modelBox.getCenter(center);
-      const gridSize = Math.max(size.x, size.z, 10) * 1.6;
-      groundGrid = new THREE.GridHelper(gridSize, 24, 0x223049, 0x162138);
+      const modelBox = new THREE.Box3().setFromObject(modelRoot);
+      const size = new THREE.Vector3(); modelBox.getSize(size);
+      const center = new THREE.Vector3(); modelBox.getCenter(center);
+      groundGrid = new THREE.GridHelper(Math.max(size.x, size.z, 10) * 1.6, 24, 0x223049, 0x162138);
       groundGrid.position.set(center.x, modelBox.min.y, center.z);
       scene.add(groundGrid);
-
       frameOn(fullBox);
     },
-    (progress) => {
-      if (progress.total) {
-        console.log(`Carregando GLB: ${((progress.loaded / progress.total) * 100).toFixed(0)}%`);
-      }
-    },
-    (err) => console.error("Erro ao PARSEAR /model/model.glb (arquivo existe mas o parser falhou):", err)
+    undefined,
+    (err) => console.error("Erro ao parsear o .glb:", err)
   );
 
   animate();
@@ -287,6 +429,7 @@ async function init() {
 function animate() {
   requestAnimationFrame(animate);
   controls.update();
+  applyConeFrame();
   renderer.render(scene, camera3d);
 }
 
@@ -297,76 +440,230 @@ window.addEventListener("resize", () => {
 });
 
 // ---------------------------------------------------------------------
-// WebSocket: telemetria e detecções em tempo real
+// WebSocket
 // ---------------------------------------------------------------------
 const ws = new WebSocket(`${SERVER_BASE.replace("http", "ws")}/ws`);
 ws.onmessage = (ev) => {
   const msg = JSON.parse(ev.data);
   if (msg.type === "telemetry" || msg.type === "detection") {
-    document.getElementById("tel-pan").textContent = msg.coord_p.toFixed(1);
-    document.getElementById("tel-tilt").textContent = msg.coord_t.toFixed(1);
-    document.getElementById("tel-zoom").textContent = msg.coord_z.toFixed(1);
-    updateCone(msg.coord_p, msg.coord_t, msg.coord_z);
-
-    if (msg.hit_point) {
-      hitMarker.position.set(...msg.hit_point);
-      hitMarker.visible = true;
-    }
+    atualizarTelemetria(msg.coord_p, msg.coord_t, msg.coord_z);
+    if (msg.cone) setConeTarget(msg.cone);
   }
-  if (msg.type === "detection") {
-    prependHistory(msg);
-  }
+  if (msg.type === "detection") prependHistory(msg);
 };
 
-// ---------------------------------------------------------------------
-// Controles PTZ
-// ---------------------------------------------------------------------
-async function sendPtzCommand(key, val, btn) {
-  if (btn) btn.disabled = true;
-  try {
-    const resp = await fetch(`${SERVER_BASE}/api/command`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [key]: parseFloat(val) }),
-    });
-    const data = await resp.json();
-    if (data.coord_p !== undefined) {
-      document.getElementById("tel-pan").textContent = data.coord_p.toFixed(1);
-      document.getElementById("tel-tilt").textContent = data.coord_t.toFixed(1);
-      document.getElementById("tel-zoom").textContent = data.coord_z.toFixed(1);
-      updateCone(data.coord_p, data.coord_t, data.coord_z);
-    } else if (data.error) {
-      console.error("Erro no comando PTZ:", data.error);
-    }
-  } catch (e) {
-    console.error("Falha ao enviar comando PTZ:", e);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
+function atualizarTelemetria(p, t, z) {
+  document.getElementById("tel-pan").textContent = p.toFixed(1);
+  document.getElementById("tel-tilt").textContent = t.toFixed(1);
+  document.getElementById("tel-zoom").textContent = z.toFixed(1);
 }
 
-document.querySelectorAll("#ptz-controls [data-cmd], #zoom-row [data-cmd]").forEach(btn => {
-  btn.addEventListener("click", () => {
-    const [key, val] = btn.dataset.cmd.split(":");
-    sendPtzCommand(key, val, btn);
+function toast(texto, ms = 2600) {
+  const el = document.getElementById("status-toast");
+  el.textContent = texto;
+  el.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove("show"), ms);
+}
+
+// ---------------------------------------------------------------------
+// Controles PTZ (movimento contínuo enquanto pressionado)
+// ---------------------------------------------------------------------
+async function ptzPost(pathDireto, pathProxy, body) {
+  if (!usarProxy && CONTROLLER_BASE) {
+    try {
+      const r = await fetch(`${CONTROLLER_BASE}${pathDireto}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+        keepalive: true,
+      });
+      if (r.ok) return r.json();
+    } catch (e) {
+      console.warn("Falha ao falar direto com o controller; usando o proxy do server.", e);
+      usarProxy = true;
+    }
+  }
+  const r = await fetch(`${SERVER_BASE}${pathProxy}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+    keepalive: true,
   });
+  return r.json();
+}
+
+let eixoAtivo = null;
+let holdTimer = null;
+
+function enviarIntencao(axis, dir) {
+  const body = { pan_speed: 0, tilt_speed: 0, zoom_speed: 0, hold_ms: 800 };
+  body[axis + "_speed"] = dir * SPEED[axis];
+  ptzPost("/command/continuous", "/api/ptz/continuous", body).catch(e => console.error(e));
+}
+
+function iniciarMovimento(axis, dir) {
+  const chave = axis + dir;
+  if (eixoAtivo === chave) return;
+  pararMovimento();
+  eixoAtivo = chave;
+  enviarIntencao(axis, dir);
+  // Renova a intenção antes de expirar (800ms). Se o navegador travar ou a
+  // rede cair, a intenção morre sozinha e a câmera para.
+  holdTimer = setInterval(() => enviarIntencao(axis, dir), 300);
+}
+
+function pararMovimento() {
+  if (holdTimer) { clearInterval(holdTimer); holdTimer = null; }
+  if (!eixoAtivo) return;
+  eixoAtivo = null;
+  ptzPost("/command/stop", "/api/ptz/stop", {}).catch(e => console.error(e));
+}
+
+document.querySelectorAll("#ptz-controls [data-axis], #zoom-row [data-axis]").forEach(btn => {
+  const axis = btn.dataset.axis;
+  const dir = parseFloat(btn.dataset.dir);
+  btn.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    btn.setPointerCapture(ev.pointerId);
+    btn.classList.add("active");
+    iniciarMovimento(axis, dir);
+  });
+  const soltar = () => { btn.classList.remove("active"); pararMovimento(); };
+  btn.addEventListener("pointerup", soltar);
+  btn.addEventListener("pointercancel", soltar);
+  btn.addEventListener("lostpointercapture", soltar);
+  btn.addEventListener("contextmenu", e => e.preventDefault());
 });
+
 document.getElementById("btn-home").addEventListener("click", (ev) => {
+  pararMovimento();
   ev.target.disabled = true;
-  fetch(`${SERVER_BASE}/api/command/home`, { method: "POST" })
+  ptzPost("/command/home", "/api/command/home", {})
     .finally(() => { ev.target.disabled = false; });
 });
 
+const TECLAS = {
+  ArrowUp: ["tilt", 1], ArrowDown: ["tilt", -1],
+  ArrowLeft: ["pan", -1], ArrowRight: ["pan", 1],
+  "+": ["zoom", 1], "=": ["zoom", 1], "-": ["zoom", -1], "_": ["zoom", -1],
+};
+window.addEventListener("keydown", (e) => {
+  if (e.repeat || e.target.tagName === "INPUT") return;
+  const t = TECLAS[e.key];
+  if (!t) return;
+  e.preventDefault();
+  iniciarMovimento(t[0], t[1]);
+});
+window.addEventListener("keyup", (e) => { if (TECLAS[e.key]) pararMovimento(); });
+window.addEventListener("blur", pararMovimento);
+window.addEventListener("pointerup", pararMovimento);   // rede de segurança global
+window.addEventListener("pagehide", pararMovimento);
+document.addEventListener("visibilitychange", () => { if (document.hidden) pararMovimento(); });
+
 // ---------------------------------------------------------------------
-// Histórico de detecções
+// Shift + arrastar: enquadra a região e dá close
+// ---------------------------------------------------------------------
+const selBox = document.getElementById("sel-box");
+let selStart = null;
+
+function ndcDe(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  return new THREE.Vector2(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+}
+
+function pontoLocalEm(clientX, clientY) {
+  if (!modelRoot) return null;
+  raycaster.setFromCamera(ndcDe(clientX, clientY), camera3d);
+  const hits = raycaster.intersectObject(modelRoot, true);
+  if (!hits.length) return null;
+  return worldGroup.worldToLocal(hits[0].point.clone()).toArray();
+}
+
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  if (!e.shiftKey || e.button !== 0) return;
+  e.preventDefault();
+  controls.enabled = false;
+  selStart = { x: e.clientX, y: e.clientY };
+  const rect = viewport.getBoundingClientRect();
+  selBox.style.display = "block";
+  selBox.style.left = (e.clientX - rect.left) + "px";
+  selBox.style.top = (e.clientY - rect.top) + "px";
+  selBox.style.width = "0px";
+  selBox.style.height = "0px";
+});
+
+window.addEventListener("pointermove", (e) => {
+  if (!selStart) return;
+  const rect = viewport.getBoundingClientRect();
+  const x1 = Math.min(selStart.x, e.clientX), x2 = Math.max(selStart.x, e.clientX);
+  const y1 = Math.min(selStart.y, e.clientY), y2 = Math.max(selStart.y, e.clientY);
+  selBox.style.left = (x1 - rect.left) + "px";
+  selBox.style.top = (y1 - rect.top) + "px";
+  selBox.style.width = (x2 - x1) + "px";
+  selBox.style.height = (y2 - y1) + "px";
+});
+
+window.addEventListener("pointerup", async (e) => {
+  if (!selStart) return;
+  const inicio = selStart;
+  selStart = null;
+  selBox.style.display = "none";
+  controls.enabled = true;
+
+  const x1 = Math.min(inicio.x, e.clientX), x2 = Math.max(inicio.x, e.clientX);
+  const y1 = Math.min(inicio.y, e.clientY), y2 = Math.max(inicio.y, e.clientY);
+
+  if ((x2 - x1) < 8 || (y2 - y1) < 8) {
+    toast("Retângulo muito pequeno — arraste um pouco mais.");
+    return;
+  }
+
+  const centro = pontoLocalEm((x1 + x2) / 2, (y1 + y2) / 2);
+  const cantos = [
+    pontoLocalEm(x1, y1), pontoLocalEm(x2, y1),
+    pontoLocalEm(x1, y2), pontoLocalEm(x2, y2),
+    pontoLocalEm((x1 + x2) / 2, y1), pontoLocalEm((x1 + x2) / 2, y2),
+    pontoLocalEm(x1, (y1 + y2) / 2), pontoLocalEm(x2, (y1 + y2) / 2),
+  ].filter(Boolean);
+
+  const alvo = centro || (cantos.length ? cantos[0] : null);
+  if (!alvo) {
+    toast("Nenhum ponto do modelo dentro do retângulo.");
+    return;
+  }
+
+  toast("Movendo a câmera para a região selecionada...");
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/aim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ point: alvo, corners: cantos }),
+    });
+    const data = await r.json();
+    if (data.error) {
+      toast("Erro ao mirar: " + data.error, 4000);
+      return;
+    }
+    atualizarTelemetria(data.coord_p, data.coord_t, data.coord_z);
+    toast(`Mirando: pan ${data.coord_p.toFixed(1)}° · tilt ${data.coord_t.toFixed(1)}° · zoom ${data.coord_z.toFixed(0)}%`);
+  } catch (err) {
+    toast("Falha na requisição de mira.", 4000);
+    console.error(err);
+  }
+});
+
+// ---------------------------------------------------------------------
+// Histórico
 // ---------------------------------------------------------------------
 function prependHistory(entry) {
   const list = document.getElementById("history-list");
   const div = document.createElement("div");
   div.className = "history-item";
-  const imgSrc = entry.mask_image || entry.mask_image_path
-    ? `${SERVER_BASE}/history_files/${entry.mask_image}`
-    : "";
+  const imgSrc = entry.mask_image ? `${SERVER_BASE}/history_files/${entry.mask_image}` : "";
   div.innerHTML = `
     <img src="${imgSrc}" />
     <div class="meta">
