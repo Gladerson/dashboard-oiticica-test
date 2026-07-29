@@ -210,7 +210,6 @@ def camera_info():
         "half_angle_wide": CONE_HALF_ANGLE_WIDE,
         "half_angle_tele": CONE_HALF_ANGLE_TELE,
         "model_up_axis": MODEL_UP_AXIS,
-        "model_up_axis": MODEL_UP_AXIS,
         "pan_sign": PAN_SIGN,
         "tilt_sign": TILT_SIGN,
     }
