@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<title>Dashboard - Barragem Oiticica</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #121b2e;
+    --border: #223049;
+    --text: #dbe4f3;
+    --muted: #8093b3;
+    --accent: #4fa3ff;
+    --danger: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, sans-serif; }
+  #app { display:grid; grid-template-columns: 1fr 360px; grid-template-rows: 60vh 40vh; height:100vh; }
+  #viewport { grid-column:1; grid-row:1/3; position:relative; }
+  #video-panel { grid-column:2; grid-row:1; border-left:1px solid var(--border); padding:12px; overflow:auto; }
+  #history-panel { grid-column:2; grid-row:2; border-left:1px solid var(--border); border-top:1px solid var(--border); padding:12px; overflow:auto; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 8px; }
+  #video-feed { width:100%; border-radius:8px; border:1px solid var(--border); background:#000; }
+  #ptz-controls { display:grid; grid-template-columns: repeat(3, 44px); grid-gap:6px; margin-top:12px; justify-content:center; }
+  #ptz-controls button {
+    background:var(--panel); border:1px solid var(--border); color:var(--text);
+    border-radius:6px; padding:10px 0; cursor:pointer; font-size:16px;
+  }
+  #ptz-controls button:hover { background:#1a2740; border-color:var(--accent); }
+  #ptz-controls button:disabled, #zoom-row button:disabled { opacity:.4; cursor:wait; }
+  #zoom-row { display:flex; gap:8px; justify-content:center; margin-top:8px; }
+  #telemetry { margin-top:12px; font-size:12px; color:var(--muted); line-height:1.6; }
+  #telemetry b { color:var(--text); }
+  .history-item { display:flex; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); cursor:pointer; }
+  .history-item img { width:64px; height:44px; object-fit:cover; border-radius:4px; }
+  .history-item .meta { font-size:11px; color:var(--muted); }
+  .history-item .meta b { color:var(--danger); }
+  #overlay-badge {
+    position:absolute; top:12px; left:12px; background:rgba(0,0,0,.5);
+    padding:6px 10px; border-radius:6px; font-size:12px; color:var(--muted);
+  }
+  #modal { position:fixed; inset:0; background:rgba(0,0,0,.8); display:none; align-items:center; justify-content:center; z-index:10; }
+  #modal.open { display:flex; }
+  #modal .box { background:var(--panel); padding:16px; border-radius:10px; max-width:90vw; }
+  #modal img { max-width:80vw; max-height:70vh; border-radius:6px; }
+  #modal button { margin-top:10px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="viewport">
+    <div id="overlay-badge">Barragem Oiticica - teste local</div>
+  </div>
+
+  <div id="video-panel">
+    <h2>Câmera ao vivo</h2>
+    <img id="video-feed" src="http://127.0.0.1:8090/video_feed" onerror="this.style.opacity=0.3" />
+    <div id="ptz-controls">
+      <span></span><button data-cmd="tilt_delta:5">▲</button><span></span>
+      <button data-cmd="pan_delta:-5">◀</button><button id="btn-home">⌂</button><button data-cmd="pan_delta:5">▶</button>
+      <span></span><button data-cmd="tilt_delta:-5">▼</button><span></span>
+    </div>
+    <div id="zoom-row">
+      <button data-cmd="zoom_delta:-10">Zoom −</button>
+      <button data-cmd="zoom_delta:10">Zoom +</button>
+    </div>
+    <div id="telemetry">
+      Pan: <b id="tel-pan">--</b>° &nbsp;
+      Tilt: <b id="tel-tilt">--</b>° &nbsp;
+      Zoom: <b id="tel-zoom">--</b>%
+    </div>
+  </div>
+
+  <div id="history-panel">
+    <h2>Histórico de detecções</h2>
+    <div id="history-list"></div>
+  </div>
+</div>
+
+<div id="modal">
+  <div class="box">
+    <img id="modal-img" src="" />
+    <div><button onclick="document.getElementById('modal').classList.remove('open')">Fechar</button></div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.169.0/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+import { KTX2Loader } from "three/addons/loaders/KTX2Loader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const SERVER_BASE = window.location.origin;
+
+// ---------------------------------------------------------------------
+// Cena Three.js
+// ---------------------------------------------------------------------
+const viewport = document.getElementById("viewport");
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1220);
+
+const camera3d = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport.clientHeight, 0.1, 5000);
+camera3d.position.set(30, 30, 30);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+viewport.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera3d, renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+const dir = new THREE.DirectionalLight(0xffffff, 1);
+dir.position.set(50, 80, 50);
+scene.add(dir);
+let groundGrid = new THREE.GridHelper(200, 40, 0x223049, 0x162138);
+scene.add(groundGrid);
+
+let camMarkerPos = new THREE.Vector3();
+let baseForward = new THREE.Vector3(0, 0, -1);
+let coneMesh, coneApexOffset = 0;
+let hitMarker;
+
+// O server manda posições em coordenadas "cruas" do modelo (X=leste, Y=norte,
+// Z=altura, igual ao UTM). O Three.js renderiza em Y-up. Em vez de converter
+// cada ponto na mão, colocamos TUDO (modelo + marcadores + cone) dentro de um
+// único grupo e rotacionamos o grupo uma vez -- assim nada desalinha entre si.
+const worldGroup = new THREE.Group();
+worldGroup.rotation.x = -Math.PI / 2; // Z (altura real) -> Y (altura visual)
+scene.add(worldGroup);
+
+function buildCameraRig() {
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.6, 16, 16),
+    new THREE.MeshStandardMaterial({ color: 0x4fa3ff })
+  );
+  marker.position.copy(camMarkerPos);
+  worldGroup.add(marker);
+
+  hitMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.5, 16, 16),
+    new THREE.MeshStandardMaterial({ color: 0xff5c5c, emissive: 0x330000 })
+  );
+  hitMarker.visible = false;
+  worldGroup.add(hitMarker);
+}
+
+function updateCone(pan_deg, tilt_deg, zoom_pct) {
+  if (coneMesh) worldGroup.remove(coneMesh);
+
+  // zoom 0% (aberto/grande angular) -> cone largo | zoom 100% (fechado/tele) -> cone estreito
+  const halfAngleDeg = THREE.MathUtils.lerp(18, 2, zoom_pct / 100);
+  const length = 40;
+  const radius = length * Math.tan(THREE.MathUtils.degToRad(halfAngleDeg));
+
+  const geo = new THREE.ConeGeometry(radius, length, 24, 1, true);
+  geo.translate(0, -length / 2, 0); // ápice no (0,0,0)
+  const mat = new THREE.MeshBasicMaterial({ color: 0x4fa3ff, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
+  coneMesh = new THREE.Mesh(geo, mat);
+
+  // Direção calculada no MESMO referencial "cru" (Z=altura) usado pelo
+  // server, já que o cone vive dentro do worldGroup, que faz a rotação
+  // visual pra todo mundo de uma vez só.
+  const up = new THREE.Vector3(0, 0, 1);
+  const right = new THREE.Vector3().crossVectors(baseForward, up).normalize();
+
+  const dir = baseForward.clone()
+    .applyAxisAngle(up, THREE.MathUtils.degToRad(pan_deg))
+    .applyAxisAngle(right, THREE.MathUtils.degToRad(tilt_deg))
+    .normalize();
+
+  // cone aponta por padrão em -Y (seu próprio eixo local); alinhar com "dir"
+  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir);
+  coneMesh.quaternion.copy(quat);
+  coneMesh.position.copy(camMarkerPos);
+  worldGroup.add(coneMesh);
+}
+
+// ---------------------------------------------------------------------
+// Carrega modelo real + posição real da câmera
+// ---------------------------------------------------------------------
+function frameOn(box) {
+  // Enquadra a câmera Three.js (de navegação) para olhar para o conteúdo de "box",
+  // ajustando near/far à escala real do modelo (evita "sumir" em coordenadas grandes).
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  const radius = Math.max(size.length(), 5);
+
+  camera3d.position.copy(center).add(new THREE.Vector3(0.6, 0.5, 0.6).normalize().multiplyScalar(radius * 1.2));
+  camera3d.near = Math.max(radius / 1000, 0.01);
+  camera3d.far = radius * 50;
+  camera3d.updateProjectionMatrix();
+
+  controls.target.copy(center);
+  controls.update();
+}
+
+async function init() {
+  const info = await fetch(`${SERVER_BASE}/api/camera_info`).then(r => r.json());
+  console.log("camera_info recebido do server:", info);
+  camMarkerPos.set(...info.camera_local_pos);
+  baseForward = new THREE.Vector3(...info.base_forward);
+
+  buildCameraRig();
+  updateCone(0, 0, 0);
+
+  // Enquadra já na posição da câmera (mesmo antes/independente do GLB terminar de
+  // carregar), assim dá pra ver a esfera azul mesmo se o modelo falhar.
+  // Usamos o worldGroup (não a posição crua) porque o Box3 já aplica a rotação.
+  frameOn(new THREE.Box3().setFromObject(worldGroup));
+
+  const loader = new GLTFLoader();
+
+  const dracoLoader = new DRACOLoader();
+  dracoLoader.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.6/");
+  loader.setDRACOLoader(dracoLoader);
+
+  const ktx2Loader = new KTX2Loader();
+  ktx2Loader.setTranscoderPath("https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/libs/basis/");
+  ktx2Loader.detectSupport(renderer);
+  loader.setKTX2Loader(ktx2Loader);
+
+  loader.setMeshoptDecoder(MeshoptDecoder);
+
+  // Checagem explícita antes de tentar carregar: distingue "arquivo não existe/vazio"
+  // de "arquivo existe mas o parser falhou" (compressão não suportada, etc.)
+  try {
+    const head = await fetch(`${SERVER_BASE}/model/model.glb`, { method: "HEAD" });
+    const size = head.headers.get("content-length");
+    console.log(`HEAD /model/model.glb -> status ${head.status}, tamanho ${size ? (size / 1e6).toFixed(1) + " MB" : "desconhecido"}`);
+    if (!head.ok) {
+      console.error("O server respondeu que /model/model.glb NÃO existe ou não pôde ser lido. " +
+        "Confirme se o arquivo está em server/static/model.glb.");
+    }
+  } catch (e) {
+    console.error("Falha ao checar /model/model.glb:", e);
+  }
+
+  loader.load(
+    `${SERVER_BASE}/model/model.glb`,
+    (gltf) => {
+      console.log("GLB carregado com sucesso.", gltf);
+      worldGroup.add(gltf.scene);
+      const fullBox = new THREE.Box3().setFromObject(worldGroup);
+      console.log("Bounding box do grupo (modelo + câmera), já rotacionado:", fullBox.min, fullBox.max);
+      if (fullBox.isEmpty()) {
+        console.warn("Modelo carregou mas a bounding box está vazia (geometria ausente?).");
+        return;
+      }
+
+      // Grid deixa de ser fixo na origem: passa a acompanhar a base e o
+      // tamanho real do que foi carregado, pra não dar impressão de modelo
+      // "flutuando" desconectado do plano de referência.
+      scene.remove(groundGrid);
+      const modelBox = new THREE.Box3().setFromObject(gltf.scene);
+      const size = new THREE.Vector3();
+      modelBox.getSize(size);
+      const center = new THREE.Vector3();
+      modelBox.getCenter(center);
+      const gridSize = Math.max(size.x, size.z, 10) * 1.6;
+      groundGrid = new THREE.GridHelper(gridSize, 24, 0x223049, 0x162138);
+      groundGrid.position.set(center.x, modelBox.min.y, center.z);
+      scene.add(groundGrid);
+
+      frameOn(fullBox);
+    },
+    (progress) => {
+      if (progress.total) {
+        console.log(`Carregando GLB: ${((progress.loaded / progress.total) * 100).toFixed(0)}%`);
+      }
+    },
+    (err) => console.error("Erro ao PARSEAR /model/model.glb (arquivo existe mas o parser falhou):", err)
+  );
+
+  animate();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera3d);
+}
+
+window.addEventListener("resize", () => {
+  camera3d.aspect = viewport.clientWidth / viewport.clientHeight;
+  camera3d.updateProjectionMatrix();
+  renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+});
+
+// ---------------------------------------------------------------------
+// WebSocket: telemetria e detecções em tempo real
+// ---------------------------------------------------------------------
+const ws = new WebSocket(`${SERVER_BASE.replace("http", "ws")}/ws`);
+ws.onmessage = (ev) => {
+  const msg = JSON.parse(ev.data);
+  if (msg.type === "telemetry" || msg.type === "detection") {
+    document.getElementById("tel-pan").textContent = msg.coord_p.toFixed(1);
+    document.getElementById("tel-tilt").textContent = msg.coord_t.toFixed(1);
+    document.getElementById("tel-zoom").textContent = msg.coord_z.toFixed(1);
+    updateCone(msg.coord_p, msg.coord_t, msg.coord_z);
+
+    if (msg.hit_point) {
+      hitMarker.position.set(...msg.hit_point);
+      hitMarker.visible = true;
+    }
+  }
+  if (msg.type === "detection") {
+    prependHistory(msg);
+  }
+};
+
+// ---------------------------------------------------------------------
+// Controles PTZ
+// ---------------------------------------------------------------------
+async function sendPtzCommand(key, val, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch(`${SERVER_BASE}/api/command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [key]: parseFloat(val) }),
+    });
+    const data = await resp.json();
+    if (data.coord_p !== undefined) {
+      document.getElementById("tel-pan").textContent = data.coord_p.toFixed(1);
+      document.getElementById("tel-tilt").textContent = data.coord_t.toFixed(1);
+      document.getElementById("tel-zoom").textContent = data.coord_z.toFixed(1);
+      updateCone(data.coord_p, data.coord_t, data.coord_z);
+    } else if (data.error) {
+      console.error("Erro no comando PTZ:", data.error);
+    }
+  } catch (e) {
+    console.error("Falha ao enviar comando PTZ:", e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+document.querySelectorAll("#ptz-controls [data-cmd], #zoom-row [data-cmd]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const [key, val] = btn.dataset.cmd.split(":");
+    sendPtzCommand(key, val, btn);
+  });
+});
+document.getElementById("btn-home").addEventListener("click", (ev) => {
+  ev.target.disabled = true;
+  fetch(`${SERVER_BASE}/api/command/home`, { method: "POST" })
+    .finally(() => { ev.target.disabled = false; });
+});
+
+// ---------------------------------------------------------------------
+// Histórico de detecções
+// ---------------------------------------------------------------------
+function prependHistory(entry) {
+  const list = document.getElementById("history-list");
+  const div = document.createElement("div");
+  div.className = "history-item";
+  const imgSrc = entry.mask_image || entry.mask_image_path
+    ? `${SERVER_BASE}/history_files/${entry.mask_image}`
+    : "";
+  div.innerHTML = `
+    <img src="${imgSrc}" />
+    <div class="meta">
+      <b>Rachadura detectada</b><br/>
+      p:${entry.coord_p.toFixed(1)} t:${entry.coord_t.toFixed(1)} z:${entry.coord_z.toFixed(1)}<br/>
+      ${new Date(entry.timestamp).toLocaleString("pt-BR")}
+    </div>`;
+  div.addEventListener("click", () => {
+    document.getElementById("modal-img").src = imgSrc;
+    document.getElementById("modal").classList.add("open");
+  });
+  list.prepend(div);
+}
+
+async function loadHistory() {
+  const items = await fetch(`${SERVER_BASE}/api/history`).then(r => r.json());
+  items.forEach(prependHistory);
+}
+
+init();
+loadHistory();
+</script>
+</body>
+</html>

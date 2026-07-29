@@ -1,0 +1,25 @@
+# Ambientes virtuais
+controller/venv/
+server/venv/
+
+# Credenciais - NUNCA commitar o .env real (só o .env.example)
+controller/.env
+server/.env
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Modelos e dados grandes (não versionar no Git - ver README sobre Git LFS
+# ou distribuição separada desses arquivos)
+controller/best.pt
+server/static/model.glb
+server/static/model_original_draco.glb
+
+# Histórico de detecções gerado em runtime (imagens + índice)
+server/history/*
+!server/history/.gitkeep
+
+# Sistema
+.DS_Store
+*.log
