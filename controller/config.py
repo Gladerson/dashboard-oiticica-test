@@ -57,7 +57,6 @@ PTZ_FAST_WINDOW_SECONDS = float(os.getenv("PTZ_FAST_WINDOW_SECONDS", "4.0"))
 # reclamar de sessões simultâneas, coloque false no .env.
 PTZ_SEPARATE_CONNECTIONS = _bool("PTZ_SEPARATE_CONNECTIONS", "true")
 
-# Se o navegador travar/fechar com o botão pressionado, para sozinho:
 # Frequência da thread que aplica o movimento na câmera.
 # 0.05s = a câmera para em até ~50ms depois de você soltar o botão.
 PTZ_MOTION_TICK_SECONDS = float(os.getenv("PTZ_MOTION_TICK_SECONDS", "0.05"))

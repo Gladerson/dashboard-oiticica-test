@@ -35,10 +35,28 @@
   #telemetry b { color:var(--text); }
   #hint { margin-top:10px; font-size:11px; color:var(--muted); line-height:1.5; border-top:1px solid var(--border); padding-top:8px; }
   #hint kbd { background:#1a2740; border:1px solid var(--border); border-radius:3px; padding:1px 5px; font-size:10px; }
-  .history-item { display:flex; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); cursor:pointer; }
-  .history-item img { width:64px; height:44px; object-fit:cover; border-radius:4px; }
-  .history-item .meta { font-size:11px; color:var(--muted); }
+  .history-entry { border-bottom:1px solid var(--border); }
+  .history-item { display:flex; gap:8px; padding:8px 0; cursor:pointer; align-items:center; }
+  .history-item:hover { background:rgba(79,163,255,.06); }
+  .history-item img { width:64px; height:44px; object-fit:cover; border-radius:4px; background:#000; }
+  .history-item .meta { font-size:11px; color:var(--muted); line-height:1.5; }
   .history-item .meta b { color:var(--danger); }
+  .history-entry.aberto .history-item { background:rgba(79,163,255,.10); }
+  .history-actions { display:none; gap:8px; padding:0 0 10px 72px; }
+  .history-entry.aberto .history-actions { display:flex; }
+  .history-actions button {
+    background:var(--panel); border:1px solid var(--border); color:var(--text);
+    border-radius:6px; padding:6px 14px; cursor:pointer; font-size:12px;
+  }
+  .history-actions button:hover { background:#1a2740; border-color:var(--accent); }
+  .history-actions button:disabled { opacity:.45; cursor:wait; }
+  .history-actions .localizar { border-color:#4a6fa5; }
+  #modal .box { background:var(--panel); padding:16px; border-radius:10px; max-width:90vw; }
+  #modal .acoes { display:flex; gap:8px; margin-top:10px; justify-content:flex-end; }
+  #modal button {
+    background:#1a2740; border:1px solid var(--border); color:var(--text);
+    border-radius:6px; padding:7px 16px; cursor:pointer; font-size:13px;
+  }
   #overlay-badge {
     position:absolute; top:12px; left:12px; background:rgba(0,0,0,.5);
     padding:6px 10px; border-radius:6px; font-size:12px; color:var(--muted);
@@ -104,7 +122,10 @@
 <div id="modal">
   <div class="box">
     <img id="modal-img" src="" />
-    <div><button onclick="document.getElementById('modal').classList.remove('open')">Fechar</button></div>
+    <div class="acoes">
+      <button id="modal-toggle">Ver original</button>
+      <button onclick="document.getElementById('modal').classList.remove('open')">Fechar</button>
+    </div>
   </div>
 </div>
 
@@ -175,7 +196,8 @@ let curRing = null, tgtRing = null;
 let curCenter = new THREE.Vector3(), tgtCenter = new THREE.Vector3();
 let temFootprint = false;
 
-let hitMarker, hitRing;
+let hitMarker, hitRing, detectMarker, detectHalo;
+let pulso = 0;
 
 const coneMaterial = new THREE.ShaderMaterial({
   uniforms: {
@@ -345,6 +367,23 @@ function buildCameraRig() {
   );
   hitRing.visible = false;
   worldGroup.add(hitRing);
+  // Marcador da detecção localizada pelo histórico (laranja, pulsante)
+  detectMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.45, 20, 20),
+    new THREE.MeshBasicMaterial({ color: 0xffa64d })
+  );
+  detectMarker.visible = false;
+  worldGroup.add(detectMarker);
+
+  detectHalo = new THREE.Mesh(
+    new THREE.RingGeometry(0.9, 1.35, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0xffa64d, transparent: true, opacity: 0.9,
+      side: THREE.DoubleSide, depthWrite: false, depthTest: false,
+    })
+  );
+  detectHalo.visible = false;
+  worldGroup.add(detectHalo);
 }
 
 // ---------------------------------------------------------------------
@@ -428,8 +467,10 @@ async function init() {
 
 function animate() {
   requestAnimationFrame(animate);
+  aplicarVoo();
   controls.update();
   applyConeFrame();
+  pulsarMarcador();
   renderer.render(scene, camera3d);
 }
 
@@ -659,23 +700,142 @@ window.addEventListener("pointerup", async (e) => {
 // ---------------------------------------------------------------------
 // Histórico
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Localizar: leva a visão 3D até o ponto e marca
+// ---------------------------------------------------------------------
+let voo = null;
+
+function voarPara(pontoLocal) {
+  const destino = worldGroup.localToWorld(new THREE.Vector3(...pontoLocal));
+  const dist = Math.max(camera3d.position.distanceTo(destino) * 0.28, 12);
+  const desloc = camera3d.position.clone().sub(destino).normalize().multiplyScalar(dist);
+
+  voo = {
+    t: 0,
+    camDe: camera3d.position.clone(),
+    camPara: destino.clone().add(desloc),
+    alvoDe: controls.target.clone(),
+    alvoPara: destino.clone(),
+  };
+}
+
+function aplicarVoo() {
+  if (!voo) return;
+  voo.t = Math.min(1, voo.t + 0.045);
+  const e = 1 - Math.pow(1 - voo.t, 3);   // ease-out cúbico
+  camera3d.position.lerpVectors(voo.camDe, voo.camPara, e);
+  controls.target.lerpVectors(voo.alvoDe, voo.alvoPara, e);
+  controls.update();
+  if (voo.t >= 1) voo = null;
+}
+
+function pulsarMarcador() {
+  if (!detectMarker || !detectMarker.visible) return;
+  pulso += 0.06;
+  const s = 1 + Math.sin(pulso) * 0.28;
+  detectHalo.scale.setScalar(s);
+  detectHalo.material.opacity = 0.5 + 0.4 * (1 - Math.abs(Math.sin(pulso)));
+  detectHalo.lookAt(camera3d.position);
+}
+
+async function localizarDeteccao(id, btn) {
+  const rotulo = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Localizando...";
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/locate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, move_camera: true }),
+    });
+    const data = await r.json();
+
+    if (data.error) { toast("Erro: " + data.error, 4000); return; }
+
+    if (data.hit_point) {
+      detectMarker.position.set(...data.hit_point);
+      detectHalo.position.set(...data.hit_point);
+      detectMarker.visible = detectHalo.visible = true;
+      voarPara(data.hit_point);
+    } else {
+      toast("A detecção não intercepta o modelo 3D (só a câmera foi movida).", 4000);
+    }
+
+    if (data.cone) setConeTarget(data.cone);
+    atualizarTelemetria(data.coord_p, data.coord_t, data.coord_z);
+
+    if (data.moved) {
+      toast(`Câmera na pose da detecção: pan ${data.coord_p.toFixed(1)}° · `
+            + `tilt ${data.coord_t.toFixed(1)}° · zoom ${data.coord_z.toFixed(0)}%`);
+    } else if (data.error_camera) {
+      toast("Ponto localizado em 3D, mas a câmera não respondeu.", 4000);
+    }
+  } catch (err) {
+    toast("Falha ao localizar a detecção.", 4000);
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = rotulo;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Histórico
+// ---------------------------------------------------------------------
+function abrirModal(srcMascara, srcOriginal) {
+  const img = document.getElementById("modal-img");
+  const toggle = document.getElementById("modal-toggle");
+  let mostrandoMascara = true;
+
+  img.src = srcMascara || srcOriginal || "";
+  toggle.style.display = (srcMascara && srcOriginal) ? "" : "none";
+  toggle.textContent = "Ver original";
+  toggle.onclick = () => {
+    mostrandoMascara = !mostrandoMascara;
+    img.src = mostrandoMascara ? srcMascara : srcOriginal;
+    toggle.textContent = mostrandoMascara ? "Ver original" : "Ver máscara";
+  };
+
+  document.getElementById("modal").classList.add("open");
+}
+
 function prependHistory(entry) {
   const list = document.getElementById("history-list");
-  const div = document.createElement("div");
-  div.className = "history-item";
-  const imgSrc = entry.mask_image ? `${SERVER_BASE}/history_files/${entry.mask_image}` : "";
-  div.innerHTML = `
-    <img src="${imgSrc}" />
-    <div class="meta">
-      <b>Rachadura detectada</b><br/>
-      p:${entry.coord_p.toFixed(1)} t:${entry.coord_t.toFixed(1)} z:${entry.coord_z.toFixed(1)}<br/>
-      ${new Date(entry.timestamp).toLocaleString("pt-BR")}
+  const srcMascara = entry.mask_image ? `${SERVER_BASE}/history_files/${entry.mask_image}` : "";
+  const srcOriginal = entry.image ? `${SERVER_BASE}/history_files/${entry.image}` : "";
+
+  const wrap = document.createElement("div");
+  wrap.className = "history-entry";
+  wrap.innerHTML = `
+    <div class="history-item">
+      <img src="${srcMascara || srcOriginal}" />
+      <div class="meta">
+        <b>Rachadura detectada</b><br/>
+        p:${entry.coord_p.toFixed(1)}° t:${entry.coord_t.toFixed(1)}° z:${entry.coord_z.toFixed(0)}%<br/>
+        ${new Date(entry.timestamp).toLocaleString("pt-BR")}
+      </div>
+    </div>
+    <div class="history-actions">
+      <button class="abrir">Abrir</button>
+      <button class="localizar">Localizar</button>
     </div>`;
-  div.addEventListener("click", () => {
-    document.getElementById("modal-img").src = imgSrc;
-    document.getElementById("modal").classList.add("open");
+
+  // Clicar na imagem/linha revela os dois botões (e recolhe os outros itens)
+  wrap.querySelector(".history-item").addEventListener("click", () => {
+    const jaAberto = wrap.classList.contains("aberto");
+    list.querySelectorAll(".history-entry.aberto").forEach(el => el.classList.remove("aberto"));
+    if (!jaAberto) wrap.classList.add("aberto");
   });
-  list.prepend(div);
+
+  wrap.querySelector(".abrir").addEventListener("click", () => {
+    abrirModal(srcMascara, srcOriginal);
+  });
+
+  wrap.querySelector(".localizar").addEventListener("click", (ev) => {
+    localizarDeteccao(entry.id, ev.currentTarget);
+  });
+
+  list.prepend(wrap);
 }
 
 async function loadHistory() {

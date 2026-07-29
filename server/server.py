@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from glb_geo import GeoModel, MODEL_UP_AXIS
+from glb_geo import GeoModel, MODEL_UP_AXIS, PAN_SIGN, TILT_SIGN
 
 # --- Posição real da câmera -------------------------------------------------
 CAMERA_LAT = -6.152425824994227
@@ -210,6 +210,9 @@ def camera_info():
         "half_angle_wide": CONE_HALF_ANGLE_WIDE,
         "half_angle_tele": CONE_HALF_ANGLE_TELE,
         "model_up_axis": MODEL_UP_AXIS,
+        "model_up_axis": MODEL_UP_AXIS,
+        "pan_sign": PAN_SIGN,
+        "tilt_sign": TILT_SIGN,
     }
 
 
@@ -348,6 +351,60 @@ def aim(payload: AimPayload):
 
 
 # ----------------------------------------------------------------------------
+# Localizar uma detecção do histórico
+# ----------------------------------------------------------------------------
+class LocatePayload(BaseModel):
+    id: str
+    move_camera: bool = True
+
+
+@app.post("/api/locate")
+async def locate(payload: LocatePayload):
+    with open(HISTORY_INDEX) as f:
+        entradas = json.load(f)
+
+    entrada = next((e for e in entradas if e.get("id") == payload.id), None)
+    if entrada is None:
+        return JSONResponse({"error": "detecção não encontrada"}, status_code=404)
+
+    # Recalcula a geometria a partir do pan/tilt/zoom gravados. Isso corrige
+    # automaticamente entradas antigas, salvas antes do ajuste de PAN_SIGN.
+    result = await run_in_threadpool(
+        compute_view, entrada["coord_p"], entrada["coord_t"], entrada["coord_z"]
+    )
+
+    resposta = {
+        "id": entrada["id"],
+        "coord_p": entrada["coord_p"],
+        "coord_t": entrada["coord_t"],
+        "coord_z": entrada["coord_z"],
+        "timestamp": entrada.get("timestamp"),
+        "hit_point": result["hit_point"],
+        "cone": result["cone"],
+        "moved": False,
+    }
+
+    if not payload.move_camera:
+        return resposta
+
+    try:
+        r = http.post(
+            f"{CONTROLLER_URL}/command/absolute",
+            json={
+                "pan_deg": entrada["coord_p"],
+                "tilt_deg": entrada["coord_t"],
+                "zoom_pct": entrada["coord_z"],
+            },
+            timeout=6,
+        )
+        resposta["controller"] = r.json()
+        resposta["moved"] = True
+    except Exception as e:
+        resposta["error_camera"] = str(e)
+
+    return resposta
+
+# ----------------------------------------------------------------------------
 # Proxy PTZ (fallback: o dashboard prefere falar direto com o controller)
 # ----------------------------------------------------------------------------
 class CommandPayload(BaseModel):
@@ -360,6 +417,7 @@ class ContinuousPayload(BaseModel):
     pan_speed: float = 0.0
     tilt_speed: float = 0.0
     zoom_speed: float = 0.0
+    hold_ms: int = 800
 
 
 def _proxy(path, body=None):

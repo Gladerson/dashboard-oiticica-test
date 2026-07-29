@@ -12,6 +12,8 @@
 #     inclina em torno do eixo horizontal já rotacionado).
 #   • Usa o intersector Embree quando disponível (muito mais rápido).
 # ============================================================================
+import os
+
 import trimesh
 import numpy as np
 from pyproj import Transformer
@@ -27,6 +29,15 @@ GEO_OFFSET_Z = 0.0
 
 # Eixo "para cima" do modelo ("Z" para exports típicos de fotogrametria/ODM).
 MODEL_UP_AXIS = "Z"
+
+# --- Sentido de rotação do pan/tilt ------------------------------------------
+# O ONVIF não padroniza para que lado o pan positivo gira. Nesta câmera, o pan
+# positivo corresponde ao sentido HORÁRIO visto de cima, que é o oposto da
+# convenção matemática -- daí o -1. Se em outra câmera o cone andar espelhado,
+# troque o sinal (via env PAN_SIGN=1, sem editar código).
+# O mesmo vale para o tilt (TILT_SIGN=-1 se subir/descer estiver trocado).
+PAN_SIGN = float(os.getenv("PAN_SIGN", "-1"))
+TILT_SIGN = float(os.getenv("TILT_SIGN", "1"))
 
 MODEL_PATH = "static/model.glb"
 
@@ -148,7 +159,7 @@ class GeoModel:
         up = self._up_vector()
         f = _normalize(base_forward)
 
-        d = _rotate(f, up, np.radians(pan_deg))
+        d = _rotate(f, up, np.radians(PAN_SIGN * pan_deg))
 
         # eixo de tilt recalculado APÓS o pan (cabeçote pan-tilt real)
         right = np.cross(d, up)
@@ -156,7 +167,7 @@ class GeoModel:
             right = np.cross(f, up)
         right = _normalize(right)
 
-        d = _rotate(d, right, np.radians(tilt_deg))
+        d = _rotate(d, right, np.radians(TILT_SIGN * tilt_deg))
         return _normalize(d)
 
     def _az_el(self, v):
@@ -167,11 +178,14 @@ class GeoModel:
 
     def direction_to_pan_tilt(self, base_forward, direction):
         """Inverso exato de direction_from_pan_tilt: dada uma direção 3D,
-        devolve (pan_deg, tilt_deg) que a câmera precisa assumir."""
+        devolve (pan_deg, tilt_deg) que a câmera precisa assumir.
+        Os sinais PAN_SIGN/TILT_SIGN são desfeitos aqui para que a
+        ida-e-volta continue exata."""
         az0, el0 = self._az_el(base_forward)
         az1, el1 = self._az_el(direction)
         d_az = (az1 - az0 + np.pi) % (2 * np.pi) - np.pi
-        return float(np.degrees(d_az)), float(np.degrees(el1 - el0))
+        return (float(np.degrees(d_az) / PAN_SIGN),
+                float(np.degrees(el1 - el0) / TILT_SIGN))
 
     def angle_between(self, v1, v2):
         c = float(np.clip(np.dot(_normalize(v1), _normalize(v2)), -1.0, 1.0))

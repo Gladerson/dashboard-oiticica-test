@@ -1,185 +1,259 @@
-# Ambiente de teste - Barragem Oiticica (desktop)
+# Dashboard Barragem Oiticica — ambiente de teste
 
+Monitoramento de rachaduras com câmera PTZ e visualização 3D georreferenciada.
 Simula, no desktop, o papel que o Raspberry Pi vai assumir depois: o
 **controller** fala com a câmera via ONVIF/RTSP e roda o YOLO; o **server**
-simula o backend do dashboard, calcula a posição 3D real das detecções via
-raycasting contra o `.glb`, e serve a interface web (Three.js).
+faz o raycasting real contra o modelo `.glb` e serve o dashboard (Three.js).
 
 ## Estrutura
 
-```
 dashboard_oiticica_test/
-├── install_desktop.sh          # instala tudo (Debian/Ubuntu/Zorin)
+├── install_desktop.sh # instala tudo (Debian/Ubuntu/Zorin)
 ├── controller/
-│   ├── config.py                # IP/credenciais da câmera, RTSP, server, etc.
-│   ├── onvif_ptz.py              # wrapper ONVIF (detecta faixas reais de pan/tilt/zoom)
-│   ├── controller.py             # loop principal: home, telemetria, YOLO, comandos
-│   ├── best.pt                   # (você copia) modelo YOLO de rachaduras
-│   └── requirements.txt
+│ ├── .env.example # modelo de credenciais (o .env real fica fora do Git)
+│ ├── config.py # lê o .env e aplica os padrões
+│ ├── onvif_ptz.py # wrapper ONVIF (detecta espaços absoluto/relativo/contínuo)
+│ ├── controller.py # motor de movimento, telemetria, YOLO, API local
+│ ├── calibrar_curso.py # mede o curso mecânico real em graus
+│ ├── best.pt # (você copia) modelo YOLO de rachaduras
+│ └── requirements.txt
 └── server/
-    ├── glb_geo.py                 # georreferenciamento real + raycasting no .glb
-    ├── server.py                   # API/WebSocket + histórico de detecções
-    ├── prepare_model.sh            # remove compressão Draco do .glb (rodar 1x)
-    ├── static/
-    │   ├── model.glb                # (você copia) modelo 3D da parede
-    │   └── dashboard.html           # Three.js: modelo, cone PTZ, vídeo, histórico
-    ├── history/                     # detecções salvas (criado em runtime)
-    └── requirements.txt
-```
+├── glb_geo.py # georreferenciamento + raycasting + ângulos PTZ
+├── server.py # API/WebSocket, cone, /api/aim, /api/locate
+├── prepare_model.sh # remove compressão Draco do .glb (rodar 1x)
+├── static/
+│ ├── model.glb # (você copia) modelo 3D da barragem
+│ └── dashboard.html # Three.js: modelo, cone, vídeo, histórico
+├── history/ # detecções salvas (criado em runtime)
+└── requirements.txt
+
 
 ## 0. Pré-requisitos
 
 - `Processamento-1-Oiticica-textured_model.glb` e `best.pt` em
-  `/home/gladerson/Projetos/dashboard_oiticica` (o instalador copia
-  automaticamente para dentro do projeto de teste).
-- O arquivo de georreferenciamento do ODM/WebODM (`odm_georeferencing_model_geo.txt`
-  ou similar) — necessário pra preencher `server/glb_geo.py` com o offset UTM real.
+  `/home/gladerson/Projetos/dashboard_oiticica` (o instalador copia sozinho).
+- O `odm_georeferencing_model_geo.txt` do projeto ODM/WebODM — dele saem o
+  offset UTM e a zona usados em `server/glb_geo.py`.
 - Node.js/npm (para descomprimir o Draco do `.glb` — ver passo 3).
 
 ## 1. Instalar
 
 ```bash
-cd ~/Projetos
-mkdir -p dashboard_oiticica_test
-# copie os arquivos deste pacote para dentro de ~/Projetos/dashboard_oiticica_test
 cd ~/Projetos/dashboard_oiticica_test
 chmod +x install_desktop.sh
 bash install_desktop.sh
 ```
 
-## 2. Configurar
-
-**Credenciais (`.env`)** — as credenciais da câmera NÃO ficam mais no código.
-Elas vêm de `controller/.env`, que **nunca é commitado** (está no `.gitignore`):
+Instale também o raycasting acelerado (opcional, mas o cone dispara 25 raios
+por atualização — sem isso fica lento em malhas grandes):
 
 ```bash
-cd ~/Projetos/dashboard_oiticica_test/controller
-cp .env.example .env
-nano .env   # preencha CAMERA_IP, ONVIF_USER, ONVIF_PASSWORD, RTSP_URL
+cd server && source venv/bin/activate && pip install embreex && deactivate
 ```
 
-`controller/config.py` lê essas variáveis automaticamente e falha com uma
-mensagem clara se alguma obrigatória estiver faltando.
+## 2. Configurar
 
-**`server/glb_geo.py`** — preencha com os dados do seu arquivo de
-georreferenciamento ODM:
+### Credenciais (`controller/.env`)
+
+Nunca ficam no código nem no Git:
+
+```bash
+cd controller
+cp .env.example .env
+nano .env   # CAMERA_IP, ONVIF_USER, ONVIF_PASSWORD, RTSP_URL
+```
+
+`config.py` falha com mensagem clara se faltar alguma obrigatória.
+
+### Georreferenciamento (`server/glb_geo.py`)
 
 ```python
 UTM_ZONE = 24
 UTM_HEMISPHERE_SOUTH = True
-GEO_OFFSET_X = 707543.0    # linha 2, valor 1, do odm_georeferencing_model_geo.txt
+GEO_OFFSET_X = 707543.0    # linha 2, valor 1 do odm_georeferencing_model_geo.txt
 GEO_OFFSET_Y = 9319434.0   # linha 2, valor 2
 GEO_OFFSET_Z = 0.0         # se o arquivo só tiver X e Y, deixe 0.0
 MODEL_UP_AXIS = "Z"        # exports de fotogrametria/ODM costumam ser Z-up
 ```
 
-## 3. Preparar o modelo (remover compressão Draco)
+## 3. Preparar o modelo (remover Draco)
 
-O `.glb` de fotogrametria normalmente vem comprimido com Draco. O Three.js no
-navegador decodifica isso sem problema, mas o `trimesh` (Python, usado pelo
-server para o raycasting real) tem histórico de incompatibilidade de versão
-com bibliotecas de decode Draco. A solução mais robusta é descomprimir o
-arquivo uma vez, fora do Python:
+O `.glb` de fotogrametria vem comprimido com Draco. O Three.js decodifica no
+navegador sem problema, mas o `trimesh` (usado no raycasting) tem histórico de
+incompatibilidade com os decoders. Descomprima uma vez, fora do Python:
 
 ```bash
-cd ~/Projetos/dashboard_oiticica_test/server
-cp /home/gladerson/Projetos/dashboard_oiticica/Processamento-1-Oiticica-textured_model.glb static/model.glb
+cd server
+cp ~/Projetos/dashboard_oiticica/Processamento-1-Oiticica-textured_model.glb static/model.glb
 bash prepare_model.sh
 ```
 
-Isso gera um backup do original comprimido (`static/model_original_draco.glb`)
-e sobrescreve `static/model.glb` com uma versão sem Draco, que tanto o
-`trimesh` quanto o Three.js leem sem depender de nenhum decoder extra.
-
 ## 4. Rodar
 
-Dois terminais:
+```bash
+# Terminal 1 — server
+cd server && source venv/bin/activate && python server.py
+
+# Terminal 2 — controller
+cd controller && source venv/bin/activate && python controller.py
+```
+
+Dashboard em **http://127.0.0.1:8001**
+
+Para acessar de outra máquina, diga ao navegador onde está o controller:
 
 ```bash
-# Terminal 1 - server (dashboard)
-cd ~/Projetos/dashboard_oiticica_test/server
-source venv/bin/activate
-python server.py
+CONTROLLER_PUBLIC_URL=http://IP_DO_RASPBERRY:8090 python server.py
 ```
+
+## 5. Como funciona
+
+### Movimentação PTZ
+
+Os botões usam **ContinuousMove**: a câmera move enquanto o botão está
+pressionado e para ao soltar (setas do teclado e `+`/`−` também funcionam).
+
+O controller não executa comandos direto nos endpoints. Eles registram uma
+**intenção de movimento com prazo de validade**, e uma única thread
+(`PTZMotion`) a compara com o estado aplicado e emite ContinuousMove/Stop.
+Isso elimina a corrida entre `/continuous` e `/stop` que fazia a câmera girar
+sem parar, e garante parada automática (~800ms) se o navegador travar, a aba
+fechar ou a rede cair. O dashboard renova a intenção a cada 300ms.
+
+O dashboard fala **direto** com o controller na 8090 (CORS liberado), com
+fallback automático pelo proxy do server se isso falhar.
+
+### Cone de visão
+
+O server dispara um leque de raios reais contra a malha (1 central + 24 no
+anel do campo de visão) e devolve o contorno onde a visão encosta no objeto.
+O cone no dashboard termina exatamente na parede e se molda ao relevo dela,
+em vez de flutuar. A abertura do cone acompanha o zoom.
+
+### Detecções
+
+Quando o YOLO detecta rachadura, o controller envia imagem original + máscara
+e a pose PTZ. O server salva em `server/history/` e transmite por WebSocket.
+Inferência é pulada enquanto a câmera está em movimento (evita frame borrado
+e pose imprecisa).
+
+No painel de histórico, clicar numa detecção revela dois botões:
+
+- **Abrir** — modal com a máscara, alternando para a imagem original
+- **Localizar** — devolve a câmera física à pose exata da detecção e leva a
+  visão 3D até o ponto, marcado em laranja pulsante
+
+O `/api/locate` **recalcula** o ponto 3D a partir do pan/tilt/zoom gravados,
+então detecções antigas se corrigem sozinhas se a calibração mudar.
+
+### Close por seleção (Shift + arrastar)
+
+Segure Shift e arraste um retângulo sobre o modelo 3D. O dashboard faz
+raycasting em 9 pontos da região, manda centro e cantos ao `/api/aim`, e o
+server converte em pan/tilt (inverso exato da rotação) e no zoom cujo
+meio-ângulo cobre a seleção com 30% de folga.
+
+## 6. Calibração
+
+### Sentido do pan/tilt
+
+O ONVIF não padroniza para que lado o pan positivo gira. Se o cone andar
+espelhado em relação à câmera real, inverta sem editar código:
 
 ```bash
-# Terminal 2 - controller (câmera)
-cd ~/Projetos/dashboard_oiticica_test/controller
-source venv/bin/activate
-python controller.py
+PAN_SIGN=1 python server.py     # padrão é -1
+TILT_SIGN=-1 python server.py   # se subir/descer estiver trocado
 ```
 
-Abra o dashboard em: **http://127.0.0.1:8001**
+### Curso mecânico em graus
 
-No log de inicialização do `server.py`, confira:
+Esta câmera reporta pan/tilt normalizados (−1..1), o que diz "estou no meio do
+curso" mas não quantos graus é o curso inteiro. Enquanto não for medido,
+assume-se ±180°/±90° — um palpite que gera erro angular crescente longe do
+centro. É propriedade da câmera, não do local: **pode ser medido em bancada**.
 
+```bash
+cd controller && source venv/bin/activate
+python calibrar_curso.py   # com o controller.py PARADO
 ```
->> Malha carregada: N vértices, M faces.
->> Bounding box real do modelo (.glb), coordenadas locais: min=[...] max=[...]
->> Câmera (lat/lon fornecidos) convertida para X/Y local: (X, Y)
+
+Anote `PAN_DEG_RANGE`/`TILT_DEG_RANGE` no `.env`.
+
+### Altura da câmera
+
+O server tenta três estratégias, nesta ordem:
+
+1. `CAMERA_ABS_ALT` — elevação absoluta da lente, se você souber
+2. Raio vertical contra a malha, quando a câmera está sobre a área reconstruída
+3. Percentil 8 das alturas dos vértices vizinhos (estimativa do terreno)
+
+Hoje cai na estratégia 3, porque a câmera fica ~36m além da borda norte do
+modelo. **Isso é um palpite**: a estimativa (87.07) praticamente coincide com o
+ponto de malha mais próximo (86.63), o que pode significar que ambos estão
+ancorados no topo da estrutura em vez do chão. Erro aqui vira erro sistemático
+de tilt. Ao instalar na barragem, meça a elevação real e defina:
+
+```bash
+CAMERA_ABS_ALT=88.5 python server.py
 ```
 
-Se o X/Y da câmera cair bem fora do bounding box do modelo, e a "distância ao
-ponto mais próximo" impressa for grande, vale conferir se a lat/lon da câmera
-e o offset de georreferenciamento realmente correspondem à mesma área/projeto
-do `.glb` atual.
+## 7. Variáveis de ambiente
 
-## 5. O que esperar
+**Controller** (`controller/.env`) — obrigatórias: `CAMERA_IP`, `ONVIF_USER`,
+`ONVIF_PASSWORD`, `RTSP_URL`.
 
-- O controller conecta na câmera, detecta as faixas reais de pan/tilt/zoom do
-  ONVIF (normalizado ou em graus — não é chutado) e manda a câmera para o
-  ponto zero (`AbsoluteMove` para `x=0,y=0`, que é o zero matemático das
-  coordenadas ONVIF — diferente de `GotoHomePosition`, que é um preset salvo
-  na câmera e pode apontar para qualquer lugar).
-- A cada ~1s, o controller envia `coord_p/coord_t/coord_z` para o server, que
-  calcula (via raycasting real contra o `.glb`) onde esse apontamento
-  intercepta a parede, e atualiza o cone no dashboard.
-- Os botões de movimentação atualizam o cone/telemetria imediatamente com a
-  resposta do próprio clique (não esperam o próximo ciclo de telemetria).
-- Quando o YOLO detecta rachadura (`conf=0.558`), o controller manda a imagem
-  original + a máscara de segmentação; o server salva em `server/history/` e
-  aparece no painel de histórico do dashboard.
+| Variável | Padrão | Para quê |
+|---|---|---|
+| `SERVER_URL` | `http://127.0.0.1:8001` | onde está o server |
+| `PAN_DEG_RANGE` / `TILT_DEG_RANGE` | 180 / 90 | curso mecânico (ver §6) |
+| `PTZ_MOTION_TICK_SECONDS` | 0.05 | latência de parada da câmera |
+| `PTZ_POLL_INTERVAL_SECONDS` | 1.0 | telemetria parada |
+| `PTZ_POLL_FAST_SECONDS` | 0.15 | telemetria em movimento |
+| `PTZ_SEPARATE_CONNECTIONS` | true | conexão ONVIF dedicada à telemetria |
+| `YOLO_CONF_THRESHOLD` | 0.558 | confiança mínima |
+| `DETECTION_COOLDOWN_SECONDS` | 5 | intervalo mínimo entre alertas |
 
-## 6. Migrando para o Raspberry Pi depois
+**Server** (variáveis de ambiente diretas):
 
-- `controller/` roda igual, mudando `SERVER_URL` em `config.py` para o IP
-  real do servidor.
-- `CONTROLLER_URL` em `server/server.py` passa a ser o IP do Raspberry.
-- Se o Raspberry usar Hailo-8L, troque o carregamento do modelo em
-  `detection_loop()` pela stack HEF+ONNX em vez do `ultralytics.YOLO` puro.
+| Variável | Padrão | Para quê |
+|---|---|---|
+| `CONTROLLER_URL` | `http://127.0.0.1:8090` | server → controller |
+| `CONTROLLER_PUBLIC_URL` | = acima | navegador → controller |
+| `CAMERA_ABS_ALT` | — | elevação absoluta da lente |
+| `PAN_SIGN` / `TILT_SIGN` | -1 / 1 | sentido de rotação |
+| `CONE_HALF_ANGLE_WIDE` / `_TELE` | 18 / 2 | abertura do cone em graus |
+| `CONE_RING_RAYS` | 24 | raios do anel (16 é mais leve) |
 
-## 7. Pontos para validar/ajustar
+## 8. Migrando para o Raspberry Pi
 
-- **Convenção de pan=0/tilt=0**: calculada automaticamente como o vetor até o
-  ponto real mais próximo da malha a partir da posição da câmera — não é um
-  ângulo chutado. Confirme visualmente se bate com a orientação física real.
-- **Curso mecânico do pan/tilt** em graus: assumido ±180°/±90° quando o ONVIF
-  reporta valores normalizados (-1..1). Ajuste `pan_deg_range`/`tilt_deg_range`
-  em `controller/onvif_ptz.py` se sua câmera tiver outro curso mecânico.
-- **Altura da câmera quando ela está fora da área XY do modelo**: o server usa
-  o ponto real mais próximo da malha como referência de altura (não uma
-  aproximação numérica) e soma os 7m. Se essa distância impressa no log for
-  grande, verifique a lat/lon e o offset de georreferenciamento.
+- `controller/` roda igual; ajuste `SERVER_URL` no `.env`.
+- No server, defina `CONTROLLER_URL` e `CONTROLLER_PUBLIC_URL` com o IP do Pi.
+- Com Hailo-8L, troque o `ultralytics.YOLO` do `detection_loop()` pela stack
+  HEF + ONNX (backbone na NPU, cabeçalho no CPU).
 
-## 8. Credenciais e repositório Git
+## 9. Credenciais e Git
 
-As credenciais da câmera vivem só em `controller/.env` (fora do Git). Antes
-de dar `git push`, confirme que ele está mesmo sendo ignorado:
+O repositório é **público**, então a regra é simples: nada de segredo entra no
+Git, nem uma vez. As credenciais vivem só em `controller/.env`, ignorado pelo
+`.gitignore`. Confirme antes de qualquer push:
 
 ```bash
 git check-ignore -v controller/.env
-# deve imprimir a linha do .gitignore que está barrando o arquivo
+git log --all -p -S "ONVIF_PASSWORD=" -- . | grep -i "ONVIF_PASSWORD="
+# só deve aparecer o placeholder do .env.example
 ```
 
-Repositório **privado** no GitHub já reduz bastante o risco de exposição,
-mas isso sozinho não substitui manter segredos fora do histórico do Git:
-mesmo privado, um repositório pode ser transferido, ter colaboradores
-adicionados, ou virar público por engano no futuro -- e qualquer coisa que
-já foi commitada uma vez continua no histórico, mesmo que você delete o
-arquivo depois. Por isso o `.env` real nunca entra no `git add`; só o
-`.env.example` (sem valores reais) é versionado.
+Se uma senha real escapar para um commit, **troque a senha na câmera** — é
+mais confiável do que reescrever o histórico, porque num repositório público
+o valor já pode ter sido lido ou clonado.
 
-Se em algum momento uma senha real acabar indo para um commit por engano,
-trocar a senha na câmera é mais simples e confiável do que tentar reescrever
-o histórico do Git.
+Como o repositório é público, considere também que a lat/lon da câmera em
+`server/server.py` fica exposta. Se isso for indesejável, mova para variável
+de ambiente.
 
+## 10. Pendências conhecidas
+
+- **Curso mecânico não calibrado** — erro angular fora do centro (§6)
+- **Altura da câmera estimada** — erro sistemático de tilt (§6)
+- **Sentido do pan** — corrigido com `PAN_SIGN=-1`, confirmar em campo
+- `diagnosticar_terreno.py` e `verificar.sh` ainda não versionados
