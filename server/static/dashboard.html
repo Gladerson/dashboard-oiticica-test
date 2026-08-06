@@ -77,9 +77,39 @@
   #modal { position:fixed; inset:0; background:rgba(0,0,0,.8); display:none; align-items:center; justify-content:center; z-index:10; }
   #modal.open { display:flex; }
   #modal img { max-width:80vw; max-height:70vh; border-radius:6px; }
+
+  /* ==================== TEMA CLARO / ESCURO ==================== */
+  /* O canvas do Three.js fica transparente, então o fundo do viewport
+     passa a vir do CSS e acompanha o tema automaticamente. */
+  #viewport { background: var(--bg); }
+
+  body.tema-claro {
+    --bg:     #f5f7fa;
+    --panel:  #ffffff;
+    --border: #d5dbe5;
+    --text:   #16202f;
+    --muted:  #5a6a85;
+    --accent: #1668c4;
+    --danger: #c62828;
+  }
+  body.tema-claro #overlay-badge { background: rgba(255,255,255,.78); color:#3b4a63; }
+  body.tema-claro #video-feed    { background:#e9edf3; }
+
+  #btn-tema {
+    position: fixed; left: 12px; bottom: 12px; z-index: 20;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 7px 11px; font-size: 12px; line-height: 1;
+    font-family: inherit; cursor: pointer;
+  }
+  #btn-tema:hover { border-color: var(--accent); }
+  /* ============================================================= */
+
 </style>
 </head>
 <body>
+<button id="btn-tema" type="button">Tema claro</button>
+
 <div id="app">
   <div id="viewport">
     <div id="overlay-badge">Barragem Oiticica &mdash; Shift + arrastar para dar close</div>
@@ -154,12 +184,12 @@ let usarProxy = false;        // vira true se falar direto com o controller falh
 // ---------------------------------------------------------------------
 const viewport = document.getElementById("viewport");
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b1220);
+// scene.background definido via CSS (#viewport) para acompanhar o tema
 
 const camera3d = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport.clientHeight, 0.1, 5000);
 camera3d.position.set(30, 30, 30);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(viewport.clientWidth, viewport.clientHeight);
 viewport.appendChild(renderer.domElement);
@@ -841,6 +871,33 @@ async function loadHistory() {
 
 init();
 loadHistory();
+</script>
+
+<script>
+  // ---- Alternador de tema claro/escuro (independente do modulo Three.js) ----
+  (function () {
+    const KEY = "oiticica_tema";
+    const btn = document.getElementById("btn-tema");
+
+    function aplicar(tema) {
+      const claro = tema === "claro";
+      document.body.classList.toggle("tema-claro", claro);
+      btn.textContent = claro ? "Tema escuro" : "Tema claro";
+      btn.title = claro
+        ? "Voltar para o tema escuro"
+        : "Tema claro - melhor para prints em relatorio";
+    }
+
+    let atual = "escuro";
+    try { atual = localStorage.getItem(KEY) || "escuro"; } catch (e) {}
+    aplicar(atual);
+
+    btn.addEventListener("click", () => {
+      atual = document.body.classList.contains("tema-claro") ? "escuro" : "claro";
+      aplicar(atual);
+      try { localStorage.setItem(KEY, atual); } catch (e) {}
+    });
+  })();
 </script>
 </body>
 </html>
