@@ -95,6 +95,19 @@
   body.tema-claro #overlay-badge { background: rgba(255,255,255,.78); color:#3b4a63; }
   body.tema-claro #video-feed    { background:#e9edf3; }
 
+  /* Elementos com fundo escuro fixo: precisam de par claro explicito,
+     senao ficam texto escuro sobre fundo escuro no tema claro. */
+  body.tema-claro #ptz-controls button:hover,
+  body.tema-claro #zoom-row button:hover,
+  body.tema-claro .history-actions button:hover  { background:#e8eef7; }
+  body.tema-claro #ptz-controls button.active,
+  body.tema-claro #zoom-row button.active        { background:#d6e6fb; }
+  body.tema-claro #hint kbd,
+  body.tema-claro #modal button                  { background:#eef2f8; }
+  body.tema-claro #status-toast                  { background:rgba(255,255,255,.94); }
+  body.tema-claro .history-item img              { background:#e9edf3; }
+  body.tema-claro .history-actions .localizar    { border-color:#7fa6d9; }
+
   #btn-tema {
     position: fixed; left: 12px; bottom: 12px; z-index: 20;
     background: var(--panel); color: var(--text);
