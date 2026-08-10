@@ -14,8 +14,10 @@
 import base64
 import json
 import os
+import shutil
+import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import requests
@@ -42,6 +44,27 @@ CONTROLLER_PUBLIC_URL = os.getenv("CONTROLLER_PUBLIC_URL", CONTROLLER_URL)
 HISTORY_DIR = "history"
 HISTORY_INDEX = os.path.join(HISTORY_DIR, "index.json")
 
+# --- Deduplicacao / ciclo de vida das deteccoes -----------------------------
+# Subpasta (dentro de history/) onde vao as imagens marcadas como falso
+# positivo, separadas para retreino/refino do modelo.
+FALSOS_SUBDIR = "falsos_positivos"
+FALSOS_DIR = os.path.join(HISTORY_DIR, FALSOS_SUBDIR)
+
+# Raio, em METROS REAIS do modelo, dentro do qual duas deteccoes sao
+# consideradas a MESMA rachadura. Comparacao feita no ponto 3D de impacto
+# calculado por raycasting -- nao e aproximacao angular.
+DEDUP_RAIO_M = float(os.getenv("DEDUP_RAIO_M", "1.5"))
+
+# Fallback usado SO quando nenhuma das duas deteccoes intercepta a malha
+# (nao ha ponto 3D para comparar): tolerancia angular em graus.
+DEDUP_ANG_DEG = float(os.getenv("DEDUP_ANG_DEG", "1.5"))
+
+# Depois de "Reconhecer"/"Falso positivo", o mesmo ponto fica em rearme por
+# este tempo. Passado ele, uma nova deteccao no mesmo lugar volta a abrir
+# alerta -- e exatamente o sinal de que o problema nao foi resolvido.
+# Coloque 0 para permitir reabertura imediata.
+REARME_SEGUNDOS = float(os.getenv("REARME_SEGUNDOS", "600"))
+
 # --- Parâmetros do cone -----------------------------------------------------
 CONE_HALF_ANGLE_WIDE = float(os.getenv("CONE_HALF_ANGLE_WIDE", "18.0"))  # zoom 0%
 CONE_HALF_ANGLE_TELE = float(os.getenv("CONE_HALF_ANGLE_TELE", "2.0"))   # zoom 100%
@@ -49,9 +72,78 @@ CONE_RING_RAYS = int(os.getenv("CONE_RING_RAYS", "24"))
 CONE_MAX_RANGE = float(os.getenv("CONE_MAX_RANGE", "250.0"))
 
 os.makedirs(HISTORY_DIR, exist_ok=True)
+os.makedirs(FALSOS_DIR, exist_ok=True)
 if not os.path.exists(HISTORY_INDEX):
     with open(HISTORY_INDEX, "w") as f:
         json.dump([], f)
+
+# ----------------------------------------------------------------------------
+# Indice do historico: leitura/escrita seguras
+# ----------------------------------------------------------------------------
+_history_lock = threading.Lock()
+
+
+def _ler_indice():
+    try:
+        with open(HISTORY_INDEX, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _escrever_indice(dados):
+    """Escrita atomica: grava num temporario no MESMO diretorio e troca com
+    os.replace(). Se o processo morrer no meio, o index.json antigo continua
+    intacto em vez de ficar truncado."""
+    tmp = HISTORY_INDEX + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(dados, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, HISTORY_INDEX)
+
+
+def _agora():
+    return datetime.now(timezone.utc)
+
+
+def _parse_ts(texto):
+    if not texto:
+        return None
+    try:
+        dt = datetime.fromisoformat(texto)
+    except (TypeError, ValueError):
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _delta_angular(a, b):
+    """Diferenca entre dois angulos em graus, normalizada para [-180, 180]
+    (evita que -179 e +179 sejam tratados como 358 graus de distancia)."""
+    d = (float(a) - float(b) + 180.0) % 360.0 - 180.0
+    return abs(d)
+
+
+def _mesmo_ponto(entrada, hit_point, pan, tilt):
+    """True se 'entrada' aponta para o mesmo lugar fisico da nova deteccao.
+
+    Prioridade absoluta para a distancia 3D real (metros) entre os pontos de
+    impacto calculados por raycasting contra a malha. A comparacao angular so
+    entra quando NENHUM dos dois intercepta o modelo -- ai nao existe ponto
+    3D para comparar."""
+    hp = entrada.get("hit_point")
+    if hit_point is not None and hp is not None:
+        d = float(np.linalg.norm(np.asarray(hp, dtype=float)
+                                 - np.asarray(hit_point, dtype=float)))
+        return d <= DEDUP_RAIO_M
+    if hit_point is None and hp is None:
+        return (_delta_angular(entrada.get("coord_p", 0.0), pan) <= DEDUP_ANG_DEG
+                and _delta_angular(entrada.get("coord_t", 0.0), tilt) <= DEDUP_ANG_DEG)
+    return False
+
+
+def _status(entrada):
+    return entrada.get("status") or "pendente"
 
 http = requests.Session()
 
@@ -240,49 +332,167 @@ async def telemetry(payload: TelemetryPayload):
 
 @app.post("/api/detection")
 async def detection(payload: DetectionPayload):
+    """Registra uma deteccao NOVA.
+
+    Se a camera continuar apontando para uma rachadura ja alertada e ainda
+    nao tratada, nao criamos outro alerta: apenas incrementamos o contador de
+    reincidencia da entrada existente. Isso evita a enxurrada de alertas
+    identicos e tambem o crescimento inutil do disco com fotos repetidas.
+    """
     result = await run_in_threadpool(
         compute_view, payload.coord_p, payload.coord_t, payload.coord_z
     )
-    det_id = str(uuid.uuid4())
-    ts = payload.timestamp or datetime.now(timezone.utc).isoformat()
+    hit = result["hit_point"]
+    agora = _agora()
+    ts = payload.timestamp or agora.isoformat()
 
-    image_path = None
-    mask_path = None
-    if payload.image_b64:
-        image_path = f"{det_id}_orig.jpg"
-        with open(os.path.join(HISTORY_DIR, image_path), "wb") as f:
-            f.write(base64.b64decode(payload.image_b64))
-    if payload.mask_image_b64:
-        mask_path = f"{det_id}_mask.jpg"
-        with open(os.path.join(HISTORY_DIR, mask_path), "wb") as f:
-            f.write(base64.b64decode(payload.mask_image_b64))
+    evento = None
+    entrada_nova = None
 
-    entry = {
-        "id": det_id,
-        "timestamp": ts,
-        "coord_p": payload.coord_p,
-        "coord_t": payload.coord_t,
-        "coord_z": payload.coord_z,
-        "hit_point": result["hit_point"],
-        "image": image_path,
-        "mask_image": mask_path,
-    }
+    with _history_lock:
+        dados = _ler_indice()
+        vizinhas = [e for e in dados
+                    if _mesmo_ponto(e, hit, payload.coord_p, payload.coord_t)]
 
-    with open(HISTORY_INDEX, "r+") as f:
-        data = json.load(f)
-        data.insert(0, entry)
-        f.seek(0)
-        json.dump(data, f, indent=2)
-        f.truncate()
+        # (1) Ja existe alerta ABERTO nesse ponto -> nao duplica.
+        pendente = next((e for e in vizinhas if _status(e) == "pendente"), None)
 
-    await manager.broadcast({"type": "detection", "cone": result["cone"], **entry})
-    return {"status": "ok", "id": det_id, "hit_point": result["hit_point"]}
+        # (2) Ponto tratado ha pouco -> periodo de rearme.
+        em_rearme = None
+        if pendente is None and REARME_SEGUNDOS > 0:
+            limite = agora - timedelta(seconds=REARME_SEGUNDOS)
+            for e in vizinhas:
+                dt = _parse_ts(e.get("resolvido_em"))
+                if dt is not None and dt > limite:
+                    em_rearme = e
+                    break
+
+        if pendente is not None:
+            pendente["ultima_vez"] = ts
+            pendente["repeticoes"] = int(pendente.get("repeticoes", 1)) + 1
+            _escrever_indice(dados)
+            evento = {
+                "type": "detection_repeat",
+                "id": pendente["id"],
+                "ultima_vez": ts,
+                "repeticoes": pendente["repeticoes"],
+            }
+            resposta = {"status": "duplicada", "id": pendente["id"], "hit_point": hit}
+
+        elif em_rearme is not None:
+            resposta = {"status": "em_rearme", "id": em_rearme["id"], "hit_point": hit}
+
+        else:
+            det_id = str(uuid.uuid4())
+            image_path = None
+            mask_path = None
+            if payload.image_b64:
+                image_path = f"{det_id}_orig.jpg"
+                with open(os.path.join(HISTORY_DIR, image_path), "wb") as f:
+                    f.write(base64.b64decode(payload.image_b64))
+            if payload.mask_image_b64:
+                mask_path = f"{det_id}_mask.jpg"
+                with open(os.path.join(HISTORY_DIR, mask_path), "wb") as f:
+                    f.write(base64.b64decode(payload.mask_image_b64))
+
+            # Reincidencia num ponto ja julgado como falso positivo: a
+            # marcacao 3D nasce com cor diferente no dashboard.
+            reincide_fp = any(_status(e) == "falso_positivo" for e in vizinhas)
+
+            entrada_nova = {
+                "id": det_id,
+                "timestamp": ts,
+                "ultima_vez": ts,
+                "repeticoes": 1,
+                "coord_p": payload.coord_p,
+                "coord_t": payload.coord_t,
+                "coord_z": payload.coord_z,
+                "hit_point": hit,
+                "image": image_path,
+                "mask_image": mask_path,
+                "status": "pendente",
+                "acao": None,
+                "resolvido_em": None,
+                "reincide_falso_positivo": reincide_fp,
+            }
+            dados.insert(0, entrada_nova)
+            _escrever_indice(dados)
+            evento = {"type": "detection", "cone": result["cone"], **entrada_nova}
+            resposta = {"status": "ok", "id": det_id, "hit_point": hit}
+
+    if evento is not None:
+        await manager.broadcast(evento)
+    return resposta
 
 
 @app.get("/api/history")
 def history():
-    with open(HISTORY_INDEX) as f:
-        return JSONResponse(json.load(f))
+    return JSONResponse(_ler_indice())
+
+
+# ----------------------------------------------------------------------------
+# Tratamento do alerta: reconhecer ou marcar como falso positivo
+# ----------------------------------------------------------------------------
+class ReconhecerPayload(BaseModel):
+    acao: str
+
+
+def _resolver(det_id, mutacao):
+    """Aplica 'mutacao' na entrada e grava o indice, tudo sob o mesmo lock.
+    Retorna a entrada ja atualizada (copia) ou None se o id nao existir."""
+    with _history_lock:
+        dados = _ler_indice()
+        entrada = next((e for e in dados if e.get("id") == det_id), None)
+        if entrada is None:
+            return None
+        mutacao(entrada)
+        entrada["resolvido_em"] = _agora().isoformat()
+        _escrever_indice(dados)
+        return dict(entrada)
+
+
+@app.post("/api/detection/{det_id}/reconhecer")
+async def reconhecer(det_id: str, payload: ReconhecerPayload):
+    acao = (payload.acao or "").strip()
+    if not acao:
+        return JSONResponse({"error": "descreva a acao tomada"}, status_code=400)
+
+    def muta(e):
+        e["status"] = "reconhecida"
+        e["acao"] = acao
+
+    entrada = _resolver(det_id, muta)
+    if entrada is None:
+        return JSONResponse({"error": "deteccao nao encontrada"}, status_code=404)
+
+    await manager.broadcast({"type": "detection_update", **entrada})
+    return {"status": "ok", **entrada}
+
+
+@app.post("/api/detection/{det_id}/falso_positivo")
+async def falso_positivo(det_id: str):
+    """Marca como falso positivo e MOVE as imagens para history/falsos_positivos/,
+    separando o material para refino posterior do modelo."""
+    def muta(e):
+        for campo in ("image", "mask_image"):
+            nome = e.get(campo)
+            if not nome or nome.startswith(FALSOS_SUBDIR + "/"):
+                continue
+            origem = os.path.join(HISTORY_DIR, nome)
+            destino_rel = f"{FALSOS_SUBDIR}/{os.path.basename(nome)}"
+            destino = os.path.join(HISTORY_DIR, destino_rel)
+            if os.path.exists(origem):
+                shutil.move(origem, destino)
+                e[campo] = destino_rel
+        e["status"] = "falso_positivo"
+        e["acao"] = None
+
+    entrada = _resolver(det_id, muta)
+    if entrada is None:
+        return JSONResponse({"error": "deteccao nao encontrada"}, status_code=404)
+
+    await manager.broadcast({"type": "detection_update", **entrada})
+    return {"status": "ok", **entrada}
 
 
 # ----------------------------------------------------------------------------
