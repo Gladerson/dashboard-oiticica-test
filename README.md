@@ -258,3 +258,32 @@ de ambiente.
 - **Altura da câmera estimada** — erro sistemático de tilt (§6)
 - **Sentido do pan** — corrigido com `PAN_SIGN=-1`, confirmar em campo
 - `diagnosticar_terreno.py` e `verificar.sh` ainda não versionados
+## 9. Ciclo de vida dos alertas
+
+Cada detecção nasce como `pendente` e ganha uma marcação fixa no modelo 3D.
+Enquanto ela estiver pendente, a câmera pode continuar apontando para a mesma
+fissura sem gerar alertas novos: o server compara a **distância 3D real** entre
+os pontos de impacto (raycasting) e apenas incrementa o contador de
+reincidência da entrada existente.
+
+No alerta (botão "Abrir") existem duas ações:
+
+- **Reconhecer** — abre uma caixa de diálogo para descrever a ação tomada. A
+  entrada recebe um check verde no histórico, o texto fica registrado junto com
+  a data, e a marcação 3D some.
+- **Falso positivo** — a entrada recebe o selo amarelo "FALSO POSITIVO", a
+  marcação 3D some e as imagens são movidas para `server/history/falsos_positivos/`,
+  separadas para refino posterior do modelo.
+
+Tratar um alerta **não impede** que ele reapareça: passado o rearme, uma nova
+detecção no mesmo ponto abre um alerta novo — que é justamente o sinal de que o
+problema não foi resolvido. Se o ponto já tinha sido julgado falso positivo, a
+nova marcação nasce em **amarelo** em vez de vermelho.
+
+Parâmetros (variáveis de ambiente do server, todas opcionais):
+
+| Variável | Padrão | O que faz |
+|---|---|---|
+| `DEDUP_RAIO_M` | `1.5` | Raio em metros dentro do qual duas detecções são a mesma fissura |
+| `DEDUP_ANG_DEG` | `1.5` | Tolerância angular usada só quando não há ponto 3D nos dois lados |
+| `REARME_SEGUNDOS` | `600` | Tempo mínimo antes de um ponto tratado poder reabrir alerta (`0` = imediato) |
