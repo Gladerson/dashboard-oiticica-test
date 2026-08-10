@@ -51,6 +51,45 @@
   .history-actions button:hover { background:#1a2740; border-color:var(--accent); }
   .history-actions button:disabled { opacity:.45; cursor:wait; }
   .history-actions .localizar { border-color:#4a6fa5; }
+  .history-actions { flex-wrap:wrap; }
+  .history-actions .reconhecer { border-color:#3f9c5c; }
+  .history-actions .falso      { border-color:#a8871f; }
+
+  /* ---- Estado do alerta no historico ---- */
+  .tag { display:inline-block; padding:0 5px; border-radius:4px; font-size:10px;
+         font-weight:700; letter-spacing:.04em; }
+  .tag-ok { color:#4ade80; border:1px solid #4ade80; }
+  .tag-fp { color:#ffd24d; border:1px solid #ffd24d; }
+  .tag-re { color:#ffa64d; border:1px solid #ffa64d; }
+  .history-entry.resolvida .history-item img { opacity:.5; }
+  .history-item .acao { color:var(--muted); font-style:italic; }
+
+  /* ---- Caixa de dialogo da acao tomada ---- */
+  #modal-reconhecer { border-color:#3f9c5c; }
+  #modal-falso      { border-color:#a8871f; }
+  #modal-acao { position:fixed; inset:0; background:rgba(0,0,0,.8); display:none;
+                align-items:center; justify-content:center; z-index:11; }
+  #modal-acao.open { display:flex; }
+  #modal-acao .box { background:var(--panel); border:1px solid var(--border);
+                     padding:18px; border-radius:10px; width:min(460px, 92vw); }
+  #modal-acao h3 { margin:0 0 6px; font-size:14px; }
+  #modal-acao p  { margin:0 0 10px; font-size:12px; color:var(--muted); }
+  #modal-acao textarea {
+    width:100%; min-height:96px; resize:vertical; padding:8px;
+    background:var(--bg); color:var(--text);
+    border:1px solid var(--border); border-radius:6px;
+    font-family:inherit; font-size:13px;
+  }
+  #modal-acao .acoes { display:flex; gap:8px; margin-top:10px; justify-content:flex-end; }
+  #modal-acao button {
+    background:#1a2740; border:1px solid var(--border); color:var(--text);
+    border-radius:6px; padding:7px 16px; cursor:pointer; font-size:13px;
+  }
+  #modal-acao button:disabled { opacity:.45; cursor:wait; }
+  body.tema-claro #modal-acao button { background:#eef2f8; }
+  body.tema-claro .tag-ok { color:#12703a; border-color:#12703a; }
+  body.tema-claro .tag-fp { color:#8a6b00; border-color:#b08a00; }
+  body.tema-claro .tag-re { color:#a05a00; border-color:#c07a1a; }
   #modal .box { background:var(--panel); padding:16px; border-radius:10px; max-width:90vw; }
   #modal .acoes { display:flex; gap:8px; margin-top:10px; justify-content:flex-end; }
   #modal button {
@@ -165,7 +204,22 @@
     <img id="modal-img" src="" />
     <div class="acoes">
       <button id="modal-toggle">Ver original</button>
+      <button id="modal-reconhecer">Reconhecer</button>
+      <button id="modal-falso">Falso positivo</button>
       <button onclick="document.getElementById('modal').classList.remove('open')">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-acao">
+  <div class="box">
+    <h3>Reconhecer detec&ccedil;&atilde;o</h3>
+    <p>Descreva a a&ccedil;&atilde;o tomada ap&oacute;s o reconhecimento. O texto fica
+       registrado no hist&oacute;rico junto com a data.</p>
+    <textarea id="acao-texto" placeholder="Ex.: inspe&ccedil;&atilde;o in loco em 12/08, fissura medida (0,3 mm) e inclu&iacute;da no monitoramento mensal."></textarea>
+    <div class="acoes">
+      <button id="acao-cancelar">Cancelar</button>
+      <button id="acao-confirmar">Confirmar</button>
     </div>
   </div>
 </div>
@@ -428,6 +482,64 @@ function buildCameraRig() {
 }
 
 // ---------------------------------------------------------------------
+// Marcacoes FIXAS: uma por deteccao pendente, presa ao ponto 3D real
+// ---------------------------------------------------------------------
+const COR_PENDENTE = 0xff3b3b;        // rachadura aberta (nao tratada)
+const COR_REINCIDENTE = 0xffd24d;     // reincidiu onde ja houve falso positivo
+const marcadoresFixos = new Map();    // id -> { esfera, halo, fase }
+
+function criarMarcadorFixo(id, ponto, cor) {
+  const existente = marcadoresFixos.get(id);
+  if (existente) {
+    existente.esfera.position.set(...ponto);
+    existente.halo.position.set(...ponto);
+    existente.esfera.material.color.setHex(cor);
+    existente.halo.material.color.setHex(cor);
+    return;
+  }
+
+  const esfera = new THREE.Mesh(
+    new THREE.SphereGeometry(0.4, 18, 18),
+    new THREE.MeshBasicMaterial({ color: cor, depthTest: false })
+  );
+  esfera.position.set(...ponto);
+  esfera.renderOrder = 5;
+
+  const halo = new THREE.Mesh(
+    new THREE.RingGeometry(0.8, 1.2, 42),
+    new THREE.MeshBasicMaterial({
+      color: cor, transparent: true, opacity: 0.85,
+      side: THREE.DoubleSide, depthWrite: false, depthTest: false,
+    })
+  );
+  halo.position.set(...ponto);
+  halo.renderOrder = 6;
+
+  worldGroup.add(esfera, halo);
+  marcadoresFixos.set(id, { esfera, halo, fase: Math.random() * 6.283 });
+}
+
+function removerMarcadorFixo(id) {
+  const m = marcadoresFixos.get(id);
+  if (!m) return;
+  worldGroup.remove(m.esfera, m.halo);
+  m.esfera.geometry.dispose(); m.esfera.material.dispose();
+  m.halo.geometry.dispose();   m.halo.material.dispose();
+  marcadoresFixos.delete(id);
+}
+
+function animarMarcadoresFixos() {
+  if (!marcadoresFixos.size) return;
+  for (const m of marcadoresFixos.values()) {
+    m.fase += 0.05;
+    const s = 1 + Math.sin(m.fase) * 0.22;
+    m.halo.scale.setScalar(s);
+    m.halo.material.opacity = 0.45 + 0.4 * (1 - Math.abs(Math.sin(m.fase)));
+    m.halo.lookAt(camera3d.position);   // anel sempre de frente pro observador
+  }
+}
+
+// ---------------------------------------------------------------------
 // Carregamento do modelo
 // ---------------------------------------------------------------------
 function frameOn(box) {
@@ -512,6 +624,7 @@ function animate() {
   controls.update();
   applyConeFrame();
   pulsarMarcador();
+  animarMarcadoresFixos();
   renderer.render(scene, camera3d);
 }
 
@@ -531,7 +644,12 @@ ws.onmessage = (ev) => {
     atualizarTelemetria(msg.coord_p, msg.coord_t, msg.coord_z);
     if (msg.cone) setConeTarget(msg.cone);
   }
-  if (msg.type === "detection") prependHistory(msg);
+  if (msg.type === "detection") {
+    prependHistory(msg);
+    toast("Nova rachadura detectada — veja o histórico.", 4000);
+  }
+  if (msg.type === "detection_update") aplicarAtualizacao(msg);
+  if (msg.type === "detection_repeat") aplicarRepeticao(msg);
 };
 
 function atualizarTelemetria(p, t, z) {
@@ -821,65 +939,228 @@ async function localizarDeteccao(id, btn) {
 // ---------------------------------------------------------------------
 // Histórico
 // ---------------------------------------------------------------------
-function abrirModal(srcMascara, srcOriginal) {
-  const img = document.getElementById("modal-img");
-  const toggle = document.getElementById("modal-toggle");
-  let mostrandoMascara = true;
+const entradas = new Map();   // id -> { entry, wrap }
 
-  img.src = srcMascara || srcOriginal || "";
-  toggle.style.display = (srcMascara && srcOriginal) ? "" : "none";
-  toggle.textContent = "Ver original";
-  toggle.onclick = () => {
-    mostrandoMascara = !mostrandoMascara;
-    img.src = mostrandoMascara ? srcMascara : srcOriginal;
-    toggle.textContent = mostrandoMascara ? "Ver original" : "Ver máscara";
+function statusDe(entry) { return entry.status || "pendente"; }
+
+function escapar(texto) {
+  const d = document.createElement("div");
+  d.textContent = texto == null ? "" : String(texto);
+  return d.innerHTML;
+}
+
+function urlsDe(entry) {
+  return {
+    mascara: entry.mask_image ? `${SERVER_BASE}/history_files/${entry.mask_image}` : "",
+    original: entry.image ? `${SERVER_BASE}/history_files/${entry.image}` : "",
   };
+}
 
-  document.getElementById("modal").classList.add("open");
+// A marcação 3D fixa existe enquanto a detecção estiver PENDENTE.
+// Tratada (reconhecida ou falso positivo) -> some. Se a rachadura voltar a ser
+// detectada depois, o server cria uma entrada nova e a marcação reaparece --
+// em amarelo, quando o ponto já tinha sido julgado falso positivo.
+function sincronizarMarcador(entry) {
+  if (statusDe(entry) === "pendente" && entry.hit_point) {
+    criarMarcadorFixo(
+      entry.id,
+      entry.hit_point,
+      entry.reincide_falso_positivo ? COR_REINCIDENTE : COR_PENDENTE
+    );
+  } else {
+    removerMarcadorFixo(entry.id);
+  }
+}
+
+function tituloDe(entry) {
+  const st = statusDe(entry);
+  if (st === "reconhecida") return '<span class="tag tag-ok">✔ RECONHECIDA</span>';
+  if (st === "falso_positivo") return '<span class="tag tag-fp">FALSO POSITIVO</span>';
+  if (entry.reincide_falso_positivo) {
+    return '<b>Rachadura detectada</b> <span class="tag tag-re">REINCIDENTE</span>';
+  }
+  return "<b>Rachadura detectada</b>";
+}
+
+function renderEntrada(reg) {
+  const { entry, wrap } = reg;
+  const st = statusDe(entry);
+  const { mascara, original } = urlsDe(entry);
+
+  wrap.classList.toggle("resolvida", st !== "pendente");
+  wrap.querySelector("img").src = mascara || original;
+
+  const reps = (entry.repeticoes || 1) > 1 ? ` · visto ${entry.repeticoes}×` : "";
+  const acao = entry.acao
+    ? `<br/><span class="acao">Ação: ${escapar(entry.acao)}</span>` : "";
+
+  wrap.querySelector(".meta").innerHTML = `
+    ${tituloDe(entry)}<br/>
+    p:${entry.coord_p.toFixed(1)}° t:${entry.coord_t.toFixed(1)}° z:${entry.coord_z.toFixed(0)}%${reps}<br/>
+    ${new Date(entry.timestamp).toLocaleString("pt-BR")}${acao}`;
+
+  const pendente = st === "pendente";
+  wrap.querySelector(".reconhecer").style.display = pendente ? "" : "none";
+  wrap.querySelector(".falso").style.display = pendente ? "" : "none";
 }
 
 function prependHistory(entry) {
   const list = document.getElementById("history-list");
-  const srcMascara = entry.mask_image ? `${SERVER_BASE}/history_files/${entry.mask_image}` : "";
-  const srcOriginal = entry.image ? `${SERVER_BASE}/history_files/${entry.image}` : "";
 
   const wrap = document.createElement("div");
   wrap.className = "history-entry";
+  wrap.dataset.id = entry.id;
   wrap.innerHTML = `
     <div class="history-item">
-      <img src="${srcMascara || srcOriginal}" />
-      <div class="meta">
-        <b>Rachadura detectada</b><br/>
-        p:${entry.coord_p.toFixed(1)}° t:${entry.coord_t.toFixed(1)}° z:${entry.coord_z.toFixed(0)}%<br/>
-        ${new Date(entry.timestamp).toLocaleString("pt-BR")}
-      </div>
+      <img />
+      <div class="meta"></div>
     </div>
     <div class="history-actions">
       <button class="abrir">Abrir</button>
       <button class="localizar">Localizar</button>
+      <button class="reconhecer">Reconhecer</button>
+      <button class="falso">Falso positivo</button>
     </div>`;
 
-  // Clicar na imagem/linha revela os dois botões (e recolhe os outros itens)
   wrap.querySelector(".history-item").addEventListener("click", () => {
     const jaAberto = wrap.classList.contains("aberto");
     list.querySelectorAll(".history-entry.aberto").forEach(el => el.classList.remove("aberto"));
     if (!jaAberto) wrap.classList.add("aberto");
   });
 
-  wrap.querySelector(".abrir").addEventListener("click", () => {
-    abrirModal(srcMascara, srcOriginal);
-  });
+  wrap.querySelector(".abrir").addEventListener("click", () => abrirModal(entry.id));
+  wrap.querySelector(".localizar").addEventListener("click",
+    (ev) => localizarDeteccao(entry.id, ev.currentTarget));
+  wrap.querySelector(".reconhecer").addEventListener("click", () => pedirAcao(entry.id));
+  wrap.querySelector(".falso").addEventListener("click",
+    (ev) => marcarFalsoPositivo(entry.id, ev.currentTarget));
 
-  wrap.querySelector(".localizar").addEventListener("click", (ev) => {
-    localizarDeteccao(entry.id, ev.currentTarget);
-  });
-
+  const reg = { entry, wrap };
+  entradas.set(entry.id, reg);
+  renderEntrada(reg);
+  sincronizarMarcador(entry);
   list.prepend(wrap);
+}
+
+// Atualiza uma entrada já exibida (resposta do endpoint ou aviso via WebSocket)
+function aplicarAtualizacao(dados) {
+  const reg = entradas.get(dados.id);
+  if (!reg) return;
+  Object.assign(reg.entry, dados);
+  delete reg.entry.type;
+  renderEntrada(reg);
+  sincronizarMarcador(reg.entry);
+}
+
+// A câmera continua vendo a MESMA rachadura já alertada: o server não cria
+// alerta novo, só avisa que ela segue lá.
+function aplicarRepeticao(msg) {
+  const reg = entradas.get(msg.id);
+  if (!reg) return;
+  reg.entry.repeticoes = msg.repeticoes;
+  reg.entry.ultima_vez = msg.ultima_vez;
+  renderEntrada(reg);
+}
+
+// ---------------------------------------------------------------------
+// Alerta: abrir imagem + reconhecer / falso positivo
+// ---------------------------------------------------------------------
+function abrirModal(id) {
+  const reg = entradas.get(id);
+  if (!reg) return;
+  const { mascara, original } = urlsDe(reg.entry);
+
+  const img = document.getElementById("modal-img");
+  const toggle = document.getElementById("modal-toggle");
+  let mostrandoMascara = true;
+
+  img.src = mascara || original || "";
+  toggle.style.display = (mascara && original) ? "" : "none";
+  toggle.textContent = "Ver original";
+  toggle.onclick = () => {
+    mostrandoMascara = !mostrandoMascara;
+    img.src = mostrandoMascara ? mascara : original;
+    toggle.textContent = mostrandoMascara ? "Ver original" : "Ver máscara";
+  };
+
+  const pendente = statusDe(reg.entry) === "pendente";
+  const btnRec = document.getElementById("modal-reconhecer");
+  const btnFalso = document.getElementById("modal-falso");
+  btnRec.style.display = pendente ? "" : "none";
+  btnFalso.style.display = pendente ? "" : "none";
+  btnRec.onclick = () => pedirAcao(id);
+  btnFalso.onclick = (ev) => marcarFalsoPositivo(id, ev.currentTarget);
+
+  document.getElementById("modal").classList.add("open");
+}
+
+let acaoAlvo = null;
+
+function pedirAcao(id) {
+  acaoAlvo = id;
+  const ta = document.getElementById("acao-texto");
+  ta.value = "";
+  document.getElementById("modal-acao").classList.add("open");
+  setTimeout(() => ta.focus(), 30);
+}
+
+function fecharAcao() {
+  acaoAlvo = null;
+  document.getElementById("modal-acao").classList.remove("open");
+}
+
+document.getElementById("acao-cancelar").addEventListener("click", fecharAcao);
+
+document.getElementById("acao-confirmar").addEventListener("click", async (ev) => {
+  const texto = document.getElementById("acao-texto").value.trim();
+  if (!texto) { toast("Descreva a ação tomada antes de confirmar."); return; }
+  if (!acaoAlvo) { fecharAcao(); return; }
+
+  const btn = ev.currentTarget;
+  const id = acaoAlvo;
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/detection/${id}/reconhecer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ acao: texto }),
+    });
+    const data = await r.json();
+    if (data.error) { toast("Erro: " + data.error, 4000); return; }
+    aplicarAtualizacao(data);
+    fecharAcao();
+    document.getElementById("modal").classList.remove("open");
+    toast("Detecção reconhecida e ação registrada.");
+  } catch (err) {
+    toast("Falha ao registrar o reconhecimento.", 4000);
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function marcarFalsoPositivo(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/detection/${id}/falso_positivo`, { method: "POST" });
+    const data = await r.json();
+    if (data.error) { toast("Erro: " + data.error, 4000); return; }
+    aplicarAtualizacao(data);
+    document.getElementById("modal").classList.remove("open");
+    toast("Falso positivo registrado — imagem separada para retreino.", 3500);
+  } catch (err) {
+    toast("Falha ao registrar o falso positivo.", 4000);
+    console.error(err);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function loadHistory() {
   const items = await fetch(`${SERVER_BASE}/api/history`).then(r => r.json());
-  items.forEach(prependHistory);
+  // O índice vem do mais novo para o mais antigo e prependHistory sempre
+  // insere no topo -- percorrer invertido mantém o mais recente em cima.
+  items.slice().reverse().forEach(prependHistory);
 }
 
 init();
