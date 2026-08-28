@@ -1,0 +1,13 @@
+# Instalar DENTRO do venv criado com --system-site-packages, para que o
+# hailo_platform (instalado via apt) continue visivel.
+numpy<2
+onnxruntime>=1.18.0
+opencv-python>=4.8.0
+onvif-zeep==0.2.12
+requests==2.32.3
+python-dotenv==1.0.1
+fastapi==0.115.4
+uvicorn[standard]==0.32.0
+paho-mqtt<2.0
+contextlib2
+future
