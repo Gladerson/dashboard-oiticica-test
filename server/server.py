@@ -28,7 +28,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from glb_geo import GeoModel, MODEL_UP_AXIS, PAN_SIGN, TILT_SIGN
+# --- Configuracao via server/.env -------------------------------------------
+# Precisa vir ANTES do import do glb_geo: ele le PAN_SIGN/TILT_SIGN na hora
+# em que e importado.
+from pathlib import Path as _Path  # noqa: E402
+
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(_Path(__file__).parent / ".env")
+
+from glb_geo import GeoModel, MODEL_UP_AXIS, PAN_SIGN, TILT_SIGN  # noqa: E402
 
 # --- Posição real da câmera -------------------------------------------------
 CAMERA_LAT = -6.152425824994227
@@ -655,6 +664,25 @@ def ptz_stop():
 @app.post("/api/command/home")
 def send_home():
     return _proxy("/command/home", {})
+
+
+# ----------------------------------------------------------------------------
+# Modo borda: o Raspberry infere localmente e manda so metadados.
+# ----------------------------------------------------------------------------
+import borda  # noqa: E402
+
+borda.instalar(app, borda.Contexto(
+    manager=manager,
+    telemetry=telemetry,
+    detection=detection,
+    TelemetryPayload=TelemetryPayload,
+    DetectionPayload=DetectionPayload,
+    history_dir=HISTORY_DIR,
+    ler_indice=_ler_indice,
+    escrever_indice=_escrever_indice,
+    history_lock=_history_lock,
+    controller_url=CONTROLLER_URL,
+))
 
 
 @app.websocket("/ws")

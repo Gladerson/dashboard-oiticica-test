@@ -155,6 +155,42 @@
     font-family: inherit; cursor: pointer;
   }
   #btn-tema:hover { border-color: var(--accent); }
+
+  /* ---- Telinha sob demanda + estado da borda ---- */
+  /* aspect-ratio e o que mantem a caixa de pe quando o <img> esta sem src.
+     Sem isto o wrapper colapsa e o aviso hachurado fica invisivel. */
+  #video-wrap { position:relative; cursor:pointer; border-radius:8px; overflow:hidden;
+                border:1px solid var(--border); background:#000;
+                aspect-ratio: 16 / 9; width:100%; }
+  #video-wrap.ativo { border-color:var(--accent); }
+  #video-feed { display:block; width:100%; height:100%; object-fit:contain;
+                background:#000; border:0; border-radius:0; }
+  #video-off { position:absolute; inset:0; display:flex; flex-direction:column;
+               align-items:center; justify-content:center; gap:6px; text-align:center;
+               padding:14px; color:var(--muted); font-size:11px; line-height:1.5;
+               background:repeating-linear-gradient(45deg,#0d1424,#0d1424 10px,#111a2c 10px,#111a2c 20px); }
+  #video-off b { color:var(--text); font-size:13px; }
+  #video-wrap.ativo #video-off { display:none; }
+  #video-badge { position:absolute; top:6px; right:6px; display:none;
+                 background:rgba(0,0,0,.65); color:#fff; font-size:11px;
+                 padding:2px 8px; border-radius:10px; }
+  #video-wrap.ativo #video-badge { display:block; }
+  #video-badge .ponto { color:var(--danger); }
+  #transporte-row { display:flex; gap:6px; margin-top:8px; }
+  #transporte-row button { flex:1; background:var(--panel); border:1px solid var(--border);
+      color:var(--muted); border-radius:6px; padding:6px 0; cursor:pointer;
+      font-size:12px; font-family:inherit; }
+  #transporte-row button.sel { border-color:var(--accent); color:var(--text); background:#1a2740; }
+  #transporte-row button:disabled { opacity:.5; cursor:wait; }
+  #borda-linha { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;
+                 font-size:11px; color:var(--muted); }
+  #borda-linha .pill { border:1px solid var(--border); border-radius:999px;
+                       padding:2px 8px; background:var(--panel); }
+  #borda-linha .pill.on  { border-color:#3f9c5c; color:var(--text); }
+  #borda-linha .pill.off { border-color:#a8871f; }
+  body.tema-claro #video-off {
+      background:repeating-linear-gradient(45deg,#eef2f8,#eef2f8 10px,#e4eaf3 10px,#e4eaf3 20px); }
+  body.tema-claro #transporte-row button.sel { background:#dbe7f8; }
   /* ============================================================= */
 
 </style>
@@ -171,7 +207,25 @@
 
   <div id="video-panel">
     <h2>Câmera ao vivo</h2>
-    <img id="video-feed" onerror="this.style.opacity=0.3" />
+    <div id="video-wrap" title="Clique para pedir a imagem ao Raspberry">
+      <img id="video-feed" onerror="this.style.opacity=0.3" />
+      <div id="video-off">
+        <b>Telinha desligada</b>
+        <span>Só metadados trafegam na rede.<br/>Clique para ver a imagem ao vivo.</span>
+      </div>
+      <div id="video-badge"><span class="ponto">&#9679;</span> AO VIVO
+        <span id="video-restante">60</span>s</div>
+    </div>
+    <div id="transporte-row">
+      <button data-transporte="http">HTTP</button>
+      <button data-transporte="mqtt">MQTT</button>
+    </div>
+    <div id="borda-linha">
+      <span class="pill" id="pill-online">borda: --</span>
+      <span class="pill" id="pill-fps">-- fps</span>
+      <span class="pill" id="pill-npu">NPU --</span>
+      <span class="pill" id="pill-rede">vídeo: 0 KB</span>
+    </div>
     <div id="ptz-controls">
       <span></span><button data-axis="tilt" data-dir="1">▲</button><span></span>
       <button data-axis="pan" data-dir="-1">◀</button><button id="btn-home">⌂</button><button data-axis="pan" data-dir="1">▶</button>
@@ -204,6 +258,7 @@
     <img id="modal-img" src="" />
     <div class="acoes">
       <button id="modal-toggle">Ver original</button>
+      <button id="modal-foto">Pedir foto cheia</button>
       <button id="modal-reconhecer">Reconhecer</button>
       <button id="modal-falso">Falso positivo</button>
       <button onclick="document.getElementById('modal').classList.remove('open')">Fechar</button>
@@ -564,7 +619,10 @@ async function init() {
 
   camMarkerPos.set(...info.camera_local_pos);
   CONTROLLER_BASE = (info.controller_url || "").replace(/\/$/, "");
-  document.getElementById("video-feed").src = `${CONTROLLER_BASE}/video_feed`;
+  // A telinha NAO liga sozinha. Antes, este src abria uma conexao MJPEG
+  // permanente com a camera e o video corria 24h por dia mesmo com o
+  // dashboard minimizado -- exatamente o trafego que queremos eliminar.
+  atualizarPainelBorda();
 
   buildCameraRig();
   buildConeGeometry(info.cone_ring_rays || 24);
@@ -650,6 +708,21 @@ ws.onmessage = (ev) => {
   }
   if (msg.type === "detection_update") aplicarAtualizacao(msg);
   if (msg.type === "detection_repeat") aplicarRepeticao(msg);
+  if (msg.type === "frame" && streamAtivo) {
+    // O servidor so avisa "chegou o frame N"; o navegador busca a imagem.
+    // O ?s= e o que impede o cache do navegador de congelar a telinha.
+    videoFeed.src = `${SERVER_BASE}/api/stream/atual.jpg?s=${msg.seq}`;
+    videoFeed.style.opacity = 1;
+  }
+  if (msg.type === "stream") {
+    aplicarEstadoStream(msg.ativo, msg.ativo ? janelaStream : 0);
+    if (!msg.ativo && msg.motivo === "expirou")
+      toast("Stream encerrado automaticamente após 1 minuto.", 4000);
+  }
+  if (msg.type === "detection_image") {
+    aplicarFotoCheia(msg.id);
+    toast("Foto cheia recebida do Raspberry.");
+  }
 };
 
 function atualizarTelemetria(p, t, z) {
@@ -670,6 +743,9 @@ function toast(texto, ms = 2600) {
 // Controles PTZ (movimento contínuo enquanto pressionado)
 // ---------------------------------------------------------------------
 async function ptzPost(pathDireto, pathProxy, body) {
+  // Quem esta dirigindo a camera obviamente esta olhando: a janela de 60s
+  // reinicia. Sem isso o video morreria no meio do enquadramento.
+  renovarStreamSeAtivo();
   if (!usarProxy && CONTROLLER_BASE) {
     try {
       const r = await fetch(`${CONTROLLER_BASE}${pathDireto}`, {
@@ -1065,9 +1141,12 @@ function aplicarRepeticao(msg) {
 // ---------------------------------------------------------------------
 // Alerta: abrir imagem + reconhecer / falso positivo
 // ---------------------------------------------------------------------
+let modalAlvo = null;
+
 function abrirModal(id) {
   const reg = entradas.get(id);
   if (!reg) return;
+  modalAlvo = id;
   const { mascara, original } = urlsDe(reg.entry);
 
   const img = document.getElementById("modal-img");
@@ -1083,6 +1162,10 @@ function abrirModal(id) {
     toggle.textContent = mostrandoMascara ? "Ver original" : "Ver máscara";
   };
 
+  const btnFoto = document.getElementById("modal-foto");
+  btnFoto.style.display = (reg.entry.evidencia_local && !original) ? "" : "none";
+  btnFoto.onclick = () => pedirFotoCheia(id);
+
   const pendente = statusDe(reg.entry) === "pendente";
   const btnRec = document.getElementById("modal-reconhecer");
   const btnFalso = document.getElementById("modal-falso");
@@ -1092,6 +1175,29 @@ function abrirModal(id) {
   btnFalso.onclick = (ev) => marcarFalsoPositivo(id, ev.currentTarget);
 
   document.getElementById("modal").classList.add("open");
+}
+
+// Chegou a evidencia completa pedida pelo operador. Se o modal daquela
+// deteccao ainda estiver aberto, troca a imagem na hora -- antes era preciso
+// fechar e reabrir, o que fazia parecer que o pedido nao tinha funcionado.
+function aplicarFotoCheia(id) {
+  const reg = entradas.get(id);
+  if (!reg) return;
+  reg.entry.image = `${id}_orig.jpg`;
+  renderEntrada(reg);
+  if (modalAlvo !== id) return;
+  const { mascara, original } = urlsDe(reg.entry);
+  document.getElementById("modal-img").src = original || mascara;
+  const toggle = document.getElementById("modal-toggle");
+  toggle.style.display = (mascara && original) ? "" : "none";
+  toggle.textContent = "Ver máscara";
+  let mostrandoMascara = false;
+  toggle.onclick = () => {
+    mostrandoMascara = !mostrandoMascara;
+    document.getElementById("modal-img").src = mostrandoMascara ? mascara : original;
+    toggle.textContent = mostrandoMascara ? "Ver original" : "Ver máscara";
+  };
+  document.getElementById("modal-foto").style.display = "none";
 }
 
 let acaoAlvo = null;
@@ -1162,6 +1268,129 @@ async function loadHistory() {
   // insere no topo -- percorrer invertido mantém o mais recente em cima.
   items.slice().reverse().forEach(prependHistory);
 }
+
+// ---------------------------------------------------------------------
+// Telinha sob demanda e escolha do transporte
+//
+// Regra: por padrao o Raspberry manda SO metadados. A imagem so sobe
+// enquanto houver um pedido vivo do servidor, e esse pedido tem prazo de
+// validade -- se o operador esquecer a janela aberta, ela morre sozinha.
+// ---------------------------------------------------------------------
+let streamAtivo = false;
+let streamFimEm = 0;
+let janelaStream = 60;
+
+const videoWrap = document.getElementById("video-wrap");
+const videoFeed = document.getElementById("video-feed");
+
+videoWrap.addEventListener("click", () => alternarStream());
+
+async function alternarStream(forcar) {
+  const ligar = (forcar === undefined) ? !streamAtivo : forcar;
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/stream/${ligar ? "start" : "stop"}`,
+                          { method: "POST" });
+    const j = await r.json();
+    if (j.janela_s) janelaStream = j.janela_s;
+    aplicarEstadoStream(ligar, ligar ? janelaStream : 0);
+    toast(ligar
+      ? `Stream pedido ao Raspberry — para sozinho em ${janelaStream | 0}s.`
+      : "Stream encerrado. Voltamos a trafegar só metadados.");
+  } catch (e) {
+    toast("Não consegui falar com o servidor.");
+  }
+}
+
+function aplicarEstadoStream(ativo, restante) {
+  streamAtivo = ativo;
+  streamFimEm = ativo ? Date.now() + restante * 1000 : 0;
+  videoWrap.classList.toggle("ativo", ativo);
+  if (!ativo) {
+    videoFeed.removeAttribute("src");
+    videoFeed.style.opacity = 1;
+  }
+}
+
+async function renovarStreamSeAtivo() {
+  if (!streamAtivo) return;
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/stream/renovar`, { method: "POST" });
+    if ((await r.json()).status === "ok")
+      streamFimEm = Date.now() + janelaStream * 1000;
+  } catch (e) {}
+}
+
+setInterval(() => {
+  if (!streamAtivo) return;
+  const s = Math.max(0, Math.ceil((streamFimEm - Date.now()) / 1000));
+  document.getElementById("video-restante").textContent = s;
+}, 500);
+
+document.querySelectorAll("#transporte-row button").forEach(b => {
+  b.addEventListener("click", async () => {
+    const botoes = document.querySelectorAll("#transporte-row button");
+    botoes.forEach(x => x.disabled = true);
+    try {
+      await fetch(`${SERVER_BASE}/api/transporte`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transporte: b.dataset.transporte }),
+      });
+      toast(`Transporte pedido: ${b.dataset.transporte.toUpperCase()}. ` +
+            `O Raspberry troca no próximo ciclo de telemetria.`, 4000);
+    } catch (e) {
+      toast("Falha ao trocar o transporte.");
+    } finally {
+      botoes.forEach(x => x.disabled = false);
+      atualizarPainelBorda();
+    }
+  });
+});
+
+async function pedirFotoCheia(id) {
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/detection/${id}/pedir_imagem`,
+                          { method: "POST" });
+    toast(r.ok
+      ? "Pedindo a foto ao Raspberry..."
+      : "Esta detecção não tem evidência guardada na borda.");
+  } catch (e) {
+    toast("Não consegui pedir a foto.");
+  }
+}
+window.pedirFotoCheia = pedirFotoCheia;
+
+async function atualizarPainelBorda() {
+  let j;
+  try { j = await fetch(`${SERVER_BASE}/api/borda`).then(r => r.json()); }
+  catch (e) { return; }
+
+  janelaStream = j.janela_s || janelaStream;
+  const st = j.estado.stream;
+  if (st.ativo !== streamAtivo) aplicarEstadoStream(st.ativo, st.restante_s);
+  else if (st.ativo) streamFimEm = Date.now() + st.restante_s * 1000;
+
+  document.querySelectorAll("#transporte-row button").forEach(b => {
+    b.classList.toggle("sel", b.dataset.transporte === j.estado.transporte);
+  });
+
+  const rel = j.relatado || {};
+  const online = document.getElementById("pill-online");
+  online.textContent = j.online
+    ? `borda: ${rel.transporte || j.estado.transporte}`
+    : "borda: offline";
+  online.className = "pill " + (j.online ? "on" : "off");
+  document.getElementById("pill-fps").textContent =
+    (rel.fps !== undefined ? rel.fps : "--") + " fps";
+  document.getElementById("pill-npu").textContent =
+    "NPU " + (rel.npu_ms !== undefined ? rel.npu_ms + "ms" : "--");
+  const kb = j.stream_trafego.bytes / 1024;
+  document.getElementById("pill-rede").textContent =
+    "vídeo: " + (kb > 1024 ? (kb / 1024).toFixed(1) + " MB" : kb.toFixed(0) + " KB");
+  if (rel.transporte_erro) toast(`Borda: ${rel.transporte_erro}`, 5000);
+}
+
+setInterval(atualizarPainelBorda, 3000);
 
 init();
 loadHistory();
