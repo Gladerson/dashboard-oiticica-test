@@ -1,0 +1,17 @@
+[Unit]
+Description=Agente de Borda Oiticica (Hailo-8L + PTZ + telemetria)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gladerson
+WorkingDirectory=/home/gladerson/Projetos/dashboard_oiticica_test/edge
+ExecStart=/home/gladerson/Projetos/dashboard_oiticica_test/edge/venv/bin/python agente_borda.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
