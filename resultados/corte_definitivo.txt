@@ -1,0 +1,17 @@
+Backbone: nós [0..214] (215 nós)
+Cabeçalho: nós [215..432] (218 nós)
+
+Tensores de interface (4):
+  '/model.10/cv2/act/Mul_output_0'
+  '/model.13/cv2/act/Mul_output_0'
+  '/model.16/cv2/act/Mul_output_0'
+  '/model.17/conv/Conv_output_0'
+
+✓ best_backbone.onnx salvo
+✓ best_head.onnx salvo
+
+=== END NODES para parsear_backbone.py ===
+    "/model.10/cv2/act/Mul",
+    "/model.13/cv2/act/Mul",
+    "/model.16/cv2/act/Mul",
+    "/model.17/conv/Conv",

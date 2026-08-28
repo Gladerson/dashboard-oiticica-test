@@ -23,3 +23,17 @@ server/history/*
 # Sistema
 .DS_Store
 *.log
+
+# --- Modo borda (Raspberry Pi) ---
+edge/venv/
+edge/.env
+edge/evidencias/
+edge/conferencia*/
+edge/*.hef
+edge/*.onnx
+edge/hailort*.log
+
+# Backups de patch e caches
+*.bak
+*.bak_*
+__pycache__/

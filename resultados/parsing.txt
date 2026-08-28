@@ -1,0 +1,10 @@
+[info] No GPU chosen, Selected GPU 0
+Iniciando parsing do backbone...
+[info] Translation started on ONNX model yolo26_fissuras_backbone
+[info] Restored ONNX model yolo26_fissuras_backbone (completion time: 00:00:00.03)
+[info] Extracted ONNXRuntime meta-data for Hailo model (completion time: 00:00:00.40)
+[info] Start nodes mapped from original model: 'images': 'yolo26_fissuras_backbone/input_layer1'.
+[info] End nodes mapped from original model: '/model.10/cv2/act/Mul', '/model.13/cv2/act/Mul', '/model.16/cv2/act/Mul', '/model.17/conv/Conv'.
+[info] Translation completed on ONNX model yolo26_fissuras_backbone (completion time: 00:00:00.97)
+[info] Saved HAR to: /home/gladerson/hailo_workspace_2/best_backbone.har
+✓ best_backbone.har salvo

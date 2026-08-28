@@ -1,0 +1,16 @@
+[info] No GPU chosen, Selected GPU 0
+=== Saídas do backbone (via HAR quantizado) ===
+ 'yolo26_fissuras_backbone/output_layer1' shape_HWC=[20, 20, 256]
+ 'yolo26_fissuras_backbone/output_layer2' shape_HWC=[40, 40, 128]
+ 'yolo26_fissuras_backbone/output_layer3' shape_HWC=[80, 80, 64]
+ 'yolo26_fissuras_backbone/output_layer4' shape_HWC=[40, 40, 64]
+
+=== Entradas do cabeçalho ONNX ===
+ '/model.10/cv2/act/Mul_output_0' shape=[1, 256, 20, 20]
+ '/model.13/cv2/act/Mul_output_0' shape=[1, 128, 40, 40]
+ '/model.16/cv2/act/Mul_output_0' shape=[1, 64, 80, 80]
+ '/model.17/conv/Conv_output_0' shape=[1, 64, 40, 40]
+
+=== Saídas do cabeçalho ONNX ===
+ 'output0' shape=[1, 300, 38]
+ 'output1' shape=[1, 32, 160, 160]
