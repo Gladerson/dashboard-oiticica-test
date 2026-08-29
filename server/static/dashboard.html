@@ -188,6 +188,20 @@
                        padding:2px 8px; background:var(--panel); }
   #borda-linha .pill.on  { border-color:#3f9c5c; color:var(--text); }
   #borda-linha .pill.off { border-color:#a8871f; }
+  #limiar-row { margin-top:10px; }
+  #limiar-cabecalho { display:flex; justify-content:space-between; align-items:baseline;
+      font-size:11px; color:var(--muted); margin-bottom:4px; }
+  #limiar-valor { color:var(--text); font-size:12px; }
+  #limiar-slider-wrap { position:relative; height:18px; }
+  #limiar-slider { width:100%; margin:0; position:relative; z-index:1;
+      accent-color:var(--accent); }
+  /* Ponto verde: onde 0.45 (limiar calibrado, ver README §7) cai na trilha,
+     dado min=0.05/max=0.95 do slider -> fracao (0.45-0.05)/(0.95-0.05) = 0.4444.
+     Compensa a largura do polegar (~16px) para alinhar com o valor real,
+     nao so com a porcentagem geometrica do wrapper. */
+  #limiar-ponto-doce { position:absolute; top:50%; left:calc((100% - 16px) * 0.4444 + 8px);
+      width:9px; height:9px; border-radius:50%; background:#3f9c5c;
+      border:1px solid #1f5c34; transform:translate(-50%,-50%); pointer-events:none; z-index:0; }
   body.tema-claro #video-off {
       background:repeating-linear-gradient(45deg,#eef2f8,#eef2f8 10px,#e4eaf3 10px,#e4eaf3 20px); }
   body.tema-claro #transporte-row button.sel { background:#dbe7f8; }
@@ -225,6 +239,16 @@
       <span class="pill" id="pill-fps">-- fps</span>
       <span class="pill" id="pill-npu">NPU --</span>
       <span class="pill" id="pill-rede">vídeo: 0 KB</span>
+    </div>
+    <div id="limiar-row">
+      <div id="limiar-cabecalho">
+        <span>Limiar de confiança (CONF_THRESHOLD)</span>
+        <b id="limiar-valor">0.45</b>
+      </div>
+      <div id="limiar-slider-wrap">
+        <input type="range" id="limiar-slider" min="0.05" max="0.95" step="0.01" value="0.45" />
+        <div id="limiar-ponto-doce" title="Ponto de equilíbrio medido (F2): 0.45"></div>
+      </div>
     </div>
     <div id="ptz-controls">
       <span></span><button data-axis="tilt" data-dir="1">▲</button><span></span>
@@ -1347,6 +1371,35 @@ document.querySelectorAll("#transporte-row button").forEach(b => {
   });
 });
 
+// ---------------------------------------------------------------------
+// Limiar de confianca (CONF_THRESHOLD) -- controle deslizante
+//
+// O servidor publica o novo limiar no estado desejado (/api/inferencia);
+// o Pi converge para ele no proximo ciclo de telemetria (README §7/§2:
+// "o servidor publica estado, nunca comando").
+// ---------------------------------------------------------------------
+const limiarSlider = document.getElementById("limiar-slider");
+const limiarValorEl = document.getElementById("limiar-valor");
+
+limiarSlider.addEventListener("input", () => {
+  limiarValorEl.textContent = parseFloat(limiarSlider.value).toFixed(2);
+});
+
+limiarSlider.addEventListener("change", async () => {
+  const conf = parseFloat(limiarSlider.value);
+  try {
+    await fetch(`${SERVER_BASE}/api/inferencia`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conf }),
+    });
+    toast(`Limiar de confiança pedido: ${conf.toFixed(2)}. ` +
+          `O Raspberry converge no próximo ciclo de telemetria.`, 4000);
+  } catch (e) {
+    toast("Falha ao ajustar o limiar de confiança.");
+  }
+});
+
 async function pedirFotoCheia(id) {
   try {
     const r = await fetch(`${SERVER_BASE}/api/detection/${id}/pedir_imagem`,
@@ -1373,6 +1426,12 @@ async function atualizarPainelBorda() {
   document.querySelectorAll("#transporte-row button").forEach(b => {
     b.classList.toggle("sel", b.dataset.transporte === j.estado.transporte);
   });
+
+  const confAtual = j.estado.inferencia && j.estado.inferencia.conf;
+  if (confAtual !== undefined && document.activeElement !== limiarSlider) {
+    limiarSlider.value = confAtual;
+    limiarValorEl.textContent = parseFloat(confAtual).toFixed(2);
+  }
 
   const rel = j.relatado || {};
   const online = document.getElementById("pill-online");
