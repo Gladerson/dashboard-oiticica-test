@@ -37,7 +37,13 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(_Path(__file__).parent / ".env")
 
-from glb_geo import GeoModel, MODEL_UP_AXIS, PAN_SIGN, TILT_SIGN  # noqa: E402
+from glb_geo import (  # noqa: E402
+    GeoModel, MODEL_UP_AXIS, PAN_SIGN, TILT_SIGN,
+    UTM_HEMISPHERE_SOUTH, UTM_ZONE,
+)
+
+import auth  # noqa: E402
+import db  # noqa: E402
 
 # --- Posição real da câmera -------------------------------------------------
 CAMERA_LAT = -6.152425824994227
@@ -154,6 +160,20 @@ def _mesmo_ponto(entrada, hit_point, pan, tilt):
 def _status(entrada):
     return entrada.get("status") or "pendente"
 
+
+def _utm_de(hit_point):
+    """Coordenadas UTM reais do ponto 3D de impacto (raycasting), para
+    mostrar no dashboard -- e a "coordenada da deteccao" que o Pi nunca
+    calcula: ele so manda pan/tilt/zoom, o server e quem sabe a geometria
+    do modelo e converte para o mundo real."""
+    if hit_point is None:
+        return None
+    utm_x, utm_y, alt = geo.local_to_utm(hit_point)
+    return {
+        "zona": UTM_ZONE, "hemisferio_sul": UTM_HEMISPHERE_SOUTH,
+        "x": round(utm_x, 2), "y": round(utm_y, 2), "alt": round(alt, 2),
+    }
+
 http = requests.Session()
 
 # --- Carrega o modelo real e calibra a direção base -------------------------
@@ -213,6 +233,9 @@ app = FastAPI(title="Dashboard Server")
 app.mount("/model", StaticFiles(directory="static"), name="model")
 app.mount("/history_files", StaticFiles(directory=HISTORY_DIR), name="history_files")
 
+db.iniciar()
+auth.instalar(app)
+
 
 # ----------------------------------------------------------------------------
 # Cone: zoom <-> meio-ângulo
@@ -263,6 +286,11 @@ class TelemetryPayload(BaseModel):
 
 class DetectionPayload(TelemetryPayload):
     timestamp: str | None = None
+    # Preenchidos SO pelo controller.py (ambiente de desktop sem Pi, ver
+    # README §3): ele nao tem o mecanismo de "evidencia sob demanda" e manda
+    # a imagem junto com a deteccao mesmo. O agente de borda (edge/) nunca
+    # preenche isto -- a deteccao dele carrega so coordenadas, e a imagem
+    # completa e pedida depois via /api/detection/{id}/pedir_imagem.
     image_b64: str | None = None
     mask_image_b64: str | None = None
 
@@ -393,6 +421,13 @@ async def detection(payload: DetectionPayload):
 
         else:
             det_id = str(uuid.uuid4())
+
+            # So o controller.py (desktop, sem Pi -- README §3) preenche
+            # isto: ele nao tem "evidencia sob demanda" e manda a imagem
+            # junto. O agente de borda nunca manda image_b64/mask_image_b64
+            # aqui -- "image" fica None ate o operador clicar em "Abrir" e
+            # o Pi responder via /api/detection/{id}/pedir_imagem
+            # (borda._anexar_imagem preenche depois).
             image_path = None
             mask_path = None
             if payload.image_b64:
@@ -417,12 +452,17 @@ async def detection(payload: DetectionPayload):
                 "coord_t": payload.coord_t,
                 "coord_z": payload.coord_z,
                 "hit_point": hit,
+                "utm": _utm_de(hit),
                 "image": image_path,
                 "mask_image": mask_path,
                 "status": "pendente",
                 "acao": None,
                 "resolvido_em": None,
                 "reincide_falso_positivo": reincide_fp,
+                # Para deteccoes vindas do Pi, borda._anotar_historico pisa
+                # em cima disto com True logo em seguida (e replica via
+                # WebSocket) -- e o que libera o "Abrir" a pedir a foto sem
+                # precisar recarregar a pagina.
             }
             dados.insert(0, entrada_nova)
             _escrever_indice(dados)
@@ -687,6 +727,13 @@ borda.instalar(app, borda.Contexto(
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
+    # A middleware HTTP de auth.py NAO cobre websocket (e outro scope ASGI);
+    # o cookie de sessao chega junto do handshake mesmo assim, entao
+    # validamos aqui, ANTES do accept().
+    usuario = db.usuario_da_sessao(websocket.cookies.get(auth.COOKIE_NOME))
+    if usuario is None:
+        await websocket.close(code=4401)
+        return
     await manager.connect(websocket)
     try:
         while True:

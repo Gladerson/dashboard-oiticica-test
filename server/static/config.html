@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Configuração - Barragem Oiticica</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #121b2e; --border: #223049;
+    --text: #dbe4f3; --muted: #8093b3; --accent: #4fa3ff; --danger: #ff5c5c; --ok: #3f9c5c;
+  }
+  body.tema-claro {
+    --bg: #f5f7fa; --panel: #ffffff; --border: #d5dbe5;
+    --text: #16202f; --muted: #5a6a85; --accent: #1668c4; --danger: #c62828; --ok: #12703a;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, sans-serif; }
+  #topo {
+    display:flex; align-items:center; gap:14px; padding:12px 20px;
+    border-bottom:1px solid var(--border); background:var(--panel);
+  }
+  #topo h1 { font-size:14px; margin:0; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  #topo .espaco { flex:1; }
+  #topo a, #topo button {
+    color:var(--text); text-decoration:none; font-size:13px; background:transparent;
+    border:1px solid var(--border); border-radius:6px; padding:6px 12px; cursor:pointer;
+    font-family:inherit;
+  }
+  #topo a:hover, #topo button:hover { border-color:var(--accent); }
+  main { max-width:640px; margin:0 auto; padding:24px 20px 60px; }
+  section {
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:18px 20px; margin-bottom:20px;
+  }
+  section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 14px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 5px; }
+  input, select {
+    width:100%; padding:8px 10px; background:var(--bg); color:var(--text);
+    border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit;
+  }
+  button.acao {
+    margin-top:14px; padding:8px 16px; background:var(--accent); color:#fff;
+    border:0; border-radius:6px; font-size:13px; cursor:pointer; font-family:inherit;
+  }
+  button.acao:disabled { opacity:.6; cursor:wait; }
+  button.perigo { background:var(--danger); }
+  .msg { font-size:12px; margin-top:10px; min-height:14px; }
+  .msg.erro { color:var(--danger); }
+  .msg.ok { color:var(--ok); }
+  #banner-troca {
+    display:none; background:#3a2a10; border:1px solid #a8871f; color:#f0d999;
+    border-radius:8px; padding:10px 14px; font-size:12px; margin-bottom:20px;
+  }
+  #banner-troca.show { display:block; }
+  .tema-row { display:flex; gap:8px; margin-top:8px; }
+  .tema-row button {
+    flex:1; padding:8px 0; background:var(--bg); border:1px solid var(--border);
+    color:var(--muted); border-radius:6px; cursor:pointer; font-size:13px; font-family:inherit;
+  }
+  .tema-row button.sel { border-color:var(--accent); color:var(--text); }
+  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; }
+  th, td { text-align:left; padding:7px 6px; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; }
+  td .tag { font-size:10px; padding:1px 6px; border-radius:999px; border:1px solid var(--border); }
+  td button { font-size:11px; padding:4px 8px; margin-right:4px; }
+  #form-criar { display:grid; grid-template-columns: 1fr 1fr; gap:0 12px; }
+  #form-criar .full { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<div id="topo">
+  <h1>Configuração</h1>
+  <div class="espaco"></div>
+  <span id="quem" style="font-size:12px;color:var(--muted)"></span>
+  <a href="/">← Painel</a>
+  <button id="btn-sair" type="button">Sair</button>
+</div>
+
+<main>
+  <div id="banner-troca">
+    Esta é uma senha padrão de instalação. Troque-a abaixo antes de continuar.
+  </div>
+
+  <section>
+    <h2>Aparência</h2>
+    <label>Tema</label>
+    <div class="tema-row">
+      <button type="button" data-tema="escuro">Escuro</button>
+      <button type="button" data-tema="claro">Claro</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Minha senha</h2>
+    <form id="form-senha">
+      <label for="senha-atual">Senha atual</label>
+      <input id="senha-atual" type="password" autocomplete="current-password" required />
+      <label for="senha-nova">Nova senha (mínimo 8 caracteres)</label>
+      <input id="senha-nova" type="password" autocomplete="new-password" minlength="8" required />
+      <button class="acao" type="submit">Trocar senha</button>
+      <div class="msg" id="msg-senha"></div>
+    </form>
+  </section>
+
+  <section id="secao-usuarios" style="display:none">
+    <h2>Usuários (administração)</h2>
+    <table id="tabela-usuarios">
+      <thead><tr><th>Usuário</th><th>Papel</th><th>Criado em</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <h2 style="margin-top:22px">Criar usuário</h2>
+    <form id="form-criar">
+      <div>
+        <label for="novo-username">Usuário</label>
+        <input id="novo-username" required />
+      </div>
+      <div>
+        <label for="novo-papel">Papel</label>
+        <select id="novo-papel">
+          <option value="usuario">Usuário</option>
+          <option value="admin">Administrador</option>
+        </select>
+      </div>
+      <div class="full">
+        <label for="novo-senha">Senha inicial (mínimo 8 caracteres)</label>
+        <input id="novo-senha" type="password" minlength="8" required />
+      </div>
+      <div class="full">
+        <button class="acao" type="submit">Criar</button>
+        <div class="msg" id="msg-criar"></div>
+      </div>
+    </form>
+  </section>
+</main>
+
+<script>
+const SERVER_BASE = window.location.origin;
+let eu = null;
+
+function aplicarTema(tema) {
+  document.body.classList.toggle("tema-claro", tema === "claro");
+  document.querySelectorAll(".tema-row button").forEach(b => {
+    b.classList.toggle("sel", b.dataset.tema === tema);
+  });
+  try { localStorage.setItem("oiticica_tema", tema); } catch (e) {}
+}
+
+async function definirTema(tema) {
+  aplicarTema(tema);
+  try {
+    await fetch(`${SERVER_BASE}/api/usuarios/me/tema`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tema }),
+    });
+  } catch (e) {}
+}
+
+document.querySelectorAll(".tema-row button").forEach(b => {
+  b.addEventListener("click", () => definirTema(b.dataset.tema));
+});
+
+document.getElementById("btn-sair").addEventListener("click", async () => {
+  try { await fetch(`${SERVER_BASE}/api/logout`, { method: "POST" }); } catch (e) {}
+  location.href = "/login";
+});
+
+document.getElementById("form-senha").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const msg = document.getElementById("msg-senha");
+  msg.className = "msg";
+  msg.textContent = "";
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/usuarios/me/senha`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        senha_atual: document.getElementById("senha-atual").value,
+        senha_nova: document.getElementById("senha-nova").value,
+      }),
+    });
+    const dados = await r.json();
+    if (!r.ok) { msg.className = "msg erro"; msg.textContent = dados.error || "Falha."; return; }
+    msg.className = "msg ok";
+    msg.textContent = "Senha alterada. Entrando de novo...";
+    setTimeout(() => { location.href = "/login"; }, 1200);
+  } catch (e) {
+    msg.className = "msg erro";
+    msg.textContent = "Não consegui falar com o servidor.";
+  }
+});
+
+function formatarData(iso) {
+  try { return new Date(iso).toLocaleString("pt-BR"); } catch (e) { return iso; }
+}
+
+async function carregarUsuarios() {
+  const r = await fetch(`${SERVER_BASE}/api/usuarios`);
+  if (!r.ok) return;
+  const lista = await r.json();
+  const corpo = document.querySelector("#tabela-usuarios tbody");
+  corpo.innerHTML = "";
+  lista.forEach(u => {
+    const tr = document.createElement("tr");
+    const trocaTag = u.trocar_senha ? ' <span class="tag">troca pendente</span>' : "";
+    tr.innerHTML = `
+      <td>${u.username}${u.id === eu.id ? " (você)" : ""}</td>
+      <td>${u.papel}${trocaTag}</td>
+      <td>${formatarData(u.criado_em)}</td>
+      <td></td>`;
+    const tdAcoes = tr.lastElementChild;
+    if (u.id !== eu.id) {
+      const btnReset = document.createElement("button");
+      btnReset.textContent = "Redefinir senha";
+      btnReset.addEventListener("click", () => redefinirSenha(u.id, u.username));
+      const btnExcluir = document.createElement("button");
+      btnExcluir.textContent = "Excluir";
+      btnExcluir.addEventListener("click", () => excluirUsuario(u.id, u.username));
+      tdAcoes.append(btnReset, btnExcluir);
+    }
+    corpo.appendChild(tr);
+  });
+}
+
+async function redefinirSenha(id, username) {
+  const nova = prompt(`Nova senha para "${username}" (mínimo 8 caracteres):`);
+  if (!nova) return;
+  if (nova.length < 8) { alert("A senha precisa de pelo menos 8 caracteres."); return; }
+  const r = await fetch(`${SERVER_BASE}/api/usuarios/${id}/redefinir_senha`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ senha_nova: nova }),
+  });
+  const dados = await r.json();
+  alert(r.ok ? "Senha redefinida. O usuário vai precisar trocá-la no próximo login."
+             : (dados.error || "Falha ao redefinir a senha."));
+}
+
+async function excluirUsuario(id, username) {
+  if (!confirm(`Excluir o usuário "${username}"? Isso não pode ser desfeito.`)) return;
+  const r = await fetch(`${SERVER_BASE}/api/usuarios/${id}`, { method: "DELETE" });
+  const dados = await r.json();
+  if (!r.ok) { alert(dados.error || "Falha ao excluir."); return; }
+  carregarUsuarios();
+}
+
+document.getElementById("form-criar").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const msg = document.getElementById("msg-criar");
+  msg.className = "msg";
+  msg.textContent = "";
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/usuarios`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById("novo-username").value.trim(),
+        papel: document.getElementById("novo-papel").value,
+        senha: document.getElementById("novo-senha").value,
+      }),
+    });
+    const dados = await r.json();
+    if (!r.ok) { msg.className = "msg erro"; msg.textContent = dados.error || "Falha."; return; }
+    msg.className = "msg ok";
+    msg.textContent = `Usuário "${dados.username}" criado.`;
+    document.getElementById("form-criar").reset();
+    carregarUsuarios();
+  } catch (e) {
+    msg.className = "msg erro";
+    msg.textContent = "Não consegui falar com o servidor.";
+  }
+});
+
+async function init() {
+  try {
+    eu = await fetch(`${SERVER_BASE}/api/usuarios/me`).then(r => r.json());
+  } catch (e) {
+    location.href = "/login";
+    return;
+  }
+  document.getElementById("quem").textContent = `${eu.username} (${eu.papel})`;
+  aplicarTema(eu.tema || "escuro");
+
+  const params = new URLSearchParams(location.search);
+  if (eu.trocar_senha || params.get("trocar_senha") === "1") {
+    document.getElementById("banner-troca").classList.add("show");
+  }
+
+  if (eu.papel === "admin") {
+    document.getElementById("secao-usuarios").style.display = "";
+    carregarUsuarios();
+  }
+}
+
+init();
+</script>
+</body>
+</html>

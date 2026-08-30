@@ -349,30 +349,19 @@ def _jpeg(img_rgb, qualidade):
     return buf.tobytes() if ok else None
 
 
-def _recorte(img_anotada, dets, margem):
-    """Menor retangulo que cobre todas as deteccoes, com folga."""
-    h, w = img_anotada.shape[:2]
-    x1 = min(d["bbox"][0] for d in dets)
-    y1 = min(d["bbox"][1] for d in dets)
-    x2 = max(d["bbox"][2] for d in dets)
-    y2 = max(d["bbox"][3] for d in dets)
-    mx, my = int((x2 - x1) * margem), int((y2 - y1) * margem)
-    x1, y1 = max(0, x1 - mx), max(0, y1 - my)
-    x2, y2 = min(w, x2 + mx), min(h, y2 + my)
-    return img_anotada[y1:y2, x1:x2]
-
-
 def publicar_deteccao(frame_rgb, dets):
+    """Publica SO coordenadas/metadados -- nenhuma imagem viaja aqui.
+
+    O frame so e gravado em disco (e so ele sobe, sob pedido) quando o
+    servidor confirma que esta deteccao virou um alerta NOVO (status "ok").
+    Deteccoes repetidas da mesma rachadura ja pendente, ou dentro do
+    rearme, o servidor descarta (ve _mesmo_ponto em server.py) e nao vale a
+    pena gravar evidencia para elas -- era exatamente isso que enchia
+    edge/evidencias/ rapido demais: uma foto nova por deteccao, mesmo para
+    reincidencias que nunca geravam um alerta distinto.
+    """
     det_id = str(uuid.uuid4())
     h, w = frame_rgb.shape[:2]
-    anotada = detector.desenhar(frame_rgb, dets)
-
-    # Evidencia completa fica NO PI. So sobe se alguem pedir.
-    caminho = cfg.EVIDENCIAS_DIR / f"{det_id}.jpg"
-    try:
-        caminho.write_bytes(_jpeg(anotada, 85) or b"")
-    except Exception as e:
-        print(f"[deteccao] nao consegui gravar a evidencia: {e}")
 
     with est.lock:
         pan, tilt, zoom = est.pan, est.tilt, est.zoom
@@ -392,7 +381,9 @@ def publicar_deteccao(frame_rgb, dets):
         "area_px": sum(areas),
         "area_frac": round(sum(areas) / float(w * h), 6),
         # bbox e poligono viajam como string JSON: o ThingsBoard indexa bem
-        # escalares e strings, mas nao arrays aninhados.
+        # escalares e strings, mas nao arrays aninhados. Sao as coordenadas
+        # da deteccao (pixel/normalizadas) -- o servidor converte a pose
+        # pan/tilt/zoom em ponto 3D real (UTM) via raycasting.
         "bbox": json.dumps([d["bbox"] for d in dets], separators=(",", ":")),
         "poly": json.dumps(poligonos, separators=(",", ":")),
         "frame_w": w, "frame_h": h,
@@ -401,23 +392,28 @@ def publicar_deteccao(frame_rgb, dets):
         "evidencia_local": True,
     }
 
-    if cfg.DETECCAO_IMAGEM == "completa":
-        jpeg = _jpeg(anotada, cfg.DETECCAO_JPEG_Q)
-    elif cfg.DETECCAO_IMAGEM == "recorte":
-        jpeg = _jpeg(_recorte(anotada, dets, cfg.DETECCAO_RECORTE_MARGEM),
-                     cfg.DETECCAO_JPEG_Q)
-    else:
-        jpeg = None
+    resposta = canal.deteccao(payload)
+    # HTTP devolve o status na hora (novo/duplicada/em_rearme); MQTT e
+    # fire-and-forget (telemetria do ThingsBoard nao responde o publish), e
+    # nesse caso gravamos por precaucao -- nao ha como saber se o servidor
+    # vai descartar.
+    eh_novo = resposta is None or resposta.get("status") == "ok"
+    if eh_novo:
+        # Frame CRU, sem nada desenhado em cima: o dashboard desenha a
+        # mascara/bbox no navegador a partir de "poly"/"bbox" (ja enviados
+        # acima), entao "Ver original" e "Ver mascara" acabam sendo duas
+        # formas de olhar para o MESMO jpeg, uma com o contorno desenhado
+        # por cima e outra sem.
+        caminho = cfg.EVIDENCIAS_DIR / f"{det_id}.jpg"
+        try:
+            caminho.write_bytes(_jpeg(frame_rgb, cfg.EVIDENCIA_JPEG_Q) or b"")
+        except Exception as e:
+            print(f"[deteccao] nao consegui gravar a evidencia: {e}")
 
-    if jpeg:
-        payload["img_b64"] = base64.b64encode(jpeg).decode()
-        payload["img_tipo"] = cfg.DETECCAO_IMAGEM
-        payload["img_bytes"] = len(jpeg)
-
-    canal.deteccao(payload)
     print(f"[deteccao] {det_id[:8]} n={len(dets)} conf={payload['conf_max']} "
           f"p={pan:.1f} t={tilt:.1f} z={zoom:.1f} "
-          f"payload={len(json.dumps(payload))}B")
+          f"status={resposta.get('status') if resposta else '?'} "
+          f"evidencia={'gravada' if eh_novo else 'descartada (nao e alerta novo)'}")
 
 
 def atender_pedidos_imagem():

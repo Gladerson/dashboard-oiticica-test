@@ -16,7 +16,20 @@ sudo apt install -y \
     libgl1 libglib2.0-0 ffmpeg \
     libxml2-dev libxslt1-dev \
     libspatialindex-dev \
+    postgresql \
     git
+
+echo ">> 1b/6 - Banco (usuarios/sessoes do login -- ver README secao 5.1a)"
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='oiticica'" | grep -q 1; then
+    echo "   Role 'oiticica' nao existe. Digite a senha que ela vai usar:"
+    read -rsp "   Senha do banco: " DB_SENHA; echo
+    sudo -u postgres psql -c "CREATE ROLE oiticica WITH LOGIN PASSWORD '$DB_SENHA';"
+    sudo -u postgres psql -c "CREATE DATABASE oiticica OWNER oiticica;"
+    sudo -u postgres psql -d oiticica -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+    echo "   Guarde essa senha: ela vai para DATABASE_URL no server/.env."
+else
+    echo "   Role 'oiticica' ja existe -- pulando."
+fi
 
 echo ">> 2/6 - Criando estrutura do projeto em $PROJ_DIR"
 mkdir -p "$PROJ_DIR"/{controller,server/static,server/history}
@@ -54,9 +67,12 @@ echo "  1) $PROJ_DIR/controller/config.py  -> confirme IP/usuário/senha ONVIF e
 echo "  2) $PROJ_DIR/server/glb_geo.py     -> preencha GEO_OFFSET (zona UTM + offset X,Y,Z"
 echo "     do georreferenciamento do ODM/WebODM). Sem isso o modelo NÃO estará"
 echo "     alinhado com coordenadas reais - ver instruções no topo do arquivo."
+echo "  3) $PROJ_DIR/server/.env           -> cp .env.example .env && edite DATABASE_URL"
+echo "     com a senha que você deu à role 'oiticica' acima."
 echo
 echo "Para rodar (dois terminais):"
 echo "  Terminal 1 (server):     cd $PROJ_DIR/server && source venv/bin/activate && python server.py"
 echo "  Terminal 2 (controller): cd $PROJ_DIR/controller && source venv/bin/activate && python controller.py"
 echo
-echo "Dashboard: http://127.0.0.1:8001"
+echo "Dashboard: http://127.0.0.1:8001 -- login padrão: admin / hydroconecta"
+echo "(troque a senha no primeiro login; o próprio painel exige isso em Configuração)"
