@@ -21,7 +21,8 @@ RASPBERRY PI 5 + HAILO-8L ............. edge/agente_borda.py
       |   cabeçalho + máscara -> CPU  (best_head.onnx via ONNX Runtime)
       |
       |--- telemetria  ~197 B  a cada 1 s
-      |--- detecção    ~481 B  + recorte ~6 KB (evento)
+      |--- detecção    ~480 B  SO coordenadas (evento; nenhuma imagem)
+      |--- foto completa       SOMENTE quando o operador clica em "Abrir"
       |--- frame JPEG          SOMENTE enquanto houver pedido vivo
       v
 SERVIDOR .............................. server/server.py + server/borda.py
@@ -456,8 +457,13 @@ os pontos de impacto e apenas incrementa o contador de reincidência.
 
 No alerta ("Abrir"):
 
-- **Pedir foto cheia** — sobe a evidência em resolução plena guardada no Pi; a
-  imagem no modal troca sozinha quando chega.
+- **Imagem completa** — pedida automaticamente ao Pi assim que o modal abre
+  (nenhum clique extra); a imagem aparece sozinha quando chega, tipicamente
+  em menos de 1 s. "Ver original"/"Ver máscara" alternam o mesmo frame com e
+  sem a máscara de segmentação desenhada por cima (a partir de `poly`, sem
+  precisar de uma segunda imagem). Se a evidência já tiver sido apagada no Pi
+  (teto de disco) ou nunca gravada (deteccão não virou alerta novo), o modal
+  mostra o motivo e oferece "Solicitar novamente".
 - **Reconhecer** — descreve a ação tomada; check verde no histórico, texto
   registrado com a data, marcação 3D some.
 - **Falso positivo** — selo amarelo, marcação some, imagens movidas para
@@ -473,10 +479,15 @@ nova marcação nasce em **amarelo**.
 
 ### Evidências no Raspberry
 
-`edge/evidencias/` guarda a foto anotada em resolução plena de cada detecção,
-nomeada com o `det_id`, a qualidade 85. É o que permite trafegar só o recorte
-(~6 KB) pela rede. Uma thread apara as mais antigas quando a pasta ultrapassa
-`EVIDENCIAS_MAX_MB` (2 GB por padrão), para o cartão não encher sozinho.
+`edge/evidencias/` guarda o frame CRU (sem nada desenhado em cima) em
+resolução plena, nomeado com o `det_id`, na qualidade `EVIDENCIA_JPEG_Q`
+(85 por padrão) — a máscara é desenhada depois, no navegador, a partir das
+coordenadas que já viajaram com a detecção. Só é gravado quando o servidor
+confirma que a detecção virou um alerta NOVO (não duplicata, não dentro do
+rearme): é o que impede a pasta de encher rápido com evidência de
+reincidências que nunca abrem alerta distinto. Ainda assim, uma thread apara
+as mais antigas quando a pasta ultrapassa `EVIDENCIAS_MAX_MB` (2 GB por
+padrão), para o cartão não encher sozinho.
 
 ### Close por seleção (Shift + arrastar)
 
@@ -502,9 +513,18 @@ MQTT_HOST=<ip-do-servidor>
 MQTT_TOKEN=qualquer-coisa-no-teste
 ```
 
-No dashboard, o botão MQTT muda o transporte no estado desejado. O Pi recebe
-pelo canal atual e troca a quente: a ida HTTP→MQTT desce por HTTP, e a volta
-desce por MQTT.
+A troca de transporte continua sendo só uma chamada a `/api/transporte`
+(o Pi recebe pelo canal atual e troca a quente: a ida HTTP→MQTT desce por
+HTTP, e a volta desce por MQTT) -- só não tem mais botão para isso no painel
+da câmera (`server/static/dashboard.html`), porque esse painel virou um
+*widget* de um dispositivo CV-SHM: a ideia é que o transporte se decida uma
+vez, no cadastro do dispositivo (painel de administração ainda a construir,
+§16), não a cada sessão de operação.
+
+```bash
+curl -X POST http://SERVIDOR:8001/api/transporte \
+     -H 'Content-Type: application/json' -d '{"transporte": "mqtt"}'
+```
 
 **O token nunca desce do servidor pela rede.** Ele mora no `edge/.env`. O
 servidor só diz "use MQTT".
@@ -565,7 +585,10 @@ Telemetria (~197 B, a cada 1 s; 0,15 s durante o movimento):
             "cpu_temp": 61.2}}
 ```
 
-Detecção (~481 B sem imagem, ~6 KB com o recorte):
+Detecção (~480 B; NUNCA carrega imagem, só coordenadas -- `bbox`/`poly` são a
+posição da fissura no frame, e `pan`/`tilt`/`zoom` a pose da câmera. É a
+partir daí que o servidor faz o raycasting e mostra a posição real da
+detecção em UTM no dashboard; ver `_utm_de` em `server/server.py`):
 
 ```json
 {"ts": 1756300042000,
@@ -576,9 +599,15 @@ Detecção (~481 B sem imagem, ~6 KB com o recorte):
             "bbox": "[[610,240,688,301]]", "poly": "[[[0.47,0.33]]]",
             "frame_w": 1280, "frame_h": 720,
             "modelo": "best_backbone.hef", "limiar": 0.45,
-            "evidencia_local": true,
-            "img_b64": "...", "img_tipo": "recorte", "img_bytes": 5820}}
+            "evidencia_local": true}}
 ```
+
+A foto completa só sobe se o operador clicar em "Abrir" no dashboard, pelo
+mesmo mecanismo de sempre (`pedidos_imagem` no estado desejado -> Pi publica
+via `/api/edge/imagem`). O Pi só grava o frame em `edge/evidencias/` quando o
+servidor confirma que virou um alerta NOVO (`status: "ok"`, não duplicata nem
+dentro do rearme) -- é o que evita a pasta encher rápido com evidência de
+reincidências que nunca geram um alerta distinto.
 
 `bbox` e `poly` viajam como **string JSON** de propósito: o ThingsBoard indexa
 bem escalares e strings, mas trata mal arrays aninhados dentro de `values`. O
@@ -619,7 +648,7 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`.
 | `IOU_THRESHOLD` | 0.45 | IoU do NMS |
 | `INFERIR_A_CADA_N_FRAMES` | 5 | um em cada N quadros passa pelo modelo |
 | `COOLDOWN_DETECCAO_S` | 5 | intervalo mínimo entre alertas |
-| `DETECCAO_IMAGEM` | `recorte` | `recorte`, `completa` ou `nenhuma` |
+| `EVIDENCIA_JPEG_Q` | 85 | qualidade do frame gravado em `edge/evidencias/` |
 | `EVIDENCIAS_MAX_MB` | 2048 | teto da pasta de evidências |
 | `STREAM_FPS` / `STREAM_LARGURA` | 4 / 640 | vídeo sob demanda |
 | `STREAM_TTL_S` | 75 | teto absoluto do stream, do lado do Pi |
@@ -858,3 +887,11 @@ indesejável, mova para variável de ambiente.
 - **`GridHelper`** do dashboard tem cores escuras fixas, que destoam no tema claro.
 - **A qualidade da máscara foi medida só em imagens curadas de fissura.** O
   comportamento em cena ampla, com sombra e textura, ainda não foi quantificado.
+- **Painel de administração (dashboards configuráveis, cadastro de
+  dispositivos MQTT/HTTP com geração de token/tópicos, usuários com login) é
+  trabalho futuro.** O `server/static/dashboard.html` atual é, por enquanto,
+  a única tela — vai virar um widget de um dispositivo do tipo CV-SHM dentro
+  desse painel maior. Ver discussão de arquitetura antes de começar: decide
+  mecanismo de sessão/senha, onde ficam usuários/dispositivos/dashboards
+  (arquivo JSON, no mesmo espírito de `server/history/index.json`, ou banco
+  de verdade) e como o widget atual se encaixa num grid redimensionável.

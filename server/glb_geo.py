@@ -123,6 +123,22 @@ class GeoModel:
         utm_x, utm_y = self._transformer.transform(lon, lat)
         return utm_x - GEO_OFFSET_X, utm_y - GEO_OFFSET_Y
 
+    def local_to_utm(self, point):
+        """Inverso de latlon_to_local_xy/build_local_point: dado um ponto do
+        modelo (ex.: o hit_point de uma deteccao), devolve (utm_x, utm_y,
+        altitude) em metros reais. Como o local X/Y JA E "UTM menos o
+        offset" (ver latlon_to_local_xy), a volta e so somar o offset de
+        volta -- nao precisa de nenhuma projecao nova."""
+        point = np.asarray(point, dtype=float)
+        if MODEL_UP_AXIS == "Z":
+            local_x, local_y = point[0], point[1]
+        else:
+            local_x, local_y = point[0], -point[2]
+        altitude = self.local_up_value(point) + GEO_OFFSET_Z
+        return (float(local_x + GEO_OFFSET_X),
+                float(local_y + GEO_OFFSET_Y),
+                float(altitude))
+
     def latlon_alt_to_local(self, lat, lon, alt):
         local_x, local_y = self.latlon_to_local_xy(lat, lon)
         local_up = alt - GEO_OFFSET_Z

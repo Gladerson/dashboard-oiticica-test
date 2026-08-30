@@ -80,15 +80,14 @@ IOU_THRESHOLD = float(os.getenv("IOU_THRESHOLD", "0.45"))
 INFERIR_A_CADA_N_FRAMES = int(os.getenv("INFERIR_A_CADA_N_FRAMES", "5"))
 COOLDOWN_DETECCAO_S = float(os.getenv("COOLDOWN_DETECCAO_S", "5"))
 
-# --- Politica de imagem na deteccao ----------------------------------------
-# recorte  = so o pedaco da imagem em volta da rachadura (~4-8 KB)  [padrao]
-# completa = frame inteiro anotado (~40-80 KB)
-# nenhuma  = so metadados; a imagem fica no Pi e e pedida sob demanda
-DETECCAO_IMAGEM = os.getenv("DETECCAO_IMAGEM", "recorte").strip().lower()
-DETECCAO_RECORTE_MARGEM = float(os.getenv("DETECCAO_RECORTE_MARGEM", "0.35"))
-DETECCAO_JPEG_Q = int(os.getenv("DETECCAO_JPEG_Q", "70"))
-
-# Evidencia completa guardada localmente e servida sob demanda.
+# --- Evidencia local ---------------------------------------------------------
+# A deteccao em si NUNCA carrega imagem (so coordenadas/metadados, ver
+# publicar_deteccao em agente_borda.py). O frame cru fica guardado aqui e so
+# sobe se o operador pedir ("Abrir" no dashboard). So e gravado quando o
+# servidor confirma que a deteccao virou um alerta NOVO (nao duplicata/
+# rearme) -- e isso que impede a pasta de encher com evidencia de
+# deteccoes repetidas da MESMA rachadura que o servidor ja teria descartado.
+EVIDENCIA_JPEG_Q = int(os.getenv("EVIDENCIA_JPEG_Q", "85"))
 EVIDENCIAS_DIR = Path(os.getenv("EVIDENCIAS_DIR", str(BASE_DIR / "evidencias")))
 EVIDENCIAS_MAX_MB = float(os.getenv("EVIDENCIAS_MAX_MB", "2048"))
 

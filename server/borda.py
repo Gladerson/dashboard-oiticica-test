@@ -252,19 +252,26 @@ async def _registrar_deteccao(v):
         coord_z=float(v.get("zoom", 0.0)),
         detect=True,
         timestamp=v.get("ts_iso"),
-        image_b64=None,                       # a foto cheia fica no Pi
-        mask_image_b64=v.get("img_b64"),      # recorte leve, para a miniatura
     ))
     corpo = resposta if isinstance(resposta, dict) else {}
     det_servidor = corpo.get("id")
     if det_servidor and v.get("det_id"):
         _mapa_det[v["det_id"]] = det_servidor
-        _anotar_historico(det_servidor, v)
+        campos = _anotar_historico(det_servidor, v)
+        # Sem isto o navegador so via bbox/poly/conf depois de recarregar a
+        # pagina (eram gravados no indice em disco, mas nunca via WebSocket):
+        # o /api/detection ja tinha respondido, e este anexo chega alguns
+        # milissegundos depois, num segundo passo.
+        if campos is not None:
+            await ctx.manager.broadcast({"type": "detection_update",
+                                         "id": det_servidor, **campos})
     return corpo
 
 
 def _anotar_historico(det_servidor, v):
-    """Acrescenta os metadados da borda na entrada do historico."""
+    """Acrescenta os metadados da borda na entrada do historico. Devolve os
+    campos gravados (para o chamador replicar via WebSocket), ou None se o
+    id nao existir mais (ex.: historico foi limpo manualmente)."""
     campos = {
         "borda_det_id": v.get("det_id"),
         "n_instancias": v.get("n"),
@@ -292,16 +299,21 @@ def _anotar_historico(det_servidor, v):
         dados = ctx.ler_indice()
         alvo = next((e for e in dados if e.get("id") == det_servidor), None)
         if alvo is None:
-            return
+            return None
         alvo.update(campos)
         ctx.escrever_indice(dados)
+    return campos
 
 
 def _anexar_imagem(v):
-    """Chegou a evidencia completa pedida pelo operador."""
+    """Chegou a evidencia completa pedida pelo operador (ou o aviso de que
+    ela nao existe mais no Pi -- ja apagada pela limpeza por teto de disco,
+    ou nunca gravada porque a deteccao nao virou alerta novo)."""
     det_servidor = _mapa_det.get(v.get("det_id"))
-    if not det_servidor or not v.get("img_b64"):
+    if not det_servidor:
         return {"status": "ignorado"}
+    if not v.get("img_b64"):
+        return {"status": "erro", "id": det_servidor, "erro": v.get("erro") or "sem imagem"}
     nome = f"{det_servidor}_orig.jpg"
     with open(os.path.join(ctx.history_dir, nome), "wb") as f:
         f.write(base64.b64decode(v["img_b64"]))
@@ -351,8 +363,11 @@ def instalar(app, contexto: Contexto):
         corpo = await req.json()
         r = _anexar_imagem(corpo.get("values", corpo))
         estado.consumir_pedidos()
-        if r.get("id"):
+        if r.get("status") == "ok":
             await ctx.manager.broadcast({"type": "detection_image", "id": r["id"]})
+        elif r.get("status") == "erro":
+            await ctx.manager.broadcast({"type": "detection_image_erro",
+                                         "id": r["id"], "erro": r["erro"]})
         return {"status": "ok", "detalhe": r, "estado": estado.snapshot()}
 
     @app.post("/api/edge/frame")

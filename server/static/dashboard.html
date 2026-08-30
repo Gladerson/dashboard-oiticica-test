@@ -115,7 +115,17 @@
   }
   #modal { position:fixed; inset:0; background:rgba(0,0,0,.8); display:none; align-items:center; justify-content:center; z-index:10; }
   #modal.open { display:flex; }
-  #modal img { max-width:80vw; max-height:70vh; border-radius:6px; }
+  #modal-img-wrap { position:relative; display:inline-block; line-height:0; }
+  #modal img { max-width:80vw; max-height:70vh; min-height:120px; min-width:200px;
+               border-radius:6px; background:#000; display:block; }
+  #modal-mask-canvas { position:absolute; inset:0; width:100%; height:100%;
+               border-radius:6px; pointer-events:none; }
+  #modal-mask-canvas[hidden] { display:none; }
+  #modal-status { position:absolute; inset:0; display:flex; align-items:center;
+               justify-content:center; text-align:center; padding:16px;
+               font-size:12px; color:#cfd9ec; background:rgba(0,0,0,.45);
+               border-radius:6px; }
+  #modal-status[hidden] { display:none; }
 
   /* ==================== TEMA CLARO / ESCURO ==================== */
   /* O canvas do Three.js fica transparente, então o fundo do viewport
@@ -176,12 +186,6 @@
                  padding:2px 8px; border-radius:10px; }
   #video-wrap.ativo #video-badge { display:block; }
   #video-badge .ponto { color:var(--danger); }
-  #transporte-row { display:flex; gap:6px; margin-top:8px; }
-  #transporte-row button { flex:1; background:var(--panel); border:1px solid var(--border);
-      color:var(--muted); border-radius:6px; padding:6px 0; cursor:pointer;
-      font-size:12px; font-family:inherit; }
-  #transporte-row button.sel { border-color:var(--accent); color:var(--text); background:#1a2740; }
-  #transporte-row button:disabled { opacity:.5; cursor:wait; }
   #borda-linha { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;
                  font-size:11px; color:var(--muted); }
   #borda-linha .pill { border:1px solid var(--border); border-radius:999px;
@@ -204,7 +208,6 @@
       border:1px solid #1f5c34; transform:translate(-50%,-50%); pointer-events:none; z-index:0; }
   body.tema-claro #video-off {
       background:repeating-linear-gradient(45deg,#eef2f8,#eef2f8 10px,#e4eaf3 10px,#e4eaf3 20px); }
-  body.tema-claro #transporte-row button.sel { background:#dbe7f8; }
   /* ============================================================= */
 
 </style>
@@ -229,10 +232,6 @@
       </div>
       <div id="video-badge"><span class="ponto">&#9679;</span> AO VIVO
         <span id="video-restante">60</span>s</div>
-    </div>
-    <div id="transporte-row">
-      <button data-transporte="http">HTTP</button>
-      <button data-transporte="mqtt">MQTT</button>
     </div>
     <div id="borda-linha">
       <span class="pill" id="pill-online">borda: --</span>
@@ -279,10 +278,14 @@
 
 <div id="modal">
   <div class="box">
-    <img id="modal-img" src="" />
+    <div id="modal-img-wrap">
+      <img id="modal-img" src="" />
+      <canvas id="modal-mask-canvas" hidden></canvas>
+      <div id="modal-status" hidden></div>
+    </div>
     <div class="acoes">
-      <button id="modal-toggle">Ver original</button>
-      <button id="modal-foto">Pedir foto cheia</button>
+      <button id="modal-toggle">Ver máscara</button>
+      <button id="modal-foto">Solicitar novamente</button>
       <button id="modal-reconhecer">Reconhecer</button>
       <button id="modal-falso">Falso positivo</button>
       <button onclick="document.getElementById('modal').classList.remove('open')">Fechar</button>
@@ -747,6 +750,9 @@ ws.onmessage = (ev) => {
     aplicarFotoCheia(msg.id);
     toast("Foto cheia recebida do Raspberry.");
   }
+  if (msg.type === "detection_image_erro") {
+    aplicarErroFoto(msg.id, msg.erro);
+  }
 };
 
 function atualizarTelemetria(p, t, z) {
@@ -1049,11 +1055,34 @@ function escapar(texto) {
   return d.innerHTML;
 }
 
-function urlsDe(entry) {
-  return {
-    mascara: entry.mask_image ? `${SERVER_BASE}/history_files/${entry.mask_image}` : "",
-    original: entry.image ? `${SERVER_BASE}/history_files/${entry.image}` : "",
-  };
+// O agente de borda (Pi) nunca manda imagem no momento da detecção, só
+// coordenadas (ver README §2/§10) -- então "Ver original" e "Ver máscara"
+// são duas formas de olhar para a MESMA foto: a máscara é desenhada no
+// navegador, num <canvas> por cima do <img>, a partir de "poly"/"bbox" (o
+// contorno normalizado que já viaja com a detecção).
+//
+// O controller.py (ambiente de desktop sem Pi, README §3) é diferente: não
+// tem "evidência sob demanda" e manda a imagem original E a máscara já
+// prontas, como dois arquivos -- nesse caso "Ver máscara" troca de arquivo,
+// como sempre fez.
+function urlDaImagem(entry) {
+  return entry.image ? `${SERVER_BASE}/history_files/${entry.image}` : "";
+}
+
+function urlDaMascaraImagem(entry) {
+  return entry.mask_image ? `${SERVER_BASE}/history_files/${entry.mask_image}` : "";
+}
+
+function temMascaraDesenhada(entry) {
+  return Array.isArray(entry.poly) && entry.poly.some(p => p && p.length >= 3);
+}
+
+function utmDe(entry) {
+  const u = entry.utm;
+  if (!u) return "";
+  const hemi = u.hemisferio_sul ? "S" : "N";
+  return `UTM ${u.zona}${hemi} ${u.x.toFixed(2)} E · ${u.y.toFixed(2)} N`
+       + (u.alt !== undefined ? ` · alt ${u.alt.toFixed(2)} m` : "");
 }
 
 // A marcação 3D fixa existe enquanto a detecção estiver PENDENTE.
@@ -1085,18 +1114,21 @@ function tituloDe(entry) {
 function renderEntrada(reg) {
   const { entry, wrap } = reg;
   const st = statusDe(entry);
-  const { mascara, original } = urlsDe(entry);
+  const thumb = urlDaMascaraImagem(entry) || urlDaImagem(entry);
 
   wrap.classList.toggle("resolvida", st !== "pendente");
-  wrap.querySelector("img").src = mascara || original;
+  const imgEl = wrap.querySelector("img");
+  if (thumb) imgEl.src = thumb;
 
   const reps = (entry.repeticoes || 1) > 1 ? ` · visto ${entry.repeticoes}×` : "";
   const acao = entry.acao
     ? `<br/><span class="acao">Ação: ${escapar(entry.acao)}</span>` : "";
+  const utm = utmDe(entry);
 
   wrap.querySelector(".meta").innerHTML = `
     ${tituloDe(entry)}<br/>
     p:${entry.coord_p.toFixed(1)}° t:${entry.coord_t.toFixed(1)}° z:${entry.coord_z.toFixed(0)}%${reps}<br/>
+    ${utm ? `${utm}<br/>` : ""}
     ${new Date(entry.timestamp).toLocaleString("pt-BR")}${acao}`;
 
   const pendente = st === "pendente";
@@ -1166,29 +1198,121 @@ function aplicarRepeticao(msg) {
 // Alerta: abrir imagem + reconhecer / falso positivo
 // ---------------------------------------------------------------------
 let modalAlvo = null;
+let mascaraVisivel = false;
+
+// O <img> so tem o tamanho renderizado FINAL depois de carregar -- sem isto
+// o canvas as vezes nasce com o tamanho de placeholder (min-width/height do
+// CSS) em vez do tamanho real da foto.
+document.getElementById("modal-img").addEventListener("load", () => {
+  const reg = modalAlvo && entradas.get(modalAlvo);
+  if (reg && !document.getElementById("modal-mask-canvas").hidden) desenharMascaraCanvas(reg.entry);
+});
+
+// ---------------------------------------------------------------------
+// Máscara desenhada no navegador: "poly" chega com a detecção como uma
+// lista de polígonos em coordenadas 0..1 do frame inteiro (ver
+// contorno_normalizado em edge/inferencia_hailo.py). Não existe uma
+// segunda imagem "com máscara" -- é a mesma foto, com isto desenhado por
+// cima num <canvas> transparente.
+function desenharMascaraCanvas(entry) {
+  const img = document.getElementById("modal-img");
+  const canvas = document.getElementById("modal-mask-canvas");
+  const w = img.clientWidth, h = img.clientHeight;
+  if (!w || !h) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + "px";
+  canvas.style.height = h + "px";
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx2d.clearRect(0, 0, w, h);
+
+  (entry.poly || []).forEach(pontos => {
+    if (!pontos || pontos.length < 3) return;
+    ctx2d.beginPath();
+    pontos.forEach(([x, y], i) => {
+      const px = x * w, py = y * h;
+      if (i === 0) ctx2d.moveTo(px, py); else ctx2d.lineTo(px, py);
+    });
+    ctx2d.closePath();
+    ctx2d.fillStyle = "rgba(255,60,60,.4)";
+    ctx2d.strokeStyle = "#ff5c5c";
+    ctx2d.lineWidth = 2;
+    ctx2d.fill();
+    ctx2d.stroke();
+  });
+}
+
+function atualizarToggleMascara(reg) {
+  const entry = reg.entry;
+  const toggle = document.getElementById("modal-toggle");
+  const canvas = document.getElementById("modal-mask-canvas");
+  const img = document.getElementById("modal-img");
+  const original = urlDaImagem(entry);
+  const mascaraImg = urlDaMascaraImagem(entry);
+
+  if (original && mascaraImg) {
+    // controller.py: a mascara e um ARQUIVO separado -- troca o <img>.
+    canvas.hidden = true;
+    toggle.style.display = "";
+    toggle.textContent = mascaraVisivel ? "Ver original" : "Ver máscara";
+    img.src = mascaraVisivel ? mascaraImg : original;
+    return;
+  }
+
+  // Agente de borda (Pi): mesma imagem, mascara desenhada por cima.
+  const disponivel = !!original && temMascaraDesenhada(entry);
+  toggle.style.display = disponivel ? "" : "none";
+  canvas.hidden = !(disponivel && mascaraVisivel);
+  toggle.textContent = mascaraVisivel ? "Ver original" : "Ver máscara";
+  if (!canvas.hidden) desenharMascaraCanvas(entry);
+}
+
+function mostrarStatusModal(texto) {
+  const el = document.getElementById("modal-status");
+  if (!texto) { el.hidden = true; el.textContent = ""; return; }
+  el.hidden = false;
+  el.textContent = texto;
+}
+
+// Pede a foto cheia ao Pi, se ainda nao tivermos uma. E chamado sozinho ao
+// abrir o modal -- nao existe mais um botao manual para o primeiro pedido,
+// so para tentar de novo se der erro.
+function solicitarImagemSeNecessario(id) {
+  const reg = entradas.get(id);
+  if (!reg || urlDaImagem(reg.entry)) { mostrarStatusModal(""); return; }
+  document.getElementById("modal-foto").style.display = "none";
+  if (!reg.entry.evidencia_local) {
+    mostrarStatusModal("Esta detecção não tem evidência guardada na borda.");
+    return;
+  }
+  mostrarStatusModal("Solicitando imagem completa ao Raspberry...");
+  pedirFotoCheia(id);
+}
 
 function abrirModal(id) {
   const reg = entradas.get(id);
   if (!reg) return;
   modalAlvo = id;
-  const { mascara, original } = urlsDe(reg.entry);
+  mascaraVisivel = false;
 
   const img = document.getElementById("modal-img");
-  const toggle = document.getElementById("modal-toggle");
-  let mostrandoMascara = true;
+  const original = urlDaImagem(reg.entry);
+  img.src = original || "";
+  document.getElementById("modal-mask-canvas").hidden = true;
 
-  img.src = mascara || original || "";
-  toggle.style.display = (mascara && original) ? "" : "none";
-  toggle.textContent = "Ver original";
+  const toggle = document.getElementById("modal-toggle");
   toggle.onclick = () => {
-    mostrandoMascara = !mostrandoMascara;
-    img.src = mostrandoMascara ? mascara : original;
-    toggle.textContent = mostrandoMascara ? "Ver original" : "Ver máscara";
+    mascaraVisivel = !mascaraVisivel;
+    atualizarToggleMascara(reg);
   };
+  atualizarToggleMascara(reg);
 
   const btnFoto = document.getElementById("modal-foto");
-  btnFoto.style.display = (reg.entry.evidencia_local && !original) ? "" : "none";
-  btnFoto.onclick = () => pedirFotoCheia(id);
+  btnFoto.style.display = "none";
+  btnFoto.onclick = () => { mostrarStatusModal("Solicitando novamente..."); pedirFotoCheia(id); };
 
   const pendente = statusDe(reg.entry) === "pendente";
   const btnRec = document.getElementById("modal-reconhecer");
@@ -1199,6 +1323,7 @@ function abrirModal(id) {
   btnFalso.onclick = (ev) => marcarFalsoPositivo(id, ev.currentTarget);
 
   document.getElementById("modal").classList.add("open");
+  solicitarImagemSeNecessario(id);
 }
 
 // Chegou a evidencia completa pedida pelo operador. Se o modal daquela
@@ -1210,19 +1335,26 @@ function aplicarFotoCheia(id) {
   reg.entry.image = `${id}_orig.jpg`;
   renderEntrada(reg);
   if (modalAlvo !== id) return;
-  const { mascara, original } = urlsDe(reg.entry);
-  document.getElementById("modal-img").src = original || mascara;
-  const toggle = document.getElementById("modal-toggle");
-  toggle.style.display = (mascara && original) ? "" : "none";
-  toggle.textContent = "Ver máscara";
-  let mostrandoMascara = false;
-  toggle.onclick = () => {
-    mostrandoMascara = !mostrandoMascara;
-    document.getElementById("modal-img").src = mostrandoMascara ? mascara : original;
-    toggle.textContent = mostrandoMascara ? "Ver original" : "Ver máscara";
-  };
+  mostrarStatusModal("");
+  document.getElementById("modal-img").src = urlDaImagem(reg.entry);
   document.getElementById("modal-foto").style.display = "none";
+  mascaraVisivel = temMascaraDesenhada(reg.entry);
+  atualizarToggleMascara(reg);
 }
+
+// O Pi avisou que nao tem mais essa evidencia (limpeza por teto de disco)
+// ou que a deteccao nunca virou alerta novo (duplicata/rearme).
+function aplicarErroFoto(id, erro) {
+  if (modalAlvo !== id) return;
+  mostrarStatusModal(`Evidência indisponível: ${erro || "não encontrada no Raspberry"}.`);
+  document.getElementById("modal-foto").style.display = "";
+}
+
+window.addEventListener("resize", () => {
+  if (!modalAlvo) return;
+  const reg = entradas.get(modalAlvo);
+  if (reg && !document.getElementById("modal-mask-canvas").hidden) desenharMascaraCanvas(reg.entry);
+});
 
 let acaoAlvo = null;
 
@@ -1350,27 +1482,6 @@ setInterval(() => {
   document.getElementById("video-restante").textContent = s;
 }, 500);
 
-document.querySelectorAll("#transporte-row button").forEach(b => {
-  b.addEventListener("click", async () => {
-    const botoes = document.querySelectorAll("#transporte-row button");
-    botoes.forEach(x => x.disabled = true);
-    try {
-      await fetch(`${SERVER_BASE}/api/transporte`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transporte: b.dataset.transporte }),
-      });
-      toast(`Transporte pedido: ${b.dataset.transporte.toUpperCase()}. ` +
-            `O Raspberry troca no próximo ciclo de telemetria.`, 4000);
-    } catch (e) {
-      toast("Falha ao trocar o transporte.");
-    } finally {
-      botoes.forEach(x => x.disabled = false);
-      atualizarPainelBorda();
-    }
-  });
-});
-
 // ---------------------------------------------------------------------
 // Limiar de confianca (CONF_THRESHOLD) -- controle deslizante
 //
@@ -1422,10 +1533,6 @@ async function atualizarPainelBorda() {
   const st = j.estado.stream;
   if (st.ativo !== streamAtivo) aplicarEstadoStream(st.ativo, st.restante_s);
   else if (st.ativo) streamFimEm = Date.now() + st.restante_s * 1000;
-
-  document.querySelectorAll("#transporte-row button").forEach(b => {
-    b.classList.toggle("sel", b.dataset.transporte === j.estado.transporte);
-  });
 
   const confAtual = j.estado.inferencia && j.estado.inferencia.conf;
   if (confAtual !== undefined && document.activeElement !== limiarSlider) {
