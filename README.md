@@ -97,8 +97,12 @@ dashboard_oiticica_test/
 │   ├── server.py                   # API, WebSocket, cone de visão, /api/aim, /api/locate
 │   ├── borda.py                    # estado desejado, endpoints /api/edge/*, relay de stream
 │   ├── glb_geo.py                  # georreferenciamento UTM, raycasting, ângulos PTZ
+│   ├── db.py                       # PostgreSQL: usuarios/sessoes + esquema p/ Dispositivos/Dashboard
+│   ├── auth.py                     # login por sessão, middleware de autenticação, admin de usuários
 │   ├── prepare_model.sh            # remove compressão Draco do .glb (rodar uma vez)
 │   ├── static/dashboard.html       # Three.js: modelo, cone, telinha, histórico, marcações 3D
+│   ├── static/login.html           # tela de entrada
+│   ├── static/config.html          # tema, própria senha, administração de usuários (admin)
 │   ├── history/                    # detecções salvas em runtime (fora do Git)
 │   ├── requirements.txt
 │   └── .env.example
@@ -135,6 +139,7 @@ dashboard_oiticica_test/
 | raycasting, cone, coordenadas 3D | `server/glb_geo.py` |
 | histórico, dedup, WebSocket | `server/server.py` |
 | interface, marcações 3D, telinha | `server/static/dashboard.html` |
+| login, sessão, usuários | `server/auth.py` + `server/db.py` |
 | compilação do modelo | `notebook/` na ordem numérica da §6 |
 
 Duas invariantes que atravessam o código e não são óbvias na leitura local:
@@ -283,6 +288,46 @@ pip install -r requirements.txt
 pip install embreex          # raycasting acelerado: o cone dispara 25 raios por atualização
 ```
 
+### 5.1a PostgreSQL (login e administração de usuários)
+
+O painel exige login desde a etapa "Configuração" (§16). `install_desktop.sh`
+já cria a role e o banco; para fazer à mão:
+
+```bash
+sudo apt install -y postgresql
+sudo -u postgres psql -c "CREATE ROLE oiticica WITH LOGIN PASSWORD 'TROQUE_ESTA_SENHA';"
+sudo -u postgres psql -c "CREATE DATABASE oiticica OWNER oiticica;"
+sudo -u postgres psql -d oiticica -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+```
+
+Depois, em `server/.env`:
+
+```bash
+DATABASE_URL=postgresql://oiticica:TROQUE_ESTA_SENHA@127.0.0.1:5432/oiticica
+```
+
+`server/db.py` cria as tabelas sozinho na primeira subida (`CREATE TABLE IF
+NOT EXISTS`) e falha rápido, com mensagem clara, se não conseguir conectar —
+mesmo espírito do `.env`/WSDL/porta ocupada do agente de borda. No primeiro
+boot sem nenhum usuário cadastrado, ele semeia um admin padrão:
+
+```
+usuário: admin
+senha:   hydroconecta
+```
+
+**Troque essa senha no primeiro login** — o próprio painel obriga: com
+`trocar_senha` pendente, toda rota redireciona para `/config` até a senha
+mudar. Há dois papéis: `admin` (cria/exclui usuários, redefine senha de
+qualquer um) e `usuario` (só a própria senha e o próprio tema). Ver §10 para
+as rotas e §16 para o que ainda falta (Dispositivos, Dashboard).
+
+> Por padrão o cookie de sessão NÃO exige HTTPS (`SESSION_COOKIE_SECURE=false`,
+> para funcionar numa LAN comum). Se o servidor for exposto atrás de um
+> reverse proxy com HTTPS de verdade, defina `SESSION_COOKIE_SECURE=true` no
+> `.env` — sem isso, um cookie de sessão trafegando em texto claro numa rede
+> não confiável pode ser interceptado.
+
 ### 5.1 Modelo 3D
 
 O `.glb` de fotogrametria vem comprimido com Draco. O Three.js decodifica no
@@ -311,12 +356,13 @@ MODEL_UP_AXIS = "Z"        # exports de fotogrametria costumam ser Z-up
 
 ```bash
 cp .env.example .env
-nano .env      # CONTROLLER_URL e CONTROLLER_PUBLIC_URL com o IP do Pi
+nano .env      # DATABASE_URL (§5.1a), CONTROLLER_URL e CONTROLLER_PUBLIC_URL com o IP do Pi
 python server.py
 ```
 
-Procure na saída a linha `>> Modulo de borda instalado`. Se ela não aparecer, o
-`borda.py` não foi carregado e as rotas `/api/edge/*` não existem.
+Procure na saída as linhas `>> Modulo de autenticacao instalado` e
+`>> Modulo de borda instalado`. Se a segunda não aparecer, o `borda.py` não
+foi carregado e as rotas `/api/edge/*` não existem.
 
 > `load_dotenv` **não** sobrescreve o que já está no ambiente, então
 > `PAN_SIGN=1 python server.py` continua funcionando para um teste pontual sem
@@ -325,18 +371,29 @@ Procure na saída a linha `>> Modulo de borda instalado`. Se ela não aparecer, 
 
 ### 5.4 Verificar
 
+`/api/borda` (como quase toda rota do painel, desde a etapa Configuração)
+exige sessão — sem cookie, a resposta é `401`. Para testar por `curl`, logue
+primeiro e reaproveite o cookie:
+
 ```bash
-curl -s localhost:8001/api/borda | python3 -m json.tool
+curl -s -c /tmp/cookies.txt -X POST localhost:8001/api/login \
+     -H 'Content-Type: application/json' \
+     -d '{"username": "admin", "senha": "hydroconecta"}'
+
+curl -s -b /tmp/cookies.txt localhost:8001/api/borda | python3 -m json.tool
 ```
 
 Com `online: true` e `relatado.fps` preenchido, o Pi está conversando com o
-servidor. No dashboard (`http://SERVIDOR:8001`):
+servidor. No navegador, acesse `http://SERVIDOR:8001` — o painel redireciona
+sozinho para `/login` se não houver sessão. Depois de entrar:
 
 - a telinha nasce **desligada**, hachurada;
 - as pastilhas mostram `borda: http` em verde, o fps e a latência da NPU;
 - clicar na telinha inicia o vídeo com contador regressivo; clicar de novo encerra;
 - deixando rodar, o stream para sozinho ao fim de 60 s;
-- mover o PTZ renova a janela — quem dirige a câmera está olhando.
+- mover o PTZ renova a janela — quem dirige a câmera está olhando;
+- o canto superior direito mostra o usuário logado, com atalhos para
+  **Configuração** (tema, senha, usuários) e **Sair**.
 
 ---
 
@@ -560,18 +617,33 @@ encheria o disco a troco de nada. O agente publica num tópico próprio, efêmer
 
 ### Servidor (porta 8001)
 
-| Rota | Método | Função |
-|---|---|---|
-| `/api/edge/telemetria` | POST | telemetria do Pi; responde com o estado desejado |
-| `/api/edge/deteccao` | POST | evento de detecção |
-| `/api/edge/frame` | POST | quadro JPEG cru (não base64) |
-| `/api/edge/imagem` | POST | evidência completa pedida pelo operador |
-| `/api/stream/start` \| `renovar` \| `stop` | POST | janela de vídeo de 60 s |
-| `/api/stream/atual.jpg` | GET | último quadro recebido |
-| `/api/transporte` | POST | alterna entre `http` e `mqtt` |
-| `/api/inferencia` | POST | ajusta limiares em runtime |
-| `/api/borda` | GET | painel de estado da borda |
-| `/api/aim` \| `/api/locate` | POST | close por seleção; revisitar detecção |
+Colunas **Sessão**: rotas do dispositivo (Pi/`controller.py`) nunca exigem
+login -- não têm navegador nem cookie. Todo o resto exige sessão válida
+(ver §5.1a); sem ela, `/api/*` responde `401` e páginas HTML redirecionam
+para `/login`.
+
+| Rota | Método | Sessão | Função |
+|---|---|---|---|
+| `/api/edge/telemetria` | POST | não | telemetria do Pi; responde com o estado desejado |
+| `/api/edge/deteccao` | POST | não | evento de detecção (só coordenadas) |
+| `/api/edge/frame` | POST | não | quadro JPEG cru (não base64) |
+| `/api/edge/imagem` | POST | não | evidência completa pedida pelo operador |
+| `/api/telemetry`, `/api/detection` | POST | não | mesma função acima, usadas pelo `controller.py` |
+| `/api/stream/start` \| `renovar` \| `stop` | POST | sim | janela de vídeo de 60 s |
+| `/api/stream/atual.jpg` | GET | sim | último quadro recebido |
+| `/api/transporte` | POST | sim | alterna entre `http` e `mqtt` (sem botão no painel, ver §9) |
+| `/api/inferencia` | POST | sim | ajusta limiares em runtime |
+| `/api/borda` | GET | sim | painel de estado da borda |
+| `/api/aim` \| `/api/locate` | POST | sim | close por seleção; revisitar detecção |
+| `/api/detection/{id}/pedir_imagem` | POST | sim | pede a foto completa ao Pi ("Abrir") |
+| `/login`, `/api/login` | GET/POST | não | tela e endpoint de entrada |
+| `/api/logout` | POST | sim | encerra a sessão atual |
+| `/config` | GET | sim | tema, própria senha, administração de usuários |
+| `/api/usuarios/me` | GET | sim | dados do usuário logado |
+| `/api/usuarios/me/senha` \| `/tema` | POST | sim | própria senha / próprio tema |
+| `/api/usuarios` | GET/POST | admin | listar / criar usuários |
+| `/api/usuarios/{id}/redefinir_senha` | POST | admin | força troca de senha de outro usuário |
+| `/api/usuarios/{id}` | DELETE | admin | exclui usuário (nunca a si mesmo nem o último admin) |
 
 ### Payloads
 
@@ -660,6 +732,9 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`.
 
 | Variável | Padrão | Para quê |
 |---|---|---|
+| `DATABASE_URL` | ver `.env.example` | conexão PostgreSQL (usuários/sessões, §5.1a) |
+| `SESSION_COOKIE_SECURE` | `false` | `true` só atrás de HTTPS de verdade (reverse proxy) |
+| `SESSAO_DURACAO_H` | 168 (7 dias) | validade do cookie de sessão |
 | `CONTROLLER_URL` | `http://127.0.0.1:8090` | servidor → Pi |
 | `CONTROLLER_PUBLIC_URL` | = acima | navegador → Pi (PTZ direto) |
 | `STREAM_JANELA_S` | 60 | duração do pedido de vídeo |
@@ -887,11 +962,20 @@ indesejável, mova para variável de ambiente.
 - **`GridHelper`** do dashboard tem cores escuras fixas, que destoam no tema claro.
 - **A qualidade da máscara foi medida só em imagens curadas de fissura.** O
   comportamento em cena ampla, com sombra e textura, ainda não foi quantificado.
-- **Painel de administração (dashboards configuráveis, cadastro de
-  dispositivos MQTT/HTTP com geração de token/tópicos, usuários com login) é
-  trabalho futuro.** O `server/static/dashboard.html` atual é, por enquanto,
-  a única tela — vai virar um widget de um dispositivo do tipo CV-SHM dentro
-  desse painel maior. Ver discussão de arquitetura antes de começar: decide
-  mecanismo de sessão/senha, onde ficam usuários/dispositivos/dashboards
-  (arquivo JSON, no mesmo espírito de `server/history/index.json`, ou banco
-  de verdade) e como o widget atual se encaixa num grid redimensionável.
+- **Painel de administração — construção por etapas (3 abas: Dashboard,
+  Dispositivos, Configuração).** Estado atual:
+  - ✅ **Configuração**: login por sessão (PostgreSQL, `server/db.py` +
+    `server/auth.py`), admin padrão `admin`/`hydroconecta` com troca de
+    senha obrigatória, papéis admin/usuário, tema movido para cá
+    (`server/static/config.html`, `server/static/login.html`).
+  - ⏳ **Dispositivos**: cadastro de câmeras/Raspberrys (localização no
+    mapa, transporte HTTP/MQTT com geração de token/tópicos, N modelos 3D
+    associados a localidades) — ainda não construído. O esquema já existe
+    em `db.py` (`localidades`, `dispositivos`, inspirado em NGSI/FIWARE:
+    `entity_id`/`entity_type`/atributos) mas nenhuma rota/tela usa ainda.
+  - ⏳ **Dashboard**: grid de widgets redimensionável, N dashboards por
+    usuário, filtro por localidade — ainda não construído (tabela
+    `dashboards` já criada, com `layout JSONB`). O
+    `server/static/dashboard.html` atual continua sendo a única tela de
+    operação; vai virar o primeiro widget (tipo `CV-SHM`) dentro desse
+    grid.

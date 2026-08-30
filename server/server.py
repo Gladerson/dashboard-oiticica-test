@@ -42,6 +42,9 @@ from glb_geo import (  # noqa: E402
     UTM_HEMISPHERE_SOUTH, UTM_ZONE,
 )
 
+import auth  # noqa: E402
+import db  # noqa: E402
+
 # --- Posição real da câmera -------------------------------------------------
 CAMERA_LAT = -6.152425824994227
 CAMERA_LON = -37.12619639369007
@@ -229,6 +232,9 @@ print(f">> Direção 'pan=0/tilt=0' (geometria real): {base_forward}")
 app = FastAPI(title="Dashboard Server")
 app.mount("/model", StaticFiles(directory="static"), name="model")
 app.mount("/history_files", StaticFiles(directory=HISTORY_DIR), name="history_files")
+
+db.iniciar()
+auth.instalar(app)
 
 
 # ----------------------------------------------------------------------------
@@ -721,6 +727,13 @@ borda.instalar(app, borda.Contexto(
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
+    # A middleware HTTP de auth.py NAO cobre websocket (e outro scope ASGI);
+    # o cookie de sessao chega junto do handshake mesmo assim, entao
+    # validamos aqui, ANTES do accept().
+    usuario = db.usuario_da_sessao(websocket.cookies.get(auth.COOKIE_NOME))
+    if usuario is None:
+        await websocket.close(code=4401)
+        return
     await manager.connect(websocket)
     try:
         while True:

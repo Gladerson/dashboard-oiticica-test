@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Entrar - Barragem Oiticica</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #121b2e; --border: #223049;
+    --text: #dbe4f3; --muted: #8093b3; --accent: #4fa3ff; --danger: #ff5c5c;
+  }
+  body.tema-claro {
+    --bg: #f5f7fa; --panel: #ffffff; --border: #d5dbe5;
+    --text: #16202f; --muted: #5a6a85; --accent: #1668c4; --danger: #c62828;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:var(--bg); color:var(--text); font-family: system-ui, sans-serif;
+  }
+  .box {
+    width:320px; background:var(--panel); border:1px solid var(--border);
+    border-radius:10px; padding:28px; box-shadow:0 8px 30px rgba(0,0,0,.25);
+  }
+  h1 { font-size:16px; margin:0 0 4px; }
+  p.sub { color:var(--muted); font-size:12px; margin:0 0 20px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:14px 0 5px; }
+  input {
+    width:100%; padding:9px 10px; background:var(--bg); color:var(--text);
+    border:1px solid var(--border); border-radius:6px; font-size:14px; font-family:inherit;
+  }
+  input:focus { outline:none; border-color:var(--accent); }
+  button {
+    width:100%; margin-top:20px; padding:10px; background:var(--accent); color:#fff;
+    border:0; border-radius:6px; font-size:14px; cursor:pointer; font-family:inherit;
+  }
+  button:disabled { opacity:.6; cursor:wait; }
+  #erro {
+    margin-top:12px; font-size:12px; color:var(--danger); min-height:14px;
+  }
+</style>
+</head>
+<body>
+<form class="box" id="form-login">
+  <h1>Barragem Oiticica</h1>
+  <p class="sub">Monitoramento de rachaduras — entre com seu usuário.</p>
+  <label for="username">Usuário</label>
+  <input id="username" name="username" autocomplete="username" required autofocus />
+  <label for="senha">Senha</label>
+  <input id="senha" name="senha" type="password" autocomplete="current-password" required />
+  <button type="submit" id="btn-entrar">Entrar</button>
+  <div id="erro"></div>
+</form>
+<script>
+try {
+  if ((localStorage.getItem("oiticica_tema") || "escuro") === "claro")
+    document.body.classList.add("tema-claro");
+} catch (e) {}
+
+function proximaPagina(trocarSenha) {
+  if (trocarSenha) return "/config?trocar_senha=1";
+  const params = new URLSearchParams(location.search);
+  const next = params.get("next");
+  return (next && next.startsWith("/")) ? next : "/";
+}
+
+document.getElementById("form-login").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const btn = document.getElementById("btn-entrar");
+  const erro = document.getElementById("erro");
+  erro.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "Entrando...";
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById("username").value.trim(),
+        senha: document.getElementById("senha").value,
+      }),
+    });
+    const dados = await r.json();
+    if (!r.ok) {
+      erro.textContent = dados.error || "Falha ao entrar.";
+      return;
+    }
+    location.href = proximaPagina(dados.usuario && dados.usuario.trocar_senha);
+  } catch (e) {
+    erro.textContent = "Não consegui falar com o servidor.";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Entrar";
+  }
+});
+</script>
+</body>
+</html>

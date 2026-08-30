@@ -157,14 +157,18 @@
   body.tema-claro .history-item img              { background:#e9edf3; }
   body.tema-claro .history-actions .localizar    { border-color:#7fa6d9; }
 
-  #btn-tema {
-    position: fixed; left: 12px; bottom: 12px; z-index: 20;
+  #nav-conta {
+    position: fixed; top: 10px; right: 12px; z-index: 20;
+    display: flex; gap: 6px; align-items: center;
+  }
+  #nav-conta a, #nav-conta button {
     background: var(--panel); color: var(--text);
     border: 1px solid var(--border); border-radius: 6px;
-    padding: 7px 11px; font-size: 12px; line-height: 1;
-    font-family: inherit; cursor: pointer;
+    padding: 6px 10px; font-size: 12px; line-height: 1;
+    font-family: inherit; cursor: pointer; text-decoration: none;
   }
-  #btn-tema:hover { border-color: var(--accent); }
+  #nav-conta a:hover, #nav-conta button:hover { border-color: var(--accent); }
+  #nav-conta span { font-size: 11px; color: var(--muted); }
 
   /* ---- Telinha sob demanda + estado da borda ---- */
   /* aspect-ratio e o que mantem a caixa de pe quando o <img> esta sem src.
@@ -213,7 +217,11 @@
 </style>
 </head>
 <body>
-<button id="btn-tema" type="button">Tema claro</button>
+<div id="nav-conta">
+  <span id="nav-usuario"></span>
+  <a href="/config">Configuração</a>
+  <button id="btn-sair" type="button">Sair</button>
+</div>
 
 <div id="app">
   <div id="viewport">
@@ -1563,28 +1571,29 @@ loadHistory();
 </script>
 
 <script>
-  // ---- Alternador de tema claro/escuro (independente do modulo Three.js) ----
+  // ---- Tema (a troca agora mora em /config; aqui so aplicamos o que foi
+  // salvo -- por localStorage, de imediato, e pela conta, assim que
+  // /api/usuarios/me responder) ----
   (function () {
     const KEY = "oiticica_tema";
-    const btn = document.getElementById("btn-tema");
-
-    function aplicar(tema) {
-      const claro = tema === "claro";
-      document.body.classList.toggle("tema-claro", claro);
-      btn.textContent = claro ? "Tema escuro" : "Tema claro";
-      btn.title = claro
-        ? "Voltar para o tema escuro"
-        : "Tema claro - melhor para prints em relatorio";
-    }
-
     let atual = "escuro";
     try { atual = localStorage.getItem(KEY) || "escuro"; } catch (e) {}
-    aplicar(atual);
+    document.body.classList.toggle("tema-claro", atual === "claro");
+  })();
 
-    btn.addEventListener("click", () => {
-      atual = document.body.classList.contains("tema-claro") ? "escuro" : "claro";
-      aplicar(atual);
-      try { localStorage.setItem(KEY, atual); } catch (e) {}
+  // ---- Conta: usuario logado + sair ----
+  (function () {
+    fetch("/api/usuarios/me").then(r => r.ok ? r.json() : null).then(eu => {
+      if (!eu) return;
+      document.getElementById("nav-usuario").textContent = eu.username;
+      const claro = eu.tema === "claro";
+      document.body.classList.toggle("tema-claro", claro);
+      try { localStorage.setItem("oiticica_tema", eu.tema); } catch (e) {}
+    }).catch(() => {});
+
+    document.getElementById("btn-sair").addEventListener("click", async () => {
+      try { await fetch("/api/logout", { method: "POST" }); } catch (e) {}
+      location.href = "/login";
     });
   })();
 </script>
