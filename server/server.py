@@ -44,6 +44,7 @@ from glb_geo import (  # noqa: E402
 
 import auth  # noqa: E402
 import db  # noqa: E402
+import dispositivos  # noqa: E402
 
 # --- Posição real da câmera -------------------------------------------------
 CAMERA_LAT = -6.152425824994227
@@ -235,6 +236,7 @@ app.mount("/history_files", StaticFiles(directory=HISTORY_DIR), name="history_fi
 
 db.iniciar()
 auth.instalar(app)
+dispositivos.instalar(app)
 
 
 # ----------------------------------------------------------------------------

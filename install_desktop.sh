@@ -17,6 +17,7 @@ sudo apt install -y \
     libxml2-dev libxslt1-dev \
     libspatialindex-dev \
     postgresql \
+    nodejs npm \
     git
 
 echo ">> 1b/6 - Banco (usuarios/sessoes do login -- ver README secao 5.1a)"

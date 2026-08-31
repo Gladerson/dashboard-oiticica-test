@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dispositivos - Barragem Oiticica</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --bg: #0b1220; --panel: #121b2e; --border: #223049;
+    --text: #dbe4f3; --muted: #8093b3; --accent: #4fa3ff; --danger: #ff5c5c; --ok: #3f9c5c; --warn: #a8871f;
+  }
+  body.tema-claro {
+    --bg: #f5f7fa; --panel: #ffffff; --border: #d5dbe5;
+    --text: #16202f; --muted: #5a6a85; --accent: #1668c4; --danger: #c62828; --ok: #12703a; --warn: #8a6b00;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, sans-serif; }
+  #topo {
+    display:flex; align-items:center; gap:14px; padding:12px 20px;
+    border-bottom:1px solid var(--border); background:var(--panel);
+  }
+  #topo h1 { font-size:14px; margin:0; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  #topo .espaco { flex:1; }
+  #topo a, #topo button {
+    color:var(--text); text-decoration:none; font-size:13px; background:transparent;
+    border:1px solid var(--border); border-radius:6px; padding:6px 12px; cursor:pointer;
+    font-family:inherit;
+  }
+  #topo a:hover, #topo button:hover { border-color:var(--accent); }
+  main { max-width:860px; margin:0 auto; padding:24px 20px 60px; }
+  section {
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:18px 20px; margin-bottom:22px;
+  }
+  section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 14px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 5px; }
+  input, select {
+    width:100%; padding:8px 10px; background:var(--bg); color:var(--text);
+    border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit;
+  }
+  button.acao {
+    margin-top:14px; padding:8px 16px; background:var(--accent); color:#fff;
+    border:0; border-radius:6px; font-size:13px; cursor:pointer; font-family:inherit;
+  }
+  button.acao:disabled { opacity:.6; cursor:wait; }
+  .msg { font-size:12px; margin-top:10px; min-height:14px; }
+  .msg.erro { color:var(--danger); }
+  .msg.ok { color:var(--ok); }
+  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; }
+  th, td { text-align:left; padding:7px 6px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; }
+  td button { font-size:11px; padding:4px 8px; margin-right:4px; margin-bottom:4px; }
+  .muted { color:var(--muted); font-size:11px; }
+  .badge {
+    font-size:10px; padding:2px 8px; border-radius:999px; border:1px solid var(--border); white-space:nowrap;
+  }
+  .badge.pronto { border-color:var(--ok); color:var(--ok); }
+  .badge.erro { border-color:var(--danger); color:var(--danger); }
+  .badge.processando { border-color:var(--warn); color:var(--warn); }
+  .badge.nenhum { color:var(--muted); }
+  .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:0 12px; }
+  .grid2 .full { grid-column: 1 / -1; }
+  #mapa { height:260px; border-radius:8px; border:1px solid var(--border); margin-top:6px; }
+  .credenciais {
+    background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px 12px;
+    font-family: ui-monospace, monospace; font-size:11px; white-space:pre-wrap; word-break:break-all;
+    margin-top:10px; display:none;
+  }
+  .credenciais.show { display:block; }
+  .aviso {
+    background:#3a2a10; border:1px solid var(--warn); color:#f0d999;
+    border-radius:8px; padding:10px 14px; font-size:12px; margin-bottom:20px;
+  }
+  body.tema-claro .aviso { background:#fff6e0; color:#6b5300; }
+</style>
+</head>
+<body>
+<div id="topo">
+  <h1>Dispositivos</h1>
+  <div class="espaco"></div>
+  <span id="quem" style="font-size:12px;color:var(--muted)"></span>
+  <a href="/">← Painel</a>
+  <a href="/config">Configuração</a>
+  <button id="btn-sair" type="button">Sair</button>
+</div>
+
+<main>
+  <div class="aviso">
+    Este cadastro ainda não liga sozinho no pipeline ao vivo (telemetria/detecção/stream
+    continua falando só com o Raspberry configurado em <code>server/.env</code>). Serve para
+    planejar/documentar os dispositivos e gerar as credenciais que vão para o
+    <code>edge/.env</code> de cada um.
+  </div>
+
+  <section>
+    <h2>Localidades (modelo 3D + georreferenciamento)</h2>
+    <table id="tabela-localidades">
+      <thead><tr><th>Nome</th><th>Modelo</th><th>UTM</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <h2 style="margin-top:22px">Nova localidade</h2>
+    <form id="form-localidade" class="grid2">
+      <div class="full">
+        <label for="loc-nome">Nome</label>
+        <input id="loc-nome" required />
+      </div>
+      <div>
+        <label for="loc-utm-zone">Zona UTM</label>
+        <input id="loc-utm-zone" type="number" required />
+      </div>
+      <div>
+        <label for="loc-hemisferio">Hemisfério</label>
+        <select id="loc-hemisferio">
+          <option value="true">Sul</option>
+          <option value="false">Norte</option>
+        </select>
+      </div>
+      <div>
+        <label for="loc-offset-x">Geo offset X (m)</label>
+        <input id="loc-offset-x" type="number" step="any" required />
+      </div>
+      <div>
+        <label for="loc-offset-y">Geo offset Y (m)</label>
+        <input id="loc-offset-y" type="number" step="any" required />
+      </div>
+      <div>
+        <label for="loc-offset-z">Geo offset Z (m)</label>
+        <input id="loc-offset-z" type="number" step="any" value="0" />
+      </div>
+      <div>
+        <label for="loc-up-axis">Eixo "para cima" do modelo</label>
+        <select id="loc-up-axis">
+          <option value="Z">Z (comum em fotogrametria/ODM)</option>
+          <option value="Y">Y</option>
+        </select>
+      </div>
+      <div class="full">
+        <button class="acao" type="submit">Criar localidade</button>
+        <div class="msg" id="msg-localidade"></div>
+      </div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Dispositivos (câmera + Raspberry)</h2>
+    <table id="tabela-dispositivos">
+      <thead><tr><th>Nome</th><th>Localidade</th><th>Transporte</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <h2 style="margin-top:22px">Novo dispositivo</h2>
+    <form id="form-dispositivo" class="grid2">
+      <div>
+        <label for="dev-nome">Nome</label>
+        <input id="dev-nome" required />
+      </div>
+      <div>
+        <label for="dev-proprietario">Proprietário</label>
+        <input id="dev-proprietario" placeholder="ex.: SEMARH" />
+      </div>
+      <div>
+        <label for="dev-localidade">Localidade</label>
+        <select id="dev-localidade"><option value="">(nenhuma)</option></select>
+      </div>
+      <div>
+        <label for="dev-transporte">Transporte</label>
+        <select id="dev-transporte">
+          <option value="http">HTTP</option>
+          <option value="mqtt">MQTT</option>
+        </select>
+      </div>
+      <div>
+        <label for="dev-alt">Altura acima do solo (m)</label>
+        <input id="dev-alt" type="number" step="any" />
+      </div>
+      <div class="full">
+        <label>Localização (clique no mapa para marcar)</label>
+        <div id="mapa"></div>
+        <p class="muted" id="dev-coords">Nenhum ponto marcado ainda.</p>
+      </div>
+      <div class="full">
+        <button class="acao" type="submit">Criar dispositivo</button>
+        <div class="msg" id="msg-dispositivo"></div>
+      </div>
+    </form>
+    <div class="credenciais" id="credenciais"></div>
+  </section>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const SERVER_BASE = window.location.origin;
+let eu = null;
+let localidadesCache = [];
+let devLat = null, devLon = null;
+
+function aplicarTema(tema) {
+  document.body.classList.toggle("tema-claro", tema === "claro");
+}
+
+document.getElementById("btn-sair").addEventListener("click", async () => {
+  try { await fetch(`${SERVER_BASE}/api/logout`, { method: "POST" }); } catch (e) {}
+  location.href = "/login";
+});
+
+// ---------------------------------------------------------------------
+// Mapa (Leaflet + OpenStreetMap, sem chave de API)
+// ---------------------------------------------------------------------
+const mapa = L.map("mapa").setView([-6.152425, -37.126196], 14);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: "&copy; OpenStreetMap",
+  maxZoom: 19,
+}).addTo(mapa);
+let marcador = null;
+
+mapa.on("click", (ev) => {
+  devLat = ev.latlng.lat;
+  devLon = ev.latlng.lng;
+  if (marcador) marcador.setLatLng(ev.latlng); else marcador = L.marker(ev.latlng).addTo(mapa);
+  document.getElementById("dev-coords").textContent =
+    `${devLat.toFixed(6)}, ${devLon.toFixed(6)}`;
+});
+
+// ---------------------------------------------------------------------
+// Localidades
+// ---------------------------------------------------------------------
+function badgeModelo(loc) {
+  const rotulo = { nenhum: "sem modelo", processando: "processando…", pronto: "pronto", erro: "erro" };
+  return `<span class="badge ${loc.modelo_status}" title="${loc.modelo_erro ? escapar(loc.modelo_erro) : ''}">${rotulo[loc.modelo_status] || loc.modelo_status}</span>`;
+}
+
+function escapar(texto) {
+  const d = document.createElement("div");
+  d.textContent = texto == null ? "" : String(texto);
+  return d.innerHTML;
+}
+
+async function carregarLocalidades() {
+  const r = await fetch(`${SERVER_BASE}/api/localidades`);
+  if (!r.ok) return;
+  localidadesCache = await r.json();
+
+  const corpo = document.querySelector("#tabela-localidades tbody");
+  corpo.innerHTML = "";
+  localidadesCache.forEach(loc => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapar(loc.nome)}</td>
+      <td>${badgeModelo(loc)}</td>
+      <td>${loc.utm_zone}${loc.utm_hemisferio_sul ? "S" : "N"}</td>
+      <td></td>`;
+    const tdAcoes = tr.lastElementChild;
+
+    const inputArquivo = document.createElement("input");
+    inputArquivo.type = "file";
+    inputArquivo.accept = ".glb";
+    inputArquivo.style.display = "none";
+    inputArquivo.addEventListener("change", () => enviarModelo(loc.id, inputArquivo.files[0]));
+
+    const btnUpload = document.createElement("button");
+    btnUpload.textContent = "Enviar modelo .glb";
+    btnUpload.addEventListener("click", () => inputArquivo.click());
+
+    const btnExcluir = document.createElement("button");
+    btnExcluir.textContent = "Excluir";
+    btnExcluir.addEventListener("click", () => excluirLocalidade(loc.id, loc.nome));
+
+    tdAcoes.append(inputArquivo, btnUpload, btnExcluir);
+    corpo.appendChild(tr);
+  });
+
+  const select = document.getElementById("dev-localidade");
+  const atual = select.value;
+  select.innerHTML = '<option value="">(nenhuma)</option>';
+  localidadesCache.forEach(loc => {
+    const opt = document.createElement("option");
+    opt.value = loc.id;
+    opt.textContent = loc.nome;
+    select.appendChild(opt);
+  });
+  select.value = atual;
+
+  // Enquanto algum modelo estiver processando, continua checando.
+  if (localidadesCache.some(l => l.modelo_status === "processando")) {
+    setTimeout(carregarLocalidades, 4000);
+  }
+}
+
+async function enviarModelo(localidadeId, arquivo) {
+  if (!arquivo) return;
+  const dados = new FormData();
+  dados.append("arquivo", arquivo);
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/localidades/${localidadeId}/modelo`,
+                          { method: "POST", body: dados });
+    const j = await r.json();
+    if (!r.ok) { alert(j.error || "Falha ao enviar o modelo."); return; }
+  } catch (e) {
+    alert("Não consegui enviar o modelo.");
+    return;
+  }
+  carregarLocalidades();
+}
+
+async function excluirLocalidade(id, nome) {
+  if (!confirm(`Excluir a localidade "${nome}"? Dispositivos associados ficam sem localidade.`)) return;
+  await fetch(`${SERVER_BASE}/api/localidades/${id}`, { method: "DELETE" });
+  carregarLocalidades();
+}
+
+document.getElementById("form-localidade").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const msg = document.getElementById("msg-localidade");
+  msg.className = "msg"; msg.textContent = "";
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/localidades`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nome: document.getElementById("loc-nome").value.trim(),
+        utm_zone: parseInt(document.getElementById("loc-utm-zone").value, 10),
+        utm_hemisferio_sul: document.getElementById("loc-hemisferio").value === "true",
+        geo_offset_x: parseFloat(document.getElementById("loc-offset-x").value),
+        geo_offset_y: parseFloat(document.getElementById("loc-offset-y").value),
+        geo_offset_z: parseFloat(document.getElementById("loc-offset-z").value || "0"),
+        model_up_axis: document.getElementById("loc-up-axis").value,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) { msg.className = "msg erro"; msg.textContent = j.error || "Falha."; return; }
+    msg.className = "msg ok";
+    msg.textContent = `Localidade "${j.nome}" criada.`;
+    document.getElementById("form-localidade").reset();
+    carregarLocalidades();
+  } catch (e) {
+    msg.className = "msg erro"; msg.textContent = "Não consegui falar com o servidor.";
+  }
+});
+
+// ---------------------------------------------------------------------
+// Dispositivos
+// ---------------------------------------------------------------------
+function envSnippet(dev) {
+  const base = `DEVICE_ID=${dev.entity_id}\n`;
+  if (dev.transporte === "mqtt") {
+    return base +
+      `TRANSPORTE_INICIAL=mqtt\n` +
+      `MQTT_HOST=<ip-do-broker>\n` +
+      `MQTT_PORT=1883\n` +
+      `MQTT_TOKEN=${dev.token}\n` +
+      `MQTT_TOPICO_FRAME=${dev.topico_frame}\n`;
+  }
+  return base +
+    `SERVER_URL=${SERVER_BASE}\n` +
+    `# (o cabecalho X-Device-Id usa o DEVICE_ID acima; nao ha token no modo HTTP hoje)\n`;
+}
+
+function mostrarCredenciais(dev) {
+  const el = document.getElementById("credenciais");
+  el.textContent = `# cole em edge/.env do Raspberry "${dev.nome}"\n\n${envSnippet(dev)}`;
+  el.classList.add("show");
+  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function carregarDispositivos() {
+  const r = await fetch(`${SERVER_BASE}/api/dispositivos`);
+  if (!r.ok) return;
+  const lista = await r.json();
+  const corpo = document.querySelector("#tabela-dispositivos tbody");
+  corpo.innerHTML = "";
+  lista.forEach(dev => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapar(dev.nome)}<br/><span class="muted">${escapar(dev.entity_id)}</span></td>
+      <td>${escapar(dev.localidade_nome || "—")}</td>
+      <td>${dev.transporte.toUpperCase()}</td>
+      <td></td>`;
+    const tdAcoes = tr.lastElementChild;
+
+    const btnCred = document.createElement("button");
+    btnCred.textContent = "Ver credenciais";
+    btnCred.addEventListener("click", () => mostrarCredenciais(dev));
+
+    const btnExcluir = document.createElement("button");
+    btnExcluir.textContent = "Excluir";
+    btnExcluir.addEventListener("click", () => excluirDispositivo(dev.id, dev.nome));
+
+    tdAcoes.append(btnCred, btnExcluir);
+    corpo.appendChild(tr);
+  });
+}
+
+async function excluirDispositivo(id, nome) {
+  if (!confirm(`Excluir o dispositivo "${nome}"?`)) return;
+  const r = await fetch(`${SERVER_BASE}/api/dispositivos/${id}`, { method: "DELETE" });
+  const j = await r.json();
+  if (!r.ok) { alert(j.error || "Falha ao excluir."); return; }
+  carregarDispositivos();
+}
+
+document.getElementById("form-dispositivo").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const msg = document.getElementById("msg-dispositivo");
+  msg.className = "msg"; msg.textContent = "";
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/dispositivos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nome: document.getElementById("dev-nome").value.trim(),
+        proprietario: document.getElementById("dev-proprietario").value.trim() || null,
+        localidade_id: document.getElementById("dev-localidade").value || null,
+        transporte: document.getElementById("dev-transporte").value,
+        alt_acima_solo: document.getElementById("dev-alt").value
+          ? parseFloat(document.getElementById("dev-alt").value) : null,
+        lat: devLat, lon: devLon,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) { msg.className = "msg erro"; msg.textContent = j.error || "Falha."; return; }
+    msg.className = "msg ok";
+    msg.textContent = `Dispositivo "${j.nome}" criado.`;
+    document.getElementById("form-dispositivo").reset();
+    mostrarCredenciais(j);
+    carregarDispositivos();
+  } catch (e) {
+    msg.className = "msg erro"; msg.textContent = "Não consegui falar com o servidor.";
+  }
+});
+
+// ---------------------------------------------------------------------
+async function init() {
+  try {
+    eu = await fetch(`${SERVER_BASE}/api/usuarios/me`).then(r => r.json());
+  } catch (e) {
+    location.href = "/login";
+    return;
+  }
+  document.getElementById("quem").textContent = `${eu.username} (${eu.papel})`;
+  aplicarTema(eu.tema || "escuro");
+  setTimeout(() => mapa.invalidateSize(), 200);
+  carregarLocalidades();
+  carregarDispositivos();
+}
+
+init();
+</script>
+</body>
+</html>
