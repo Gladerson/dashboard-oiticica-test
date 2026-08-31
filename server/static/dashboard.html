@@ -169,6 +169,26 @@
   }
   #nav-conta a:hover, #nav-conta button:hover { border-color: var(--accent); }
   #nav-conta span { font-size: 11px; color: var(--muted); }
+  #sel-dispositivo {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; font-family: inherit;
+    cursor: pointer; max-width: 220px;
+  }
+  #sem-dispositivo {
+    background: var(--panel); color: var(--danger); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px;
+  }
+  #viewport-sem-3d {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    text-align: center; padding: 24px; color: var(--muted); font-size: 13px; line-height: 1.6;
+    background: rgba(11, 18, 32, 0.55); z-index: 5;
+  }
+  body.tema-claro #viewport-sem-3d { background: rgba(255, 255, 255, 0.55); }
+  .dispositivo-tag {
+    display: inline-block; background: var(--panel); border: 1px solid var(--border);
+    color: var(--muted); border-radius: 4px; padding: 0 5px; font-size: 10px;
+    margin-right: 4px;
+  }
 
   /* ---- Telinha sob demanda + estado da borda ---- */
   /* aspect-ratio e o que mantem a caixa de pe quando o <img> esta sem src.
@@ -219,6 +239,8 @@
 <body>
 <div id="nav-conta">
   <span id="nav-usuario"></span>
+  <select id="sel-dispositivo" hidden></select>
+  <span id="sem-dispositivo" hidden>Nenhum dispositivo cadastrado</span>
   <a href="/dispositivos">Dispositivos</a>
   <a href="/config">Configuração</a>
   <button id="btn-sair" type="button">Sair</button>
@@ -229,6 +251,12 @@
     <div id="overlay-badge">Barragem Oiticica &mdash; Shift + arrastar para dar close</div>
     <div id="sel-box"></div>
     <div id="status-toast"></div>
+    <div id="viewport-sem-3d" hidden>
+      Este dispositivo ainda não tem um modelo 3D pronto (localidade não
+      cadastrada, sem lat/lon, ou modelo ainda processando).<br/>
+      Cadastre em <a href="/dispositivos">Dispositivos</a> para habilitar a
+      visão 3D. PTZ e vídeo continuam funcionando normalmente.
+    </div>
   </div>
 
   <div id="video-panel">
@@ -336,6 +364,77 @@ const SPEED = { pan: 0.55, tilt: 0.45, zoom: 0.5 };
 
 let CONTROLLER_BASE = null;   // preenchido pelo /api/camera_info
 let usarProxy = false;        // vira true se falar direto com o controller falhar
+
+// ---------------------------------------------------------------------
+// Dispositivo selecionado -- multi-dispositivo: cada camera cadastrada tem
+// seu proprio token, sua propria localidade/modelo 3D e sua propria pose.
+// A troca de dispositivo recarrega a pagina (?device_id=...) em vez de
+// tentar remontar a cena Three.js em memoria -- mais simples e mais
+// confiavel do que descartar/reconstruir modelo+rig+cone na hora.
+// ---------------------------------------------------------------------
+let deviceId = null;
+let dispositivosDisponiveis = [];
+
+async function resolverDispositivo() {
+  let lista = [];
+  try {
+    lista = await fetch(`${SERVER_BASE}/api/dispositivos`).then(r => r.json());
+  } catch (e) {
+    console.error("Falha ao listar dispositivos:", e);
+  }
+  dispositivosDisponiveis = Array.isArray(lista) ? lista : [];
+
+  const sel = document.getElementById("sel-dispositivo");
+  const semDispositivo = document.getElementById("sem-dispositivo");
+
+  if (!dispositivosDisponiveis.length) {
+    sel.hidden = true;
+    semDispositivo.hidden = false;
+    return null;
+  }
+
+  semDispositivo.hidden = true;
+  sel.hidden = false;
+  sel.innerHTML = "";
+  for (const d of dispositivosDisponiveis) {
+    const opt = document.createElement("option");
+    opt.value = d.id;
+    opt.textContent = d.localidade_nome ? `${d.nome} — ${d.localidade_nome}` : d.nome;
+    sel.appendChild(opt);
+  }
+
+  const existeNaLista = (id) => dispositivosDisponiveis.some(d => d.id === id);
+
+  const params = new URLSearchParams(location.search);
+  let escolhido = params.get("device_id");
+  if (!escolhido || !existeNaLista(escolhido)) {
+    try { escolhido = localStorage.getItem("oiticica_device_id"); } catch (e) { escolhido = null; }
+  }
+  if (!escolhido || !existeNaLista(escolhido)) {
+    escolhido = dispositivosDisponiveis[0].id;
+  }
+
+  try { localStorage.setItem("oiticica_device_id", escolhido); } catch (e) {}
+  const novaUrl = new URL(location.href);
+  novaUrl.searchParams.set("device_id", escolhido);
+  history.replaceState(null, "", novaUrl);
+
+  sel.value = escolhido;
+  sel.addEventListener("change", () => {
+    try { localStorage.setItem("oiticica_device_id", sel.value); } catch (e) {}
+    const u = new URL(location.href);
+    u.searchParams.set("device_id", sel.value);
+    location.href = u.toString();
+  });
+
+  return escolhido;
+}
+
+function nomeDispositivo(entry) {
+  if (!entry.device_id) return null;
+  const d = dispositivosDisponiveis.find(x => x.id === entry.device_id);
+  return d ? d.nome : null;
+}
 
 // ---------------------------------------------------------------------
 // Cena Three.js
@@ -650,22 +749,38 @@ function frameOn(box) {
 }
 
 async function init() {
-  const info = await fetch(`${SERVER_BASE}/api/camera_info`).then(r => r.json());
+  const info = await fetch(`${SERVER_BASE}/api/camera_info?device_id=${encodeURIComponent(deviceId)}`)
+    .then(r => r.json());
   console.log("camera_info:", info);
+  if (info.error) {
+    toast("Erro ao carregar o dispositivo: " + info.error, 5000);
+    return;
+  }
 
-  camMarkerPos.set(...info.camera_local_pos);
   CONTROLLER_BASE = (info.controller_url || "").replace(/\/$/, "");
   // A telinha NAO liga sozinha. Antes, este src abria uma conexao MJPEG
   // permanente com a camera e o video corria 24h por dia mesmo com o
   // dashboard minimizado -- exatamente o trafego que queremos eliminar.
   atualizarPainelBorda();
 
+  if (!info.pronto_3d) {
+    // Dispositivo cadastrado mas sem localidade/modelo 3D pronto: PTZ e
+    // vídeo continuam funcionando, só a visão 3D fica indisponível (sem
+    // fallback -- ver README, etapa multi-dispositivo).
+    document.getElementById("viewport-sem-3d").hidden = false;
+    animate();
+    return;
+  }
+  document.getElementById("viewport-sem-3d").hidden = true;
+
+  camMarkerPos.set(...info.camera_local_pos);
+
   buildCameraRig();
   buildConeGeometry(info.cone_ring_rays || 24);
   frameOn(new THREE.Box3().setFromObject(worldGroup));
 
   // estado inicial do cone, sem esperar a primeira telemetria
-  fetch(`${SERVER_BASE}/api/view?pan=0&tilt=0&zoom=0`)
+  fetch(`${SERVER_BASE}/api/view?device_id=${encodeURIComponent(deviceId)}&pan=0&tilt=0&zoom=0`)
     .then(r => r.json())
     .then(v => setConeTarget(v.cone))
     .catch(() => {});
@@ -680,14 +795,15 @@ async function init() {
   loader.setKTX2Loader(ktx2Loader);
   loader.setMeshoptDecoder(MeshoptDecoder);
 
+  const modeloUrl = `${SERVER_BASE}${info.modelo_3d_url}`;
   try {
-    const head = await fetch(`${SERVER_BASE}/model/model.glb`, { method: "HEAD" });
+    const head = await fetch(modeloUrl, { method: "HEAD" });
     const size = head.headers.get("content-length");
-    console.log(`HEAD /model/model.glb -> ${head.status}, ${size ? (size / 1e6).toFixed(1) + " MB" : "?"}`);
-  } catch (e) { console.error("Falha ao checar /model/model.glb:", e); }
+    console.log(`HEAD ${info.modelo_3d_url} -> ${head.status}, ${size ? (size / 1e6).toFixed(1) + " MB" : "?"}`);
+  } catch (e) { console.error(`Falha ao checar ${info.modelo_3d_url}:`, e); }
 
   loader.load(
-    `${SERVER_BASE}/model/model.glb`,
+    modeloUrl,
     (gltf) => {
       modelRoot = gltf.scene;
       worldGroup.add(modelRoot);
@@ -734,7 +850,12 @@ window.addEventListener("resize", () => {
 const ws = new WebSocket(`${SERVER_BASE.replace("http", "ws")}/ws`);
 ws.onmessage = (ev) => {
   const msg = JSON.parse(ev.data);
-  if (msg.type === "telemetry" || msg.type === "detection") {
+  // Multi-dispositivo: telemetria/stream de OUTRO dispositivo nao pode
+  // mexer no cone/telinha/telemetria da tela deste. Comparacao estrita --
+  // "device_id" ausente (ponte MQTT legada, ver borda.py) nunca bate com
+  // um deviceId de verdade, mesmo se nenhum dispositivo estiver selecionado.
+  const mesmoDispositivo = deviceId !== null && msg.device_id === deviceId;
+  if ((msg.type === "telemetry" || msg.type === "detection") && mesmoDispositivo) {
     atualizarTelemetria(msg.coord_p, msg.coord_t, msg.coord_z);
     if (msg.cone) setConeTarget(msg.cone);
   }
@@ -744,13 +865,13 @@ ws.onmessage = (ev) => {
   }
   if (msg.type === "detection_update") aplicarAtualizacao(msg);
   if (msg.type === "detection_repeat") aplicarRepeticao(msg);
-  if (msg.type === "frame" && streamAtivo) {
+  if (msg.type === "frame" && streamAtivo && mesmoDispositivo) {
     // O servidor so avisa "chegou o frame N"; o navegador busca a imagem.
     // O ?s= e o que impede o cache do navegador de congelar a telinha.
-    videoFeed.src = `${SERVER_BASE}/api/stream/atual.jpg?s=${msg.seq}`;
+    videoFeed.src = `${SERVER_BASE}/api/stream/atual.jpg?s=${msg.seq}&device_id=${encodeURIComponent(deviceId)}`;
     videoFeed.style.opacity = 1;
   }
-  if (msg.type === "stream") {
+  if (msg.type === "stream" && mesmoDispositivo) {
     aplicarEstadoStream(msg.ativo, msg.ativo ? janelaStream : 0);
     if (!msg.ativo && msg.motivo === "expirou")
       toast("Stream encerrado automaticamente após 1 minuto.", 4000);
@@ -782,6 +903,7 @@ function toast(texto, ms = 2600) {
 // Controles PTZ (movimento contínuo enquanto pressionado)
 // ---------------------------------------------------------------------
 async function ptzPost(pathDireto, pathProxy, body) {
+  if (!deviceId) return { error: "nenhum dispositivo selecionado" };
   // Quem esta dirigindo a camera obviamente esta olhando: a janela de 60s
   // reinicia. Sem isso o video morreria no meio do enquadramento.
   renovarStreamSeAtivo();
@@ -799,10 +921,17 @@ async function ptzPost(pathDireto, pathProxy, body) {
       usarProxy = true;
     }
   }
-  const r = await fetch(`${SERVER_BASE}${pathProxy}`, {
+  // Proxy do server: /api/ptz/continuous e /api/command levam device_id no
+  // corpo JSON (Pydantic); /api/ptz/stop e /api/command/home o leem da
+  // querystring (parametro simples, sem corpo) -- mandamos dos dois jeitos
+  // pra servir as duas formas sem duplicar esta função por rota.
+  const url = new URL(`${SERVER_BASE}${pathProxy}`);
+  url.searchParams.set("device_id", deviceId);
+  const corpo = { ...(body || {}), device_id: deviceId };
+  const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || {}),
+    body: JSON.stringify(corpo),
     keepalive: true,
   });
   return r.json();
@@ -956,7 +1085,7 @@ window.addEventListener("pointerup", async (e) => {
     const r = await fetch(`${SERVER_BASE}/api/aim`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ point: alvo, corners: cantos }),
+      body: JSON.stringify({ device_id: deviceId, point: alvo, corners: cantos }),
     });
     const data = await r.json();
     if (data.error) {
@@ -1011,6 +1140,16 @@ function pulsarMarcador() {
 }
 
 async function localizarDeteccao(id, btn) {
+  // A deteccao pertence a UM dispositivo (georreferenciado na cena carregada
+  // pra ELE); a cena 3D atual so tem o modelo do dispositivo selecionado no
+  // seletor. Localizar uma deteccao de outro dispositivo plotaria o ponto
+  // no lugar errado -- so deixa se for do mesmo.
+  const reg = entradas.get(id);
+  const dispDaDeteccao = reg ? reg.entry.device_id : undefined;
+  if (dispDaDeteccao && dispDaDeteccao !== deviceId) {
+    toast("Essa detecção é de outro dispositivo — selecione-o no menu para localizá-la.", 4500);
+    return;
+  }
   const rotulo = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Localizando...";
@@ -1099,6 +1238,14 @@ function utmDe(entry) {
 // detectada depois, o server cria uma entrada nova e a marcação reaparece --
 // em amarelo, quando o ponto já tinha sido julgado falso positivo.
 function sincronizarMarcador(entry) {
+  // Mesmo motivo do guard em localizarDeteccao: hit_point so faz sentido no
+  // espaco local do MODELO do dispositivo que gerou a deteccao. Sem
+  // device_id (entrada anterior a esta etapa) ou de outro dispositivo,
+  // nao plota na cena atual.
+  if (entry.device_id !== deviceId) {
+    removerMarcadorFixo(entry.id);
+    return;
+  }
   if (statusDe(entry) === "pendente" && entry.hit_point) {
     criarMarcadorFixo(
       entry.id,
@@ -1133,9 +1280,11 @@ function renderEntrada(reg) {
   const acao = entry.acao
     ? `<br/><span class="acao">Ação: ${escapar(entry.acao)}</span>` : "";
   const utm = utmDe(entry);
+  const dispNome = nomeDispositivo(entry);
+  const dispTag = dispNome ? `<span class="dispositivo-tag">${escapar(dispNome)}</span> ` : "";
 
   wrap.querySelector(".meta").innerHTML = `
-    ${tituloDe(entry)}<br/>
+    ${dispTag}${tituloDe(entry)}<br/>
     p:${entry.coord_p.toFixed(1)}° t:${entry.coord_t.toFixed(1)}° z:${entry.coord_z.toFixed(0)}%${reps}<br/>
     ${utm ? `${utm}<br/>` : ""}
     ${new Date(entry.timestamp).toLocaleString("pt-BR")}${acao}`;
@@ -1451,9 +1600,10 @@ const videoFeed = document.getElementById("video-feed");
 videoWrap.addEventListener("click", () => alternarStream());
 
 async function alternarStream(forcar) {
+  if (!deviceId) return;
   const ligar = (forcar === undefined) ? !streamAtivo : forcar;
   try {
-    const r = await fetch(`${SERVER_BASE}/api/stream/${ligar ? "start" : "stop"}`,
+    const r = await fetch(`${SERVER_BASE}/api/stream/${ligar ? "start" : "stop"}?device_id=${encodeURIComponent(deviceId)}`,
                           { method: "POST" });
     const j = await r.json();
     if (j.janela_s) janelaStream = j.janela_s;
@@ -1477,9 +1627,10 @@ function aplicarEstadoStream(ativo, restante) {
 }
 
 async function renovarStreamSeAtivo() {
-  if (!streamAtivo) return;
+  if (!streamAtivo || !deviceId) return;
   try {
-    const r = await fetch(`${SERVER_BASE}/api/stream/renovar`, { method: "POST" });
+    const r = await fetch(`${SERVER_BASE}/api/stream/renovar?device_id=${encodeURIComponent(deviceId)}`,
+                          { method: "POST" });
     if ((await r.json()).status === "ok")
       streamFimEm = Date.now() + janelaStream * 1000;
   } catch (e) {}
@@ -1506,12 +1657,13 @@ limiarSlider.addEventListener("input", () => {
 });
 
 limiarSlider.addEventListener("change", async () => {
+  if (!deviceId) return;
   const conf = parseFloat(limiarSlider.value);
   try {
     await fetch(`${SERVER_BASE}/api/inferencia`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conf }),
+      body: JSON.stringify({ device_id: deviceId, conf }),
     });
     toast(`Limiar de confiança pedido: ${conf.toFixed(2)}. ` +
           `O Raspberry converge no próximo ciclo de telemetria.`, 4000);
@@ -1534,9 +1686,14 @@ async function pedirFotoCheia(id) {
 window.pedirFotoCheia = pedirFotoCheia;
 
 async function atualizarPainelBorda() {
+  if (!deviceId) return;
   let j;
-  try { j = await fetch(`${SERVER_BASE}/api/borda`).then(r => r.json()); }
+  try {
+    j = await fetch(`${SERVER_BASE}/api/borda?device_id=${encodeURIComponent(deviceId)}`)
+      .then(r => r.json());
+  }
   catch (e) { return; }
+  if (j.error) return;
 
   janelaStream = j.janela_s || janelaStream;
   const st = j.estado.stream;
@@ -1567,8 +1724,20 @@ async function atualizarPainelBorda() {
 
 setInterval(atualizarPainelBorda, 3000);
 
-init();
-loadHistory();
+(async () => {
+  deviceId = await resolverDispositivo();
+  if (!deviceId) {
+    console.warn("Nenhum dispositivo cadastrado -- cadastre um em /dispositivos.");
+    const aviso = document.getElementById("viewport-sem-3d");
+    aviso.innerHTML = 'Nenhum dispositivo cadastrado ainda.<br/>' +
+      'Cadastre um em <a href="/dispositivos">Dispositivos</a> para começar.';
+    aviso.hidden = false;
+    animate();   // cena vazia (so o grid), pra nao deixar o viewport parado
+    return;
+  }
+  init();
+  loadHistory();
+})();
 </script>
 
 <script>

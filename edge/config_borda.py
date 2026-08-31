@@ -31,6 +31,11 @@ BASE_DIR = Path(__file__).parent
 
 # --- Identidade do dispositivo ---------------------------------------------
 DEVICE_ID = os.getenv("DEVICE_ID", "oiticica-cam-01")
+# Token gerado pelo servidor ao cadastrar o dispositivo em Dispositivos
+# (server/dispositivos.py). Obrigatorio: todo request HTTP para /api/edge/*
+# exige "Authorization: Bearer <DEVICE_TOKEN>" -- sem cadastro, sem token,
+# sem conexao. Ver README (secao de migracao/cadastro de dispositivo).
+DEVICE_TOKEN = _req("DEVICE_TOKEN")
 
 # --- Camera -----------------------------------------------------------------
 CAMERA_IP = _req("CAMERA_IP")

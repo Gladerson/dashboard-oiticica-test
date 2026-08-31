@@ -117,6 +117,12 @@ CREATE INDEX IF NOT EXISTS ix_dashboards_usuario ON dashboards(usuario_id);
 ALTER TABLE localidades ADD COLUMN IF NOT EXISTS modelo_status TEXT NOT NULL DEFAULT 'nenhum'
     CHECK (modelo_status IN ('nenhum', 'processando', 'pronto', 'erro'));
 ALTER TABLE localidades ADD COLUMN IF NOT EXISTS modelo_erro TEXT;
+
+-- Endereco da API de PTZ (porta 8090) DESSE dispositivo. NULL = usa
+-- CONTROLLER_URL/CONTROLLER_PUBLIC_URL do server/.env (compatibilidade com
+-- quem tem so um dispositivo e nunca preencheu isto).
+ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS controller_url TEXT;
+ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS controller_url_publica TEXT;
 """
 
 
@@ -347,19 +353,59 @@ def dispositivo_por_id(dispositivo_id):
         ).fetchone()
 
 
+# Localidade "achatada" na mesma linha, com prefixo localidade_* -- e o que
+# server/registro_dispositivos.py precisa pra montar o GeoModel (ou saber
+# que ainda nao da: sem localidade, ou localidade sem modelo_status='pronto')
+# sem uma segunda consulta.
+_SELECT_DISPOSITIVO_COM_LOCALIDADE = """
+    SELECT d.*,
+           l.nome AS localidade_nome,
+           l.modelo_3d_path AS localidade_modelo_3d_path,
+           l.modelo_status AS localidade_modelo_status,
+           l.utm_zone AS localidade_utm_zone,
+           l.utm_hemisferio_sul AS localidade_utm_hemisferio_sul,
+           l.geo_offset_x AS localidade_geo_offset_x,
+           l.geo_offset_y AS localidade_geo_offset_y,
+           l.geo_offset_z AS localidade_geo_offset_z,
+           l.model_up_axis AS localidade_model_up_axis
+    FROM dispositivos d
+    LEFT JOIN localidades l ON l.id = d.localidade_id
+"""
+
+
+def dispositivo_por_token(token):
+    """Dispositivo (com a localidade ja junto) autenticado por token. E o
+    caminho de auth de /api/edge/* e /api/telemetry|detection -- ver
+    server/registro_dispositivos.py."""
+    if not token:
+        return None
+    with pool.connection() as conn:
+        return conn.execute(
+            _SELECT_DISPOSITIVO_COM_LOCALIDADE + " WHERE d.token = %s", (token,)
+        ).fetchone()
+
+
+def dispositivo_por_id_com_localidade(dispositivo_id):
+    with pool.connection() as conn:
+        return conn.execute(
+            _SELECT_DISPOSITIVO_COM_LOCALIDADE + " WHERE d.id = %s", (dispositivo_id,)
+        ).fetchone()
+
+
 def criar_dispositivo(entity_id, entity_type, nome, proprietario, localidade_id,
                       lat, lon, alt_acima_solo, transporte, token,
                       topico_telemetria, topico_atributos, topico_frame,
-                      dono_usuario_id):
+                      dono_usuario_id, controller_url=None, controller_url_publica=None):
     with pool.connection() as conn:
         return conn.execute(
             "INSERT INTO dispositivos (entity_id, entity_type, nome, proprietario, "
             "localidade_id, lat, lon, alt_acima_solo, transporte, token, "
-            "topico_telemetria, topico_atributos, topico_frame, dono_usuario_id) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+            "topico_telemetria, topico_atributos, topico_frame, dono_usuario_id, "
+            "controller_url, controller_url_publica) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
             (entity_id, entity_type, nome, proprietario, localidade_id, lat, lon,
              alt_acima_solo, transporte, token, topico_telemetria, topico_atributos,
-             topico_frame, dono_usuario_id),
+             topico_frame, dono_usuario_id, controller_url, controller_url_publica),
         ).fetchone()
 
 

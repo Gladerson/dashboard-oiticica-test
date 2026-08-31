@@ -38,6 +38,10 @@ RTSP_URL = _require("RTSP_URL")
 
 # --- Servidor (dashboard) ---------------------------------------------------
 SERVER_URL = os.getenv("SERVER_URL", "http://127.0.0.1:8001")
+# Token do dispositivo cadastrado na aba Dispositivos do painel admin.
+# Obrigatorio: /api/telemetry e /api/detection agora exigem
+# "Authorization: Bearer <DEVICE_TOKEN>", igual ao agente de borda do Pi.
+DEVICE_TOKEN = _require("DEVICE_TOKEN")
 
 # --- Modelo YOLO de rachaduras ----------------------------------------------
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "best.pt")
