@@ -17,8 +17,21 @@ sudo apt install -y \
     libxml2-dev libxslt1-dev \
     libspatialindex-dev \
     postgresql \
-    nodejs npm \
     git
+
+echo ">> 1a/6 - Node.js/npm (so para a aba Dispositivos descomprimir o .glb enviado)"
+if command -v npx >/dev/null 2>&1; then
+    echo "   npx ja disponivel ($(npx --version 2>/dev/null || echo '?')) -- pulando."
+elif sudo apt install -y nodejs npm; then
+    echo "   nodejs/npm instalados."
+else
+    echo "   AVISO: nao consegui instalar nodejs/npm pelo apt -- comum quando ja existe"
+    echo "   um Node de outra origem (ex.: NodeSource), cujo pacote 'nodejs' ja inclui"
+    echo "   o npm e colide com o pacote 'npm' separado do Debian/Ubuntu."
+    echo "   Isso NAO impede o servidor de rodar: so o upload de modelo 3D pela aba"
+    echo "   Dispositivos fica sem a descompressao automatica ate resolver. Confira"
+    echo "   primeiro se 'npx' ja funciona (node -v && npx -v) antes de reinstalar nada."
+fi
 
 echo ">> 1b/6 - Banco (usuarios/sessoes do login -- ver README secao 5.1a)"
 if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='oiticica'" | grep -q 1; then
