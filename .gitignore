@@ -16,6 +16,10 @@ controller/best.pt
 server/static/model.glb
 server/static/model_original_draco.glb
 
+# Modelos 3D enviados pela aba Dispositivos (server/dispositivos.py)
+server/static/modelos/*
+!server/static/modelos/.gitkeep
+
 # Histórico de detecções gerado em runtime (imagens + índice)
 server/history/*
 !server/history/.gitkeep

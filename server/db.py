@@ -109,6 +109,14 @@ CREATE TABLE IF NOT EXISTS dashboards (
     criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_dashboards_usuario ON dashboards(usuario_id);
+
+-- Sem framework de migration neste projeto (mesmo espirito do resto): quem
+-- ja rodou a etapa "Configuracao" tem "localidades" sem estas colunas.
+-- ADD COLUMN IF NOT EXISTS e idempotente, entao rodar de novo nao quebra
+-- quem ja tinha o schema completo.
+ALTER TABLE localidades ADD COLUMN IF NOT EXISTS modelo_status TEXT NOT NULL DEFAULT 'nenhum'
+    CHECK (modelo_status IN ('nenhum', 'processando', 'pronto', 'erro'));
+ALTER TABLE localidades ADD COLUMN IF NOT EXISTS modelo_erro TEXT;
 """
 
 
@@ -258,3 +266,103 @@ def usuario_da_sessao(token):
 def destruir_sessao(token):
     with pool.connection() as conn:
         conn.execute("DELETE FROM sessoes WHERE token = %s", (token,))
+
+
+# ============================================================================
+# Localidades (modelo 3D + georreferenciamento)
+# ============================================================================
+def listar_localidades():
+    with pool.connection() as conn:
+        return conn.execute("SELECT * FROM localidades ORDER BY nome").fetchall()
+
+
+def localidade_por_id(localidade_id):
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT * FROM localidades WHERE id = %s", (localidade_id,)
+        ).fetchone()
+
+
+def criar_localidade(nome, utm_zone, utm_hemisferio_sul, geo_offset_x, geo_offset_y,
+                     geo_offset_z=0.0, model_up_axis="Z"):
+    with pool.connection() as conn:
+        return conn.execute(
+            "INSERT INTO localidades (nome, utm_zone, utm_hemisferio_sul, "
+            "geo_offset_x, geo_offset_y, geo_offset_z, model_up_axis) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *",
+            (nome, utm_zone, utm_hemisferio_sul, geo_offset_x, geo_offset_y,
+             geo_offset_z, model_up_axis),
+        ).fetchone()
+
+
+def excluir_localidade(localidade_id):
+    with pool.connection() as conn:
+        conn.execute("DELETE FROM localidades WHERE id = %s", (localidade_id,))
+
+
+def definir_modelo_localidade(localidade_id, caminho):
+    """Upload aceito: grava o caminho e marca 'processando' (a decompressao
+    Draco roda em background, ver dispositivos.py)."""
+    with pool.connection() as conn:
+        conn.execute(
+            "UPDATE localidades SET modelo_3d_path = %s, modelo_status = 'processando', "
+            "modelo_erro = NULL WHERE id = %s",
+            (caminho, localidade_id),
+        )
+
+
+def atualizar_status_modelo(localidade_id, status, erro=None):
+    with pool.connection() as conn:
+        conn.execute(
+            "UPDATE localidades SET modelo_status = %s, modelo_erro = %s WHERE id = %s",
+            (status, erro, localidade_id),
+        )
+
+
+# ============================================================================
+# Dispositivos
+# ============================================================================
+def listar_dispositivos(dono_usuario_id=None):
+    """Sem dono_usuario_id, lista todos (uso do admin). Com ele, so os do
+    dono -- 'cada usuario so tem acesso aos seus dispositivos'."""
+    with pool.connection() as conn:
+        if dono_usuario_id is None:
+            return conn.execute(
+                "SELECT d.*, l.nome AS localidade_nome FROM dispositivos d "
+                "LEFT JOIN localidades l ON l.id = d.localidade_id "
+                "ORDER BY d.criado_em"
+            ).fetchall()
+        return conn.execute(
+            "SELECT d.*, l.nome AS localidade_nome FROM dispositivos d "
+            "LEFT JOIN localidades l ON l.id = d.localidade_id "
+            "WHERE d.dono_usuario_id = %s ORDER BY d.criado_em",
+            (dono_usuario_id,),
+        ).fetchall()
+
+
+def dispositivo_por_id(dispositivo_id):
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT * FROM dispositivos WHERE id = %s", (dispositivo_id,)
+        ).fetchone()
+
+
+def criar_dispositivo(entity_id, entity_type, nome, proprietario, localidade_id,
+                      lat, lon, alt_acima_solo, transporte, token,
+                      topico_telemetria, topico_atributos, topico_frame,
+                      dono_usuario_id):
+    with pool.connection() as conn:
+        return conn.execute(
+            "INSERT INTO dispositivos (entity_id, entity_type, nome, proprietario, "
+            "localidade_id, lat, lon, alt_acima_solo, transporte, token, "
+            "topico_telemetria, topico_atributos, topico_frame, dono_usuario_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+            (entity_id, entity_type, nome, proprietario, localidade_id, lat, lon,
+             alt_acima_solo, transporte, token, topico_telemetria, topico_atributos,
+             topico_frame, dono_usuario_id),
+        ).fetchone()
+
+
+def excluir_dispositivo(dispositivo_id):
+    with pool.connection() as conn:
+        conn.execute("DELETE FROM dispositivos WHERE id = %s", (dispositivo_id,))

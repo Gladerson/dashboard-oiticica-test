@@ -1,0 +1,236 @@
+# ============================================================================
+# dispositivos.py - Aba "Dispositivos": cadastro de localidades (modelo 3D +
+# georreferenciamento) e de dispositivos CV-SHM (camera + Raspberry).
+#
+# Escopo desta etapa (decidido explicitamente): SO o cadastro. O pipeline ao
+# vivo (server/borda.py) continua falando com UM Raspberry por vez, do jeito
+# que ja esta em producao -- nao mexe em telemetria/deteccao/stream. Um
+# dispositivo cadastrado aqui ainda nao "liga" no pipeline sozinho; isso e a
+# proxima etapa (rotear por token). Por isso a listagem mostra so o que foi
+# CADASTRADO, sem status online/offline de verdade.
+#
+# Token e topicos seguem a mesma convencao MQTT que edge/transporte.py ja usa
+# para falar com o ThingsBoard: topico_telemetria/atributos sao FIXOS
+# ("v1/devices/me/...", o ThingsBoard identifica o dispositivo pelo token da
+# conexao MQTT, nao pelo nome no topico); so o de frame e por dispositivo,
+# porque esse nao passa pelo esquema de telemetria do ThingsBoard.
+# ============================================================================
+import re
+import secrets
+import shutil
+import subprocess
+import threading
+from pathlib import Path
+
+from fastapi import Depends, File, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+
+import auth
+import db
+
+MODELOS_DIR = Path("static/modelos")
+MODELOS_DIR.mkdir(parents=True, exist_ok=True)
+
+MODELO_MAX_BYTES = 300 * 1024 * 1024
+
+
+def _slug(texto):
+    s = re.sub(r"[^a-z0-9]+", "-", texto.strip().lower()).strip("-")
+    return s or "dispositivo"
+
+
+# ============================================================================
+class LocalidadePayload(BaseModel):
+    nome: str
+    utm_zone: int
+    utm_hemisferio_sul: bool = True
+    geo_offset_x: float
+    geo_offset_y: float
+    geo_offset_z: float = 0.0
+    model_up_axis: str = "Z"
+
+
+class DispositivoPayload(BaseModel):
+    nome: str
+    proprietario: str | None = None
+    localidade_id: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    alt_acima_solo: float | None = None
+    transporte: str = "http"
+
+
+def _localidade_publica(l):
+    return {
+        "id": str(l["id"]), "nome": l["nome"], "modelo_3d_path": l["modelo_3d_path"],
+        "modelo_status": l["modelo_status"], "modelo_erro": l["modelo_erro"],
+        "utm_zone": l["utm_zone"], "utm_hemisferio_sul": l["utm_hemisferio_sul"],
+        "geo_offset_x": l["geo_offset_x"], "geo_offset_y": l["geo_offset_y"],
+        "geo_offset_z": l["geo_offset_z"], "model_up_axis": l["model_up_axis"],
+        "criado_em": l["criado_em"].isoformat(),
+    }
+
+
+def _dispositivo_publico(d):
+    return {
+        "id": str(d["id"]), "entity_id": d["entity_id"], "entity_type": d["entity_type"],
+        "nome": d["nome"], "proprietario": d["proprietario"],
+        "localidade_id": str(d["localidade_id"]) if d.get("localidade_id") else None,
+        "localidade_nome": d.get("localidade_nome"),
+        "lat": d["lat"], "lon": d["lon"], "alt_acima_solo": d["alt_acima_solo"],
+        "transporte": d["transporte"], "token": d["token"],
+        "topico_telemetria": d["topico_telemetria"], "topico_atributos": d["topico_atributos"],
+        "topico_frame": d["topico_frame"], "criado_em": d["criado_em"].isoformat(),
+    }
+
+
+# ============================================================================
+# Descompressao Draco em background (mesma ferramenta do prepare_model.sh,
+# so que chamada pela aplicacao em vez de rodada a mao por SSH).
+# ============================================================================
+def _descomprimir_draco(localidade_id, caminho_final: Path):
+    backup = caminho_final.with_name(caminho_final.stem + "_original_draco.glb")
+    try:
+        if not backup.exists():
+            shutil.copy2(caminho_final, backup)
+        subprocess.run(
+            ["npx", "--yes", "@gltf-transform/cli", "copy", str(backup), str(caminho_final)],
+            check=True, capture_output=True, timeout=600, text=True,
+        )
+        db.atualizar_status_modelo(localidade_id, "pronto")
+    except FileNotFoundError:
+        db.atualizar_status_modelo(
+            localidade_id, "erro",
+            "npx nao encontrado no servidor -- instale Node.js/npm "
+            "(sudo apt install -y nodejs npm) e envie o modelo de novo.")
+    except subprocess.CalledProcessError as e:
+        db.atualizar_status_modelo(localidade_id, "erro", (e.stderr or "")[:2000])
+    except subprocess.TimeoutExpired:
+        db.atualizar_status_modelo(
+            localidade_id, "erro", "tempo esgotado ao descomprimir (modelo grande demais?)")
+    except Exception as e:
+        db.atualizar_status_modelo(localidade_id, "erro", str(e))
+
+
+# ============================================================================
+def instalar(app):
+    @app.get("/dispositivos")
+    def pagina_dispositivos():
+        return FileResponse("static/dispositivos.html")
+
+    # ---- Localidades --------------------------------------------------------
+    @app.get("/api/localidades")
+    def listar_localidades(_usuario=Depends(auth.usuario_atual)):
+        return [_localidade_publica(l) for l in db.listar_localidades()]
+
+    @app.post("/api/localidades")
+    def criar_localidade(payload: LocalidadePayload, _usuario=Depends(auth.usuario_atual)):
+        nome = payload.nome.strip()
+        if not nome:
+            return JSONResponse({"error": "nome obrigatorio"}, status_code=400)
+        if payload.model_up_axis not in ("Z", "Y"):
+            return JSONResponse({"error": "model_up_axis deve ser Z ou Y"}, status_code=400)
+        try:
+            nova = db.criar_localidade(
+                nome, payload.utm_zone, payload.utm_hemisferio_sul,
+                payload.geo_offset_x, payload.geo_offset_y,
+                payload.geo_offset_z, payload.model_up_axis)
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"não consegui criar (nome já existe?): {e}"}, status_code=400)
+        return _localidade_publica(nova)
+
+    @app.delete("/api/localidades/{localidade_id}")
+    def excluir_localidade(localidade_id: str, _usuario=Depends(auth.usuario_atual)):
+        db.excluir_localidade(localidade_id)
+        return {"status": "ok"}
+
+    @app.post("/api/localidades/{localidade_id}/modelo")
+    async def enviar_modelo(localidade_id: str, arquivo: UploadFile = File(...),
+                            _usuario=Depends(auth.usuario_atual)):
+        loc = db.localidade_por_id(localidade_id)
+        if loc is None:
+            return JSONResponse({"error": "localidade não encontrada"}, status_code=404)
+        if not (arquivo.filename or "").lower().endswith(".glb"):
+            return JSONResponse({"error": "envie um arquivo .glb"}, status_code=400)
+
+        destino = MODELOS_DIR / f"{localidade_id}.glb"
+        total = 0
+        try:
+            with open(destino, "wb") as f:
+                while True:
+                    pedaco = await arquivo.read(1024 * 1024)
+                    if not pedaco:
+                        break
+                    total += len(pedaco)
+                    if total > MODELO_MAX_BYTES:
+                        raise ValueError("modelo maior que 300 MB")
+                    f.write(pedaco)
+        except ValueError as e:
+            destino.unlink(missing_ok=True)
+            return JSONResponse({"error": str(e)}, status_code=400)
+
+        db.definir_modelo_localidade(localidade_id, str(destino))
+        threading.Thread(target=_descomprimir_draco, args=(localidade_id, destino),
+                         daemon=True).start()
+        return {"status": "ok", "modelo_status": "processando"}
+
+    @app.get("/api/localidades/{localidade_id}")
+    def obter_localidade(localidade_id: str, _usuario=Depends(auth.usuario_atual)):
+        loc = db.localidade_por_id(localidade_id)
+        if loc is None:
+            return JSONResponse({"error": "não encontrada"}, status_code=404)
+        return _localidade_publica(loc)
+
+    # ---- Dispositivos ---------------------------------------------------------
+    @app.get("/api/dispositivos")
+    def listar_dispositivos(usuario=Depends(auth.usuario_atual)):
+        dono = None if usuario["papel"] == "admin" else usuario["id"]
+        return [_dispositivo_publico(d) for d in db.listar_dispositivos(dono)]
+
+    @app.post("/api/dispositivos")
+    def criar_dispositivo(payload: DispositivoPayload, usuario=Depends(auth.usuario_atual)):
+        nome = payload.nome.strip()
+        if not nome:
+            return JSONResponse({"error": "nome obrigatorio"}, status_code=400)
+        if payload.transporte not in ("http", "mqtt"):
+            return JSONResponse({"error": "transporte inválido"}, status_code=400)
+        if payload.localidade_id and db.localidade_por_id(payload.localidade_id) is None:
+            return JSONResponse({"error": "localidade não encontrada"}, status_code=400)
+
+        slug = _slug(nome)
+        # sufixo aleatorio curto: entity_id/topico_frame precisam ser
+        # unicos, e dois dispositivos podem legitimamente ter nomes
+        # parecidos ("Camera 1", "Camera 1 (backup)" -> mesmo slug).
+        slug_unico = f"{slug}-{secrets.token_hex(3)}"
+        try:
+            novo = db.criar_dispositivo(
+                entity_id=f"urn:ngsi-ld:CV-SHM:{slug_unico}",
+                entity_type="CV-SHM",
+                nome=nome,
+                proprietario=(payload.proprietario or "").strip() or None,
+                localidade_id=payload.localidade_id,
+                lat=payload.lat, lon=payload.lon, alt_acima_solo=payload.alt_acima_solo,
+                transporte=payload.transporte,
+                token=secrets.token_urlsafe(24),
+                topico_telemetria="v1/devices/me/telemetry",
+                topico_atributos="v1/devices/me/attributes",
+                topico_frame=f"oiticica/{slug_unico}/frame",
+                dono_usuario_id=usuario["id"],
+            )
+        except Exception as e:
+            return JSONResponse({"error": f"não consegui criar: {e}"}, status_code=400)
+        return _dispositivo_publico(dict(novo, localidade_nome=None))
+
+    @app.delete("/api/dispositivos/{dispositivo_id}")
+    def excluir_dispositivo(dispositivo_id: str, usuario=Depends(auth.usuario_atual)):
+        alvo = db.dispositivo_por_id(dispositivo_id)
+        if alvo is None:
+            return JSONResponse({"error": "não encontrado"}, status_code=404)
+        if usuario["papel"] != "admin" and str(alvo["dono_usuario_id"]) != str(usuario["id"]):
+            return JSONResponse({"error": "sem permissão"}, status_code=403)
+        db.excluir_dispositivo(dispositivo_id)
+        return {"status": "ok"}
+
+    print(">> Modulo de dispositivos instalado (cadastro de localidades/dispositivos CV-SHM).")

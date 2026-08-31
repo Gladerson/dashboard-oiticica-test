@@ -97,12 +97,15 @@ dashboard_oiticica_test/
 │   ├── server.py                   # API, WebSocket, cone de visão, /api/aim, /api/locate
 │   ├── borda.py                    # estado desejado, endpoints /api/edge/*, relay de stream
 │   ├── glb_geo.py                  # georreferenciamento UTM, raycasting, ângulos PTZ
-│   ├── db.py                       # PostgreSQL: usuarios/sessoes + esquema p/ Dispositivos/Dashboard
+│   ├── db.py                       # PostgreSQL: usuarios/sessoes/localidades/dispositivos/dashboards
 │   ├── auth.py                     # login por sessão, middleware de autenticação, admin de usuários
-│   ├── prepare_model.sh            # remove compressão Draco do .glb (rodar uma vez)
+│   ├── dispositivos.py             # cadastro de localidades (modelo 3D) e dispositivos CV-SHM
+│   ├── prepare_model.sh            # remove compressão Draco do .glb (rodar uma vez, uso manual)
 │   ├── static/dashboard.html       # Three.js: modelo, cone, telinha, histórico, marcações 3D
 │   ├── static/login.html           # tela de entrada
 │   ├── static/config.html          # tema, própria senha, administração de usuários (admin)
+│   ├── static/dispositivos.html    # cadastro de localidades/modelos 3D e dispositivos, mapa Leaflet
+│   ├── static/modelos/             # .glb enviados pela aba Dispositivos (fora do Git)
 │   ├── history/                    # detecções salvas em runtime (fora do Git)
 │   ├── requirements.txt
 │   └── .env.example
@@ -140,6 +143,7 @@ dashboard_oiticica_test/
 | histórico, dedup, WebSocket | `server/server.py` |
 | interface, marcações 3D, telinha | `server/static/dashboard.html` |
 | login, sessão, usuários | `server/auth.py` + `server/db.py` |
+| localidades, modelos 3D, dispositivos | `server/dispositivos.py` |
 | compilação do modelo | `notebook/` na ordem numérica da §6 |
 
 Duas invariantes que atravessam o código e não são óbvias na leitura local:
@@ -327,6 +331,35 @@ as rotas e §16 para o que ainda falta (Dispositivos, Dashboard).
 > reverse proxy com HTTPS de verdade, defina `SESSION_COOKIE_SECURE=true` no
 > `.env` — sem isso, um cookie de sessão trafegando em texto claro numa rede
 > não confiável pode ser interceptado.
+
+### 5.1a-bis Dispositivos (cadastro de câmeras/localidades/modelos 3D)
+
+Aba "Dispositivos" (`/dispositivos`), disponível para qualquer usuário
+logado (não só admin). Duas listas:
+
+- **Localidades** — nome, georreferenciamento (zona UTM, offset X/Y/Z, eixo
+  "para cima") e upload de um `.glb`. O upload roda a mesma descompressão
+  Draco do `prepare_model.sh` (`@gltf-transform/cli` via `npx`), só que
+  disparada pelo servidor em segundo plano — por isso `install_desktop.sh`
+  agora também instala `nodejs`/`npm`. Sem eles, o upload aceita o arquivo
+  mas o status fica em **erro**, com a mensagem explicando o que falta.
+- **Dispositivos** — nome, proprietário (ex.: SEMARH), localidade,
+  transporte (HTTP/MQTT) e posição no mapa (Leaflet + OpenStreetMap, clique
+  para marcar lat/lon — sem chave de API). Ao criar, gera um `entity_id`
+  (`urn:ngsi-ld:CV-SHM:<slug>-<aleatório>`, inspirado em NGSI/FIWARE), um
+  token e os tópicos MQTT — mostrados como um trecho pronto para colar no
+  `edge/.env` daquele Raspberry ("Ver credenciais" na listagem).
+
+**Importante — escopo desta etapa:** é só cadastro. O pipeline ao vivo
+(`server/borda.py`) continua falando com **um** Raspberry por vez, do jeito
+que já está em produção — nada aqui muda telemetria, detecção ou stream. Um
+dispositivo cadastrado não passa a "funcionar" sozinho; a próxima etapa é
+ensinar o pipeline a rotear por token, permitindo N dispositivos
+simultâneos. Por isso a listagem não tem "online/offline" de verdade ainda.
+
+Cada usuário só vê e só pode excluir os próprios dispositivos; admin vê e
+mexe em todos. Localidades e o modelo 3D em si continuam catálogo comum,
+sem dono.
 
 ### 5.1 Modelo 3D
 
@@ -644,6 +677,12 @@ para `/login`.
 | `/api/usuarios` | GET/POST | admin | listar / criar usuários |
 | `/api/usuarios/{id}/redefinir_senha` | POST | admin | força troca de senha de outro usuário |
 | `/api/usuarios/{id}` | DELETE | admin | exclui usuário (nunca a si mesmo nem o último admin) |
+| `/dispositivos` | GET | sim | tela de cadastro de localidades/dispositivos |
+| `/api/localidades` | GET/POST | sim | listar / criar localidade |
+| `/api/localidades/{id}` | GET/DELETE | sim | obter / excluir localidade |
+| `/api/localidades/{id}/modelo` | POST | sim | upload do `.glb` (multipart); descomprime Draco em segundo plano |
+| `/api/dispositivos` | GET/POST | sim | listar (próprios; todos se admin) / criar dispositivo |
+| `/api/dispositivos/{id}` | DELETE | sim | excluir (só o dono ou admin) |
 
 ### Payloads
 
@@ -969,11 +1008,16 @@ indesejável, mova para variável de ambiente.
     `server/auth.py`), admin padrão `admin`/`hydroconecta` com troca de
     senha obrigatória, papéis admin/usuário, tema movido para cá
     (`server/static/config.html`, `server/static/login.html`).
-  - ⏳ **Dispositivos**: cadastro de câmeras/Raspberrys (localização no
-    mapa, transporte HTTP/MQTT com geração de token/tópicos, N modelos 3D
-    associados a localidades) — ainda não construído. O esquema já existe
-    em `db.py` (`localidades`, `dispositivos`, inspirado em NGSI/FIWARE:
-    `entity_id`/`entity_type`/atributos) mas nenhuma rota/tela usa ainda.
+  - ✅ **Dispositivos** (cadastro, §5.1a-bis): localidades com modelo 3D
+    (upload + descompressão Draco em segundo plano) e georreferenciamento
+    (N por sistema), dispositivos CV-SHM com localização no mapa (Leaflet/
+    OpenStreetMap), transporte HTTP/MQTT e geração de token/tópicos
+    (`server/dispositivos.py`, `server/static/dispositivos.html`). Cada
+    usuário só vê/exclui os próprios dispositivos; admin vê todos.
+    **Ainda não faz** o pipeline ao vivo (`server/borda.py`) reconhecer N
+    dispositivos por token — isso continua conversando com UM Raspberry só,
+    do jeito que já está em produção; um dispositivo cadastrado é só
+    catálogo até essa próxima etapa (rotear por token) existir.
   - ⏳ **Dashboard**: grid de widgets redimensionável, N dashboards por
     usuário, filtro por localidade — ainda não construído (tabela
     `dashboards` já criada, com `layout JSONB`). O
