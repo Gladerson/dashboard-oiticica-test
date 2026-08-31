@@ -104,7 +104,7 @@ dashboard_oiticica_test/
 │   ├── static/dashboard.html       # Three.js: modelo, cone, telinha, histórico, marcações 3D
 │   ├── static/login.html           # tela de entrada
 │   ├── static/config.html          # tema, própria senha, administração de usuários (admin)
-│   ├── static/dispositivos.html    # cadastro de localidades/modelos 3D e dispositivos, mapa Leaflet
+│   ├── static/dispositivos.html    # cadastro + mapa Leaflet + preview 3D (Three.js) do modelo enviado
 │   ├── static/modelos/             # .glb enviados pela aba Dispositivos (fora do Git)
 │   ├── history/                    # detecções salvas em runtime (fora do Git)
 │   ├── requirements.txt
@@ -344,7 +344,15 @@ logado (não só admin). Duas listas:
   `npx` disponível no servidor (`install_desktop.sh` tenta instalar, mas
   pula sozinho se você já tiver Node de outra origem — ver §13, "npm
   conflita com nodejs"). Sem `npx`, o upload aceita o arquivo mas o status
-  fica em **erro**, com a mensagem explicando o que falta.
+  fica em **erro**, com a mensagem explicando o que falta. Quando o status
+  vira **pronto**, aparece o botão "Visualizar": abre um preview 3D
+  (mesmas bibliotecas do `dashboard.html` — Three.js, `GLTFLoader` +
+  `DRACOLoader`/`KTX2Loader`/`MeshoptDecoder` — com `OrbitControls` pra
+  girar/dar zoom) que carrega `/model/modelos/<id>.glb` e aplica a rotação
+  Z-up→Y-up automaticamente quando o `model_up_axis` da localidade é `Z`. É
+  só um preview de conferência (modelo carregou? está orientado certo?);
+  não tem cone, PTZ ou qualquer coisa ligada a telemetria — isso continua
+  exclusivo do widget CV-SHM em `dashboard.html`.
 - **Dispositivos** — nome, proprietário (ex.: SEMARH), localidade,
   transporte (HTTP/MQTT) e posição no mapa (Leaflet + OpenStreetMap, clique
   para marcar lat/lon — sem chave de API). Ao criar, gera um `entity_id`

@@ -73,6 +73,28 @@
     border-radius:8px; padding:10px 14px; font-size:12px; margin-bottom:20px;
   }
   body.tema-claro .aviso { background:#fff6e0; color:#6b5300; }
+
+  #modal-visualizar {
+    position:fixed; inset:0; background:rgba(0,0,0,.8); display:none;
+    align-items:center; justify-content:center; z-index:30;
+  }
+  #modal-visualizar.open { display:flex; }
+  #modal-visualizar .box {
+    width:min(90vw, 900px); height:min(80vh, 640px); background:var(--panel);
+    border:1px solid var(--border); border-radius:10px; padding:14px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  #modal-visualizar .cabecalho { display:flex; align-items:center; gap:10px; }
+  #modal-visualizar .cabecalho b { flex:1; font-size:13px; }
+  #modal-visualizar-viewport {
+    flex:1; position:relative; border-radius:6px; overflow:hidden;
+    background:#0b1220; border:1px solid var(--border);
+  }
+  #modal-visualizar-viewport canvas { display:block; width:100%; height:100%; }
+  #modal-visualizar-status {
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:var(--muted); font-size:12px; pointer-events:none;
+  }
 </style>
 </head>
 <body>
@@ -189,6 +211,18 @@
   </section>
 </main>
 
+<div id="modal-visualizar">
+  <div class="box">
+    <div class="cabecalho">
+      <b id="modal-visualizar-titulo">Modelo 3D</b>
+      <button type="button" id="modal-visualizar-fechar">Fechar</button>
+    </div>
+    <div id="modal-visualizar-viewport">
+      <div id="modal-visualizar-status"></div>
+    </div>
+  </div>
+</div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const SERVER_BASE = window.location.origin;
@@ -267,7 +301,14 @@ async function carregarLocalidades() {
     btnExcluir.textContent = "Excluir";
     btnExcluir.addEventListener("click", () => excluirLocalidade(loc.id, loc.nome));
 
-    tdAcoes.append(inputArquivo, btnUpload, btnExcluir);
+    tdAcoes.append(inputArquivo, btnUpload);
+    if (loc.modelo_status === "pronto") {
+      const btnVer = document.createElement("button");
+      btnVer.textContent = "Visualizar";
+      btnVer.addEventListener("click", () => window.visualizarModelo(loc));
+      tdAcoes.append(btnVer);
+    }
+    tdAcoes.append(btnExcluir);
     corpo.appendChild(tr);
   });
 
@@ -446,6 +487,138 @@ async function init() {
 }
 
 init();
+</script>
+
+<!-- ---------------------------------------------------------------------
+     Visualizador 3D (mesmas bibliotecas do server/static/dashboard.html --
+     so pra conferir que o .glb enviado carrega e está orientado certo,
+     sem cone/PTZ/telemetria: aqui é só um preview.
+     --------------------------------------------------------------------- -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.169.0/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+import { KTX2Loader } from "three/addons/loaders/KTX2Loader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const SERVER_BASE_3D = window.location.origin;
+const viewport = document.getElementById("modal-visualizar-viewport");
+const statusEl = document.getElementById("modal-visualizar-status");
+const modal = document.getElementById("modal-visualizar");
+
+let renderer3d = null, scene3d = null, camera3d = null, controls3d = null;
+let modeloAtual = null, animando = false;
+
+function iniciarViewer() {
+  if (renderer3d) return;
+  scene3d = new THREE.Scene();
+  camera3d = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
+  renderer3d = new THREE.WebGLRenderer({ antialias: true });
+  renderer3d.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  viewport.appendChild(renderer3d.domElement);
+
+  scene3d.add(new THREE.AmbientLight(0xffffff, 0.9));
+  const luz = new THREE.DirectionalLight(0xffffff, 1);
+  luz.position.set(50, 80, 50);
+  scene3d.add(luz);
+
+  controls3d = new OrbitControls(camera3d, renderer3d.domElement);
+  controls3d.enableDamping = true;
+}
+
+function redimensionarViewer() {
+  if (!renderer3d) return;
+  const w = viewport.clientWidth, h = viewport.clientHeight;
+  if (!w || !h) return;
+  camera3d.aspect = w / h;
+  camera3d.updateProjectionMatrix();
+  renderer3d.setSize(w, h);
+}
+
+function animarViewer() {
+  if (!animando) return;
+  requestAnimationFrame(animarViewer);
+  controls3d.update();
+  renderer3d.render(scene3d, camera3d);
+}
+
+function limparModelo() {
+  if (!modeloAtual) return;
+  scene3d.remove(modeloAtual);
+  modeloAtual.traverse((obj) => {
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) (Array.isArray(obj.material) ? obj.material : [obj.material])
+      .forEach(m => m.dispose());
+  });
+  modeloAtual = null;
+}
+
+window.visualizarModelo = function (loc) {
+  document.getElementById("modal-visualizar-titulo").textContent = `Modelo 3D — ${loc.nome}`;
+  modal.classList.add("open");
+  statusEl.textContent = "Carregando…";
+  iniciarViewer();
+  redimensionarViewer();
+  limparModelo();
+  animando = true;
+  animarViewer();
+
+  const loader = new GLTFLoader();
+  const dracoLoader = new DRACOLoader();
+  dracoLoader.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.6/");
+  loader.setDRACOLoader(dracoLoader);
+  const ktx2Loader = new KTX2Loader();
+  ktx2Loader.setTranscoderPath("https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/libs/basis/");
+  ktx2Loader.detectSupport(renderer3d);
+  loader.setKTX2Loader(ktx2Loader);
+  loader.setMeshoptDecoder(MeshoptDecoder);
+
+  loader.load(
+    `${SERVER_BASE_3D}/model/modelos/${loc.id}.glb`,
+    (gltf) => {
+      modeloAtual = gltf.scene;
+      // O georreferenciamento da localidade diz qual eixo é "pra cima" no
+      // .glb original (Z é comum em exports de fotogrametria/ODM); o
+      // Three.js é Y-up nativo, entao rotacionamos so quando precisa --
+      // mesma logica de worldGroup em dashboard.html, mas por localidade.
+      if (loc.model_up_axis === "Z") modeloAtual.rotation.x = -Math.PI / 2;
+      scene3d.add(modeloAtual);
+
+      const caixa = new THREE.Box3().setFromObject(modeloAtual);
+      if (caixa.isEmpty()) {
+        statusEl.textContent = "O modelo carregou, mas parece vazio (0 vértices visíveis).";
+        return;
+      }
+      const centro = new THREE.Vector3(); caixa.getCenter(centro);
+      const tamanho = new THREE.Vector3(); caixa.getSize(tamanho);
+      const raio = Math.max(tamanho.x, tamanho.y, tamanho.z, 1);
+      camera3d.position.set(centro.x + raio, centro.y + raio * 0.7, centro.z + raio);
+      controls3d.target.copy(centro);
+      controls3d.update();
+      statusEl.textContent = "";
+    },
+    undefined,
+    (erro) => {
+      console.error("Erro ao carregar o .glb:", erro);
+      statusEl.textContent = "Não consegui carregar este modelo (ver console do navegador).";
+    }
+  );
+};
+
+document.getElementById("modal-visualizar-fechar").addEventListener("click", () => {
+  modal.classList.remove("open");
+  animando = false;
+  limparModelo();
+});
+
+window.addEventListener("resize", redimensionarViewer);
 </script>
 </body>
 </html>
