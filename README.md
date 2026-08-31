@@ -683,8 +683,9 @@ reincidências que nunca geram um alerta distinto.
 
 `bbox` e `poly` viajam como **string JSON** de propósito: o ThingsBoard indexa
 bem escalares e strings, mas trata mal arrays aninhados dentro de `values`. O
-contorno da máscara são ~20 pares de números (72 B medidos) em vez de dezenas de
-KB de JPEG.
+contorno da máscara são até 64 pares de números (~1 KB) em vez de dezenas de KB
+de JPEG — é o próprio `poly` que o dashboard desenha em cima da foto no "Ver
+máscara" (não existe uma segunda imagem com a máscara desenhada, ver §8).
 
 Estado desejado (servidor → Pi):
 

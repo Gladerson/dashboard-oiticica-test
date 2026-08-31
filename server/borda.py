@@ -269,9 +269,19 @@ async def _registrar_deteccao(v):
 
 
 def _anotar_historico(det_servidor, v):
-    """Acrescenta os metadados da borda na entrada do historico. Devolve os
-    campos gravados (para o chamador replicar via WebSocket), ou None se o
-    id nao existir mais (ex.: historico foi limpo manualmente)."""
+    """Acrescenta os metadados da borda na entrada do historico -- SO na
+    primeira vez. Devolve os campos gravados (para o chamador replicar via
+    WebSocket), ou None se nao havia nada a anotar (id inexistente, ou
+    entrada ja anotada antes).
+
+    Por que so a primeira vez: bbox/poly descrevem UM frame especifico, e o
+    Pi so grava em disco (publicar_deteccao, edge/agente_borda.py) o frame
+    da PRIMEIRA deteccao de cada alerta -- reincidencias da mesma rachadura
+    nao geram evidencia nova. Se cada reincidencia sobrescrevesse bbox/poly
+    com a observacao mais recente, a mascara desenhada no dashboard passava
+    a descrever um frame diferente do que a foto realmente mostra (posicao
+    errada, e a cada nova reincidencia um numero de pontos diferente,
+    dependendo do quao bem o crop daquela vez saiu)."""
     campos = {
         "borda_det_id": v.get("det_id"),
         "n_instancias": v.get("n"),
@@ -298,7 +308,7 @@ def _anotar_historico(det_servidor, v):
     with ctx.history_lock:
         dados = ctx.ler_indice()
         alvo = next((e for e in dados if e.get("id") == det_servidor), None)
-        if alvo is None:
+        if alvo is None or alvo.get("poly") is not None:
             return None
         alvo.update(campos)
         ctx.escrever_indice(dados)

@@ -246,11 +246,15 @@ class DetectorHailo:
         return out
 
 
-def contorno_normalizado(mascara, bbox, largura, altura, max_pontos=24):
+def contorno_normalizado(mascara, bbox, largura, altura, max_pontos=64):
     """Contorno externo da mascara em coordenadas 0..1 do frame inteiro.
 
-    E isto que viaja pela rede no lugar da imagem: ~20 pares de floats
-    (algumas centenas de bytes) em vez de dezenas de KB de JPEG.
+    E isto que viaja pela rede no lugar da imagem, E e o que o dashboard
+    desenha por cima da foto em "Ver mascara" (nao existe uma segunda
+    imagem com a mascara desenhada -- so este contorno). eps baixo +
+    max_pontos generoso para nao perder fidelidade visivel; mesmo em 64
+    pontos isso continua sendo ~1 KB, nada perto do custo de subir uma
+    segunda imagem.
     """
     if mascara is None or mascara.size == 0:
         return []
@@ -260,7 +264,7 @@ def contorno_normalizado(mascara, bbox, largura, altura, max_pontos=24):
     if not contornos:
         return []
     maior = max(contornos, key=cv2.contourArea)
-    eps = 0.01 * cv2.arcLength(maior, True)
+    eps = 0.003 * cv2.arcLength(maior, True)
     aprox = cv2.approxPolyDP(maior, eps, True).reshape(-1, 2)
     if len(aprox) > max_pontos:
         idx = np.linspace(0, len(aprox) - 1, max_pontos).astype(int)

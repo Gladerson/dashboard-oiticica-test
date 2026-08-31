@@ -393,11 +393,15 @@ def publicar_deteccao(frame_rgb, dets):
     }
 
     resposta = canal.deteccao(payload)
-    # HTTP devolve o status na hora (novo/duplicada/em_rearme); MQTT e
-    # fire-and-forget (telemetria do ThingsBoard nao responde o publish), e
-    # nesse caso gravamos por precaucao -- nao ha como saber se o servidor
-    # vai descartar.
-    eh_novo = resposta is None or resposta.get("status") == "ok"
+    # /api/edge/deteccao sempre devolve {"status": "ok", "detalhe": {...}} --
+    # esse "status" de fora e so "o POST chegou", nao o resultado da
+    # deteccao. O status de verdade (ok/duplicada/em_rearme) vem em
+    # "detalhe", que e o retorno do /api/detection no servidor.
+    # MQTT e fire-and-forget (telemetria do ThingsBoard nao responde o
+    # publish), e nesse caso gravamos por precaucao -- nao ha como saber se
+    # o servidor vai descartar.
+    detalhe = (resposta or {}).get("detalhe") or {}
+    eh_novo = resposta is None or detalhe.get("status") == "ok"
     if eh_novo:
         # Frame CRU, sem nada desenhado em cima: o dashboard desenha a
         # mascara/bbox no navegador a partir de "poly"/"bbox" (ja enviados
@@ -412,7 +416,7 @@ def publicar_deteccao(frame_rgb, dets):
 
     print(f"[deteccao] {det_id[:8]} n={len(dets)} conf={payload['conf_max']} "
           f"p={pan:.1f} t={tilt:.1f} z={zoom:.1f} "
-          f"status={resposta.get('status') if resposta else '?'} "
+          f"status={detalhe.get('status') if resposta else '?'} "
           f"evidencia={'gravada' if eh_novo else 'descartada (nao e alerta novo)'}")
 
 
