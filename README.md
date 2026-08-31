@@ -340,9 +340,11 @@ logado (não só admin). Duas listas:
 - **Localidades** — nome, georreferenciamento (zona UTM, offset X/Y/Z, eixo
   "para cima") e upload de um `.glb`. O upload roda a mesma descompressão
   Draco do `prepare_model.sh` (`@gltf-transform/cli` via `npx`), só que
-  disparada pelo servidor em segundo plano — por isso `install_desktop.sh`
-  agora também instala `nodejs`/`npm`. Sem eles, o upload aceita o arquivo
-  mas o status fica em **erro**, com a mensagem explicando o que falta.
+  disparada pelo servidor em segundo plano — por isso é preciso ter
+  `npx` disponível no servidor (`install_desktop.sh` tenta instalar, mas
+  pula sozinho se você já tiver Node de outra origem — ver §13, "npm
+  conflita com nodejs"). Sem `npx`, o upload aceita o arquivo mas o status
+  fica em **erro**, com a mensagem explicando o que falta.
 - **Dispositivos** — nome, proprietário (ex.: SEMARH), localidade,
   transporte (HTTP/MQTT) e posição no mapa (Leaflet + OpenStreetMap, clique
   para marcar lat/lon — sem chave de API). Ao criar, gera um `entity_id`
@@ -848,6 +850,16 @@ corrigido: o `/status` resolve o que precisa de lock **antes** do `with`, e o
 **`Connection refused` ao enviar telemetria** — o servidor não está no ar, ou o
 `SERVER_URL` aponta para o endereço errado. O agente reclama e continua
 funcionando, o que é o comportamento desejado.
+
+**`apt install nodejs npm` falha com `nodejs : Conflita: npm`** (ou uma lista
+enorme de `Depende: node-*`) — você já tem Node instalado por outra via (o mais
+comum: o repositório da NodeSource, `.../nodesource1` no nome do pacote). O
+pacote `nodejs` da NodeSource já vem com o npm embutido; o pacote `npm`
+*separado* do Debian/Ubuntu espera um `nodejs` diferente (o da própria
+distribuição) e os dois brigam. **Não precisa instalar nada**: confira se já
+funciona com `node -v && npx -v` — se responder uma versão, a aba
+Dispositivos já consegue descomprimir o `.glb` enviado. `install_desktop.sh`
+já pula esse passo sozinho quando detecta `npx` funcionando.
 
 **`git pull` recusa: `untracked working tree files would be overwritten`** —
 arquivos criados localmente com o mesmo nome dos que chegam do repositório.
