@@ -14,30 +14,35 @@
 #
 #  3. Repassar o stream sob demanda para os navegadores conectados, com
 #     prazo de validade de 60s.
+#
+# Desde a etapa "multi-dispositivo": cada dispositivo autentica por TOKEN
+# (header "Authorization: Bearer <token>", gerado ao cadastrar em
+# server/dispositivos.py) e tem seu proprio estado/quadro/mapa de deteccoes
+# (server/registro_dispositivos.py) -- nao existe mais UM estado global do
+# processo. Um token que nao pertence a nenhum dispositivo cadastrado e
+# recusado (401): a decisao explicita desta etapa foi nao aceitar
+# dispositivo nenhum sem cadastro previo, mesmo que isso exija migrar
+# instalacoes ja em producao (ver README).
 # ============================================================================
 import base64
 import json
 import os
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import requests
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-# --- Parametros -------------------------------------------------------------
-STREAM_JANELA_S = float(os.getenv("STREAM_JANELA_S", "60"))
-STREAM_FPS = float(os.getenv("STREAM_FPS", "4"))
-STREAM_LARGURA = int(os.getenv("STREAM_LARGURA", "640"))
-STREAM_QUALIDADE = int(os.getenv("STREAM_QUALIDADE", "60"))
-STREAM_ANOTADO = os.getenv("STREAM_ANOTADO", "true").lower() in ("1", "true", "sim")
+import registro_dispositivos as rd
 
-# Ponte MQTT do servidor (opcional; para testar o modo MQTT com um mosquitto
-# antes de existir o ThingsBoard). No ThingsBoard definitivo, o mesmo JSON de
-# estado desejado vira um atributo compartilhado do dispositivo.
+# --- Ponte MQTT do servidor (opcional; para testar o modo MQTT com um
+# mosquitto antes de existir o ThingsBoard). Escopo desta etapa: continua
+# UM UNICO dispositivo fixo (DEVICE_ID), do jeito que ja funcionava --
+# multi-dispositivo por MQTT fica para quando o ThingsBoard de verdade
+# entrar (a autenticacao dele por dispositivo muda esse caminho de
+# qualquer jeito). Nao passa pelo registro por token abaixo.
 MQTT_BRIDGE = os.getenv("MQTT_BRIDGE", "false").lower() in ("1", "true", "sim")
 MQTT_HOST = os.getenv("MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
@@ -50,131 +55,45 @@ DEVICE_ID = os.getenv("DEVICE_ID", "oiticica-cam-01")
 class Contexto:
     """Ganchos para o server.py, injetados sem reescrever nada la."""
     manager: Any
-    telemetry: Callable
-    detection: Callable
+    telemetry_core: Callable   # (device_id | None, TelemetryPayload) -> dict
+    detection_core: Callable   # (device_id | None, DetectionPayload) -> dict
     TelemetryPayload: Any
     DetectionPayload: Any
     history_dir: str
     ler_indice: Callable
     escrever_indice: Callable
     history_lock: Any
-    controller_url: str
     extras: dict = field(default_factory=dict)
 
 
 ctx: Contexto = None
+_mqtt_cli = None
 
 
 # ============================================================================
-# Estado desejado
+# Dispositivo "legado" da ponte MQTT: um unico slot fixo, para nao depender
+# do registro por token (ver comentario no topo do arquivo). Duck-types como
+# um DispositivoRuntime o suficiente para os tradutores abaixo (.id/.estado/
+# .quadro/.mapa_det) funcionarem sem `if` espalhado.
 # ============================================================================
-class EstadoDesejado:
+class _DispositivoLegadoMQTT:
     def __init__(self):
-        self.lock = threading.Lock()
-        self.versao = 1
-        self.transporte = "http"
-        self.stream_expira = 0.0
-        self.inferencia = {"conf": 0.45, "iou": 0.45,
-                           "intervalo_frames": 5, "cooldown_s": 5}
-        self.pedidos_imagem = []
-        # Vindo do Pi, so para exibir no painel
-        self.ultimo_visto = 0.0
-        self.relatado = {}
+        self.id = None
+        self.estado = rd.EstadoDesejado(empurrar_para=self._empurrar)
+        self.quadro = rd.Quadro()
+        self.mapa_det = {}
 
-    def _snapshot_locked(self):
-        restante = max(0.0, self.stream_expira - time.time())
-        return {
-            "versao": self.versao,
-            "transporte": self.transporte,
-            "stream": {
-                "ativo": restante > 0,
-                "restante_s": round(restante, 1),
-                "fps": STREAM_FPS,
-                "largura": STREAM_LARGURA,
-                "qualidade": STREAM_QUALIDADE,
-                "anotado": STREAM_ANOTADO,
-            },
-            "inferencia": dict(self.inferencia),
-            "pedidos_imagem": list(self.pedidos_imagem),
-        }
-
-    def snapshot(self):
-        with self.lock:
-            return self._snapshot_locked()
-
-    def mudar(self, **campos):
-        with self.lock:
-            for k, v in campos.items():
-                setattr(self, k, v)
-            self.versao += 1
-            snap = self._snapshot_locked()
-        _empurrar(snap)
-        return snap
-
-    def consumir_pedidos(self):
-        with self.lock:
-            self.pedidos_imagem = []
-
-
-estado = EstadoDesejado()
-
-
-def _empurrar(snap):
-    """Entrega imediata do estado ao Pi, quando ha caminho para isso.
-
-    E so um acelerador de latencia. O caminho garantido continua sendo a
-    carona na resposta do proximo POST de telemetria -- que funciona mesmo
-    com o Pi atras de NAT, onde o servidor nao consegue abrir conexao."""
-    if estado.transporte == "mqtt" and _mqtt_cli is not None:
+    def _empurrar(self, snap):
+        if _mqtt_cli is None:
+            return
         try:
-            _mqtt_cli.publish(
-                f"v1/devices/{DEVICE_ID}/attributes",
-                json.dumps({"estado_desejado": snap}), qos=1,
-            )
+            _mqtt_cli.publish(f"v1/devices/{DEVICE_ID}/attributes",
+                              json.dumps({"estado_desejado": snap}), qos=1)
         except Exception:
             pass
-        return
-    if not ctx or not ctx.controller_url:
-        return
-
-    def _tentar():
-        try:
-            requests.post(f"{ctx.controller_url}/borda/estado", json=snap, timeout=1.5)
-        except Exception:
-            pass  # silencioso de proposito: a carona resolve
-
-    threading.Thread(target=_tentar, daemon=True).start()
 
 
-# ============================================================================
-# Ultimo frame recebido (relay para os navegadores)
-# ============================================================================
-class Quadro:
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.jpeg = None
-        self.seq = 0
-        self.ts = 0.0
-        self.bytes_total = 0
-        self.frames_total = 0
-
-    def guardar(self, jpeg):
-        with self.lock:
-            self.jpeg = jpeg
-            self.seq += 1
-            self.ts = time.time()
-            self.bytes_total += len(jpeg)
-            self.frames_total += 1
-            return self.seq
-
-    def ler(self):
-        with self.lock:
-            return self.jpeg, self.seq
-
-
-quadro = Quadro()
-_mqtt_cli = None
-_mapa_det = {}   # det_id da borda -> id no historico do servidor
+_legado_mqtt = _DispositivoLegadoMQTT()
 
 
 # ============================================================================
@@ -195,20 +114,20 @@ def _iniciar_mqtt_bridge(loop):
         c.subscribe(f"v1/devices/{DEVICE_ID}/telemetry", qos=0)
         c.subscribe(f"oiticica/{DEVICE_ID}/frame", qos=0)
         c.publish(f"v1/devices/{DEVICE_ID}/attributes",
-                  json.dumps({"estado_desejado": estado.snapshot()}), qos=1)
+                  json.dumps({"estado_desejado": _legado_mqtt.estado.snapshot()}), qos=1)
 
     def on_message(_c, _u, msg):
         if msg.topic.endswith("/frame"):
-            seq = quadro.guardar(msg.payload)
+            seq = _legado_mqtt.quadro.guardar(msg.payload)
             asyncio.run_coroutine_threadsafe(
-                ctx.manager.broadcast({"type": "frame", "seq": seq}), loop)
+                ctx.manager.broadcast({"type": "frame", "device_id": None, "seq": seq}), loop)
             return
         try:
             corpo = json.loads(msg.payload.decode())
         except Exception:
             return
         valores = corpo.get("values", corpo)
-        asyncio.run_coroutine_threadsafe(_processar_valores(valores), loop)
+        asyncio.run_coroutine_threadsafe(_processar_valores(_legado_mqtt, valores), loop)
 
     cli.on_connect = on_connect
     cli.on_message = on_message
@@ -220,23 +139,26 @@ def _iniciar_mqtt_bridge(loop):
 
 # ============================================================================
 # Tradutores: payload da borda -> caminho ja existente do server.py
+#
+# Recebem `device` (um DispositivoRuntime de verdade, resolvido por token, ou
+# o _legado_mqtt acima) -- nunca leem estado global.
 # ============================================================================
-async def _processar_valores(v):
+async def _processar_valores(device, v):
     """Um unico ponto de entrada, use HTTP ou MQTT."""
     if v.get("evt") == "deteccao":
-        return await _registrar_deteccao(v)
+        return await _registrar_deteccao(device, v)
     if v.get("evt") == "imagem":
-        return _anexar_imagem(v)
-    return await _registrar_telemetria(v)
+        return _anexar_imagem(device, v)
+    return await _registrar_telemetria(device, v)
 
 
-async def _registrar_telemetria(v):
-    with estado.lock:
-        estado.ultimo_visto = time.time()
-        estado.relatado = dict(v)
+async def _registrar_telemetria(device, v):
+    with device.estado.lock:
+        device.estado.ultimo_visto = time.time()
+        device.estado.relatado = dict(v)
     if "pan" not in v:
         return {"status": "ok"}
-    await ctx.telemetry(ctx.TelemetryPayload(
+    await ctx.telemetry_core(device.id, ctx.TelemetryPayload(
         coord_p=float(v.get("pan", 0.0)),
         coord_t=float(v.get("tilt", 0.0)),
         coord_z=float(v.get("zoom", 0.0)),
@@ -245,8 +167,8 @@ async def _registrar_telemetria(v):
     return {"status": "ok"}
 
 
-async def _registrar_deteccao(v):
-    resposta = await ctx.detection(ctx.DetectionPayload(
+async def _registrar_deteccao(device, v):
+    resposta = await ctx.detection_core(device.id, ctx.DetectionPayload(
         coord_p=float(v.get("pan", 0.0)),
         coord_t=float(v.get("tilt", 0.0)),
         coord_z=float(v.get("zoom", 0.0)),
@@ -256,7 +178,7 @@ async def _registrar_deteccao(v):
     corpo = resposta if isinstance(resposta, dict) else {}
     det_servidor = corpo.get("id")
     if det_servidor and v.get("det_id"):
-        _mapa_det[v["det_id"]] = det_servidor
+        device.mapa_det[v["det_id"]] = det_servidor
         campos = _anotar_historico(det_servidor, v)
         # Sem isto o navegador so via bbox/poly/conf depois de recarregar a
         # pagina (eram gravados no indice em disco, mas nunca via WebSocket):
@@ -281,7 +203,8 @@ def _anotar_historico(det_servidor, v):
     com a observacao mais recente, a mascara desenhada no dashboard passava
     a descrever um frame diferente do que a foto realmente mostra (posicao
     errada, e a cada nova reincidencia um numero de pontos diferente,
-    dependendo do quao bem o crop daquela vez saiu)."""
+    dependendo do quao bem o crop daquela vez saiu). Nao depende de
+    dispositivo -- e so o indice de historico, compartilhado."""
     campos = {
         "borda_det_id": v.get("det_id"),
         "n_instancias": v.get("n"),
@@ -315,11 +238,11 @@ def _anotar_historico(det_servidor, v):
     return campos
 
 
-def _anexar_imagem(v):
+def _anexar_imagem(device, v):
     """Chegou a evidencia completa pedida pelo operador (ou o aviso de que
     ela nao existe mais no Pi -- ja apagada pela limpeza por teto de disco,
     ou nunca gravada porque a deteccao nao virou alerta novo)."""
-    det_servidor = _mapa_det.get(v.get("det_id"))
+    det_servidor = device.mapa_det.get(v.get("det_id"))
     if not det_servidor:
         return {"status": "ignorado"}
     if not v.get("img_b64"):
@@ -337,13 +260,33 @@ def _anexar_imagem(v):
 
 
 # ============================================================================
+# Autenticacao das rotas do Pi: token do dispositivo, no header Authorization
+# ============================================================================
+def _resolver_dispositivo(req: Request):
+    cabecalho = req.headers.get("authorization", "")
+    if not cabecalho.lower().startswith("bearer "):
+        return None
+    token = cabecalho[7:].strip()
+    if not token:
+        return None
+    return rd.por_token(token)
+
+
+def _nao_autenticado():
+    return JSONResponse({"error": "token de dispositivo ausente ou invalido"},
+                        status_code=401)
+
+
+# ============================================================================
 # Rotas
 # ============================================================================
 class TransportePayload(BaseModel):
+    device_id: str
     transporte: str
 
 
 class InferenciaPayload(BaseModel):
+    device_id: str
     conf: float | None = None
     iou: float | None = None
     intervalo_frames: int | None = None
@@ -354,63 +297,87 @@ def instalar(app, contexto: Contexto):
     global ctx
     ctx = contexto
 
-    # ---- subida: Pi -> servidor -------------------------------------------
+    # ---- subida: Pi -> servidor (autenticado por token) --------------------
     @app.post("/api/edge/telemetria")
     async def edge_telemetria(req: Request):
+        device = _resolver_dispositivo(req)
+        if device is None:
+            return _nao_autenticado()
         corpo = await req.json()
-        await _registrar_telemetria(corpo.get("values", corpo))
-        return {"status": "ok", "estado": estado.snapshot()}
+        await _registrar_telemetria(device, corpo.get("values", corpo))
+        return {"status": "ok", "estado": device.estado.snapshot()}
 
     @app.post("/api/edge/deteccao")
     async def edge_deteccao(req: Request):
+        device = _resolver_dispositivo(req)
+        if device is None:
+            return _nao_autenticado()
         corpo = await req.json()
-        r = await _registrar_deteccao(corpo.get("values", corpo))
-        estado.consumir_pedidos()
-        return {"status": "ok", "detalhe": r, "estado": estado.snapshot()}
+        r = await _registrar_deteccao(device, corpo.get("values", corpo))
+        device.estado.consumir_pedidos()
+        return {"status": "ok", "detalhe": r, "estado": device.estado.snapshot()}
 
     @app.post("/api/edge/imagem")
     async def edge_imagem(req: Request):
+        device = _resolver_dispositivo(req)
+        if device is None:
+            return _nao_autenticado()
         corpo = await req.json()
-        r = _anexar_imagem(corpo.get("values", corpo))
-        estado.consumir_pedidos()
+        r = _anexar_imagem(device, corpo.get("values", corpo))
+        device.estado.consumir_pedidos()
         if r.get("status") == "ok":
             await ctx.manager.broadcast({"type": "detection_image", "id": r["id"]})
         elif r.get("status") == "erro":
             await ctx.manager.broadcast({"type": "detection_image_erro",
                                          "id": r["id"], "erro": r["erro"]})
-        return {"status": "ok", "detalhe": r, "estado": estado.snapshot()}
+        return {"status": "ok", "detalhe": r, "estado": device.estado.snapshot()}
 
     @app.post("/api/edge/frame")
     async def edge_frame(req: Request):
+        device = _resolver_dispositivo(req)
+        if device is None:
+            return _nao_autenticado()
         jpeg = await req.body()
         if not jpeg:
-            return {"status": "vazio", "estado": estado.snapshot()}
-        seq = quadro.guardar(jpeg)
-        await ctx.manager.broadcast({"type": "frame", "seq": seq})
-        return {"status": "ok", "estado": estado.snapshot()}
+            return {"status": "vazio", "estado": device.estado.snapshot()}
+        seq = device.quadro.guardar(jpeg)
+        await ctx.manager.broadcast({"type": "frame", "device_id": device.id, "seq": seq})
+        return {"status": "ok", "estado": device.estado.snapshot()}
 
-    # ---- descida: dashboard -> servidor -> Pi ------------------------------
+    # ---- descida: dashboard -> servidor -> Pi (por device_id) --------------
     @app.post("/api/stream/start")
-    def stream_start():
-        snap = estado.mudar(stream_expira=time.time() + STREAM_JANELA_S)
-        return {"status": "ok", "janela_s": STREAM_JANELA_S, "estado": snap}
+    def stream_start(device_id: str):
+        device = rd.por_id(device_id)
+        if device is None:
+            return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+        snap = device.estado.mudar(stream_expira=time.time() + rd.STREAM_JANELA_S)
+        return {"status": "ok", "janela_s": rd.STREAM_JANELA_S, "estado": snap}
 
     @app.post("/api/stream/renovar")
-    def stream_renovar():
-        with estado.lock:
-            ativo = estado.stream_expira > time.time()
+    def stream_renovar(device_id: str):
+        device = rd.por_id(device_id)
+        if device is None:
+            return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+        with device.estado.lock:
+            ativo = device.estado.stream_expira > time.time()
         if not ativo:
             return {"status": "inativo"}
-        snap = estado.mudar(stream_expira=time.time() + STREAM_JANELA_S)
+        snap = device.estado.mudar(stream_expira=time.time() + rd.STREAM_JANELA_S)
         return {"status": "ok", "estado": snap}
 
     @app.post("/api/stream/stop")
-    def stream_stop():
-        return {"status": "ok", "estado": estado.mudar(stream_expira=0.0)}
+    def stream_stop(device_id: str):
+        device = rd.por_id(device_id)
+        if device is None:
+            return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+        return {"status": "ok", "estado": device.estado.mudar(stream_expira=0.0)}
 
     @app.get("/api/stream/atual.jpg")
-    def stream_atual():
-        jpeg, _seq = quadro.ler()
+    def stream_atual(device_id: str):
+        device = rd.por_id(device_id)
+        if device is None:
+            return Response(status_code=404)
+        jpeg, _seq = device.quadro.ler()
         if jpeg is None:
             return Response(status_code=503)
         return Response(content=jpeg, media_type="image/jpeg",
@@ -418,46 +385,67 @@ def instalar(app, contexto: Contexto):
 
     @app.post("/api/transporte")
     def trocar_transporte(p: TransportePayload):
+        device = rd.por_id(p.device_id)
+        if device is None:
+            return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
         alvo = p.transporte.strip().lower()
         if alvo not in ("http", "mqtt"):
             return JSONResponse({"error": "use 'http' ou 'mqtt'"}, status_code=400)
-        return {"status": "ok", "estado": estado.mudar(transporte=alvo)}
+        return {"status": "ok", "estado": device.estado.mudar(transporte=alvo)}
 
     @app.post("/api/inferencia")
     def ajustar_inferencia(p: InferenciaPayload):
-        with estado.lock:
-            novo = dict(estado.inferencia)
-        for k, v in p.model_dump(exclude_none=True).items():
+        device = rd.por_id(p.device_id)
+        if device is None:
+            return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+        with device.estado.lock:
+            novo = dict(device.estado.inferencia)
+        for k, v in p.model_dump(exclude={"device_id"}, exclude_none=True).items():
             novo[k] = v
-        return {"status": "ok", "estado": estado.mudar(inferencia=novo)}
+        return {"status": "ok", "estado": device.estado.mudar(inferencia=novo)}
 
     @app.post("/api/detection/{det_id}/pedir_imagem")
     def pedir_imagem(det_id: str):
         """O operador quer a foto cheia de uma deteccao. Ela nunca subiu:
-        esta no cartao do Pi. Aqui so registramos o pedido no estado."""
-        with estado.lock:
-            pedidos = list(estado.pedidos_imagem)
-        borda_id = next((b for b, s in _mapa_det.items() if s == det_id), None)
+        esta no cartao do Pi. Aqui so registramos o pedido no estado --
+        do MESMO dispositivo que gerou a deteccao (guardado na propria
+        entrada do historico, nao precisa o dashboard informar)."""
+        entrada = next((e for e in ctx.ler_indice() if e.get("id") == det_id), None)
+        if entrada is None:
+            return JSONResponse({"error": "detecção não encontrada"}, status_code=404)
+        device = rd.por_id(entrada.get("device_id")) if entrada.get("device_id") else None
+        if device is None:
+            return JSONResponse(
+                {"error": "dispositivo desta detecção não encontrado (cadastro "
+                          "anterior à etapa multi-dispositivo, ou excluído)"},
+                status_code=404)
+        borda_id = next((b for b, s in device.mapa_det.items() if s == det_id), None)
         if borda_id is None:
             return JSONResponse({"error": "sem evidencia na borda"}, status_code=404)
+        with device.estado.lock:
+            pedidos = list(device.estado.pedidos_imagem)
         if borda_id not in pedidos:
             pedidos.append(borda_id)
-        return {"status": "ok", "estado": estado.mudar(pedidos_imagem=pedidos)}
+        return {"status": "ok", "estado": device.estado.mudar(pedidos_imagem=pedidos)}
 
     @app.get("/api/borda")
-    def painel_borda():
-        snap = estado.snapshot()
-        with estado.lock:
-            visto, relatado = estado.ultimo_visto, dict(estado.relatado)
-        with quadro.lock:
-            trafego = {"frames": quadro.frames_total, "bytes": quadro.bytes_total}
+    def painel_borda(device_id: str):
+        device = rd.por_id(device_id)
+        if device is None:
+            return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+        snap = device.estado.snapshot()
+        with device.estado.lock:
+            visto, relatado = device.estado.ultimo_visto, dict(device.estado.relatado)
+        with device.quadro.lock:
+            trafego = {"frames": device.quadro.frames_total, "bytes": device.quadro.bytes_total}
         return {
             "estado": snap,
             "online": (time.time() - visto) < 5 if visto else False,
             "ultimo_visto_s": round(time.time() - visto, 1) if visto else None,
             "relatado": relatado,
             "stream_trafego": trafego,
-            "janela_s": STREAM_JANELA_S,
+            "janela_s": rd.STREAM_JANELA_S,
+            "pronto_3d": device.pronto(),
         }
 
     @app.on_event("startup")
@@ -465,25 +453,30 @@ def instalar(app, contexto: Contexto):
         import asyncio
         if MQTT_BRIDGE:
             _iniciar_mqtt_bridge(asyncio.get_running_loop())
-        asyncio.get_running_loop().create_task(_vigia_stream())
+        asyncio.get_running_loop().create_task(_vigia_streams())
 
-    print(f">> Modulo de borda instalado (janela de stream: {STREAM_JANELA_S:.0f}s, "
-          f"ponte MQTT: {'on' if MQTT_BRIDGE else 'off'})")
+    print(f">> Modulo de borda instalado (janela de stream: {rd.STREAM_JANELA_S:.0f}s, "
+          f"ponte MQTT: {'on' if MQTT_BRIDGE else 'off'}, autenticacao por token: on)")
 
 
-async def _vigia_stream():
+async def _vigia_streams():
     """Avisa o dashboard quando a janela de 60s expira sozinha, para a
-    telinha nao ficar congelada no ultimo frame fingindo que esta ao vivo."""
+    telinha nao ficar congelada no ultimo frame fingindo que esta ao vivo.
+    Percorre todos os dispositivos ja vistos pelo registro (nao so um)."""
     import asyncio
-    anterior = False
+    anteriores = {}
     while True:
         await asyncio.sleep(0.5)
-        with estado.lock:
-            ativo = estado.stream_expira > time.time()
-        if anterior and not ativo:
-            estado.mudar(stream_expira=0.0)
-            await ctx.manager.broadcast({"type": "stream", "ativo": False,
-                                         "motivo": "expirou"})
-        elif ativo and not anterior:
-            await ctx.manager.broadcast({"type": "stream", "ativo": True})
-        anterior = ativo
+        dispositivos = rd.todos() + [_legado_mqtt]
+        for device in dispositivos:
+            with device.estado.lock:
+                ativo = device.estado.stream_expira > time.time()
+            anterior = anteriores.get(device.id, False)
+            if anterior and not ativo:
+                device.estado.mudar(stream_expira=0.0)
+                await ctx.manager.broadcast({"type": "stream", "device_id": device.id,
+                                             "ativo": False, "motivo": "expirou"})
+            elif ativo and not anterior:
+                await ctx.manager.broadcast({"type": "stream", "device_id": device.id,
+                                             "ativo": True})
+            anteriores[device.id] = ativo

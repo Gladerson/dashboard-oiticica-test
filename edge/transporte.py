@@ -86,19 +86,26 @@ class TransporteBase:
 class TransporteHTTP(TransporteBase):
     nome = "http"
 
-    def __init__(self, device_id, server_url, timeout=4):
+    def __init__(self, device_id, server_url, token, timeout=4):
         super().__init__(device_id)
         self.base = server_url.rstrip("/")
+        self.token = token
         self.timeout = timeout
         self.sessao = requests.Session()
         self._falhas = 0
+
+    def _cabecalhos(self, extra=None):
+        h = {"X-Device-Id": self.device_id, "Authorization": f"Bearer {self.token}"}
+        if extra:
+            h.update(extra)
+        return h
 
     def _post_json(self, rota, corpo):
         try:
             r = self.sessao.post(
                 f"{self.base}{rota}",
                 json=corpo,
-                headers={"X-Device-Id": self.device_id},
+                headers=self._cabecalhos(),
                 timeout=self.timeout,
             )
             self._falhas = 0
@@ -131,11 +138,10 @@ class TransporteHTTP(TransporteBase):
             r = self.sessao.post(
                 f"{self.base}/api/edge/frame",
                 data=jpeg,
-                headers={
+                headers=self._cabecalhos({
                     "Content-Type": "image/jpeg",
-                    "X-Device-Id": self.device_id,
                     "X-Meta": json.dumps(meta, separators=(",", ":")),
-                },
+                }),
                 timeout=self.timeout,
             )
             if r.ok:
@@ -292,4 +298,4 @@ def construir(nome, cfg):
             cfg.DEVICE_ID, cfg.MQTT_HOST, cfg.MQTT_PORT, cfg.MQTT_TOKEN,
             tls=cfg.MQTT_TLS, topico_frame=cfg.MQTT_TOPICO_FRAME,
         )
-    return TransporteHTTP(cfg.DEVICE_ID, cfg.SERVER_URL)
+    return TransporteHTTP(cfg.DEVICE_ID, cfg.SERVER_URL, cfg.DEVICE_TOKEN)

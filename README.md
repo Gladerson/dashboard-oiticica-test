@@ -95,11 +95,13 @@ dashboard_oiticica_test/
 │
 ├── server/                         # SERVIDOR DO DASHBOARD
 │   ├── server.py                   # API, WebSocket, cone de visão, /api/aim, /api/locate
-│   ├── borda.py                    # estado desejado, endpoints /api/edge/*, relay de stream
-│   ├── glb_geo.py                  # georreferenciamento UTM, raycasting, ângulos PTZ
+│   ├── borda.py                    # estado desejado, endpoints /api/edge/* (autenticados por token), relay de stream
+│   ├── registro_dispositivos.py    # registro em memória por dispositivo: pose, GeoModel, stream, estado desejado
+│   ├── glb_geo.py                  # georreferenciamento UTM, raycasting, ângulos PTZ (um GeoModel por localidade)
 │   ├── db.py                       # PostgreSQL: usuarios/sessoes/localidades/dispositivos/dashboards
 │   ├── auth.py                     # login por sessão, middleware de autenticação, admin de usuários
 │   ├── dispositivos.py             # cadastro de localidades (modelo 3D) e dispositivos CV-SHM
+│   ├── migrar_dispositivo_legado.py  # cadastra o dispositivo/localidade que antes eram hardcoded (§9-bis)
 │   ├── prepare_model.sh            # remove compressão Draco do .glb (rodar uma vez, uso manual)
 │   ├── static/dashboard.html       # Three.js: modelo, cone, telinha, histórico, marcações 3D
 │   ├── static/login.html           # tela de entrada
@@ -138,8 +140,9 @@ dashboard_oiticica_test/
 | detecção, pós-processamento, máscara | `edge/inferencia_hailo.py` (`_pos`, `letterbox`, `nms`) |
 | PTZ, laço de vídeo, ciclo do agente | `edge/agente_borda.py` (`PTZMotion`, `video_loop`, `stream_loop`) |
 | HTTP/MQTT, formato do payload | `edge/transporte.py` + `publicar_deteccao` no agente |
-| estado desejado, janela de stream | `server/borda.py` (`EstadoDesejado`, `_vigia_stream`) |
-| raycasting, cone, coordenadas 3D | `server/glb_geo.py` |
+| estado desejado, janela de stream | `server/borda.py` (`EstadoDesejado`, `_vigia_streams`) |
+| autenticação por token, registro por dispositivo | `server/registro_dispositivos.py` (`DispositivoRuntime`) |
+| raycasting, cone, coordenadas 3D | `server/glb_geo.py` (`GeoModel`, um por localidade) |
 | histórico, dedup, WebSocket | `server/server.py` |
 | interface, marcações 3D, telinha | `server/static/dashboard.html` |
 | login, sessão, usuários | `server/auth.py` + `server/db.py` |
@@ -242,8 +245,13 @@ python -c "import hailo_platform, onnxruntime, cv2, onvif, paho.mqtt.client; pri
 
 cd ~/Projetos/dashboard_oiticica_test/edge
 cp .env.example .env
-nano .env      # CAMERA_IP, ONVIF_USER, ONVIF_PASSWORD, RTSP_URL, SERVER_URL
+nano .env      # CAMERA_IP, ONVIF_USER, ONVIF_PASSWORD, RTSP_URL, SERVER_URL, DEVICE_TOKEN
 ```
+
+`DEVICE_TOKEN` vem do cadastro do dispositivo no servidor (aba
+**Dispositivos**, `/dispositivos`, §5.1a-bis, ou `migrar_dispositivo_legado.py`
+para a câmera já em produção, §9-bis) — sem ele o agente aborta na
+inicialização (`_req()` falha rápido, mesmo padrão de `CAMERA_IP`/`ONVIF_USER`).
 
 Se os nomes das saídas do HEF mudaram em relação ao padrão do `config_borda.py`,
 defina `MAPA_HEF_PARA_ONNX` no `.env`, numa única linha. Se não souber os nomes,
@@ -371,37 +379,44 @@ Cada usuário só vê e só pode excluir os próprios dispositivos; admin vê e
 mexe em todos. Localidades e o modelo 3D em si continuam catálogo comum,
 sem dono.
 
-### 5.1 Modelo 3D
+### 5.1 Modelo 3D e georreferenciamento
 
-O `.glb` de fotogrametria vem comprimido com Draco. O Three.js decodifica no
-navegador, mas o `trimesh` (usado no raycasting) tem histórico de
-incompatibilidade. Descomprima uma vez:
+**Desde a etapa multi-dispositivo, isto não é mais feito editando arquivo
+nenhum** (nem `static/model.glb` nem constantes em `server/glb_geo.py` —
+essas constantes não existem mais; cada localidade tem seu próprio
+`GeoModel`, montado em runtime a partir do que está cadastrado no banco). Há
+dois caminhos:
 
-```bash
-cp /caminho/Processamento-1-Oiticica-textured_model.glb static/model.glb
-bash prepare_model.sh
-```
+- **Instalação nova / localidade nova:** cadastre pela aba **Dispositivos**
+  (`/dispositivos`, §5.1a-bis) — crie a localidade preenchendo zona UTM,
+  offset X/Y/Z e eixo "para cima", depois envie o `.glb` de fotogrametria.
+  O servidor descomprime o Draco sozinho (mesma ferramenta que o antigo
+  `prepare_model.sh` chamava manualmente, agora automática).
+  Os valores de zona UTM/offset saem do `odm_georeferencing_model_geo.txt`
+  do projeto ODM/WebODM: zona e offset X/Y na linha 2, eixo "para cima" é
+  `Z` na maioria dos exports de fotogrametria.
+- **Servidor já em produção com a Barragem Oiticica** (o `.glb` já está em
+  `static/model.glb`, já descomprimido): rode
+  `python3 migrar_dispositivo_legado.py` (§9-bis) — ele cadastra a
+  localidade reaproveitando esse arquivo, sem reenviar nada.
 
-### 5.2 Georreferenciamento
-
-Em `server/glb_geo.py`, os valores saem do `odm_georeferencing_model_geo.txt`
-do projeto ODM/WebODM:
-
-```python
-UTM_ZONE = 24
-UTM_HEMISPHERE_SOUTH = True
-GEO_OFFSET_X = 707543.0    # linha 2, valor 1
-GEO_OFFSET_Y = 9319434.0   # linha 2, valor 2
-MODEL_UP_AXIS = "Z"        # exports de fotogrametria costumam ser Z-up
-```
+`prepare_model.sh` continua existindo só para descomprimir Draco à mão fora
+do fluxo do painel (por exemplo, para inspecionar um `.glb` antes de
+enviá-lo).
 
 ### 5.3 Configurar e rodar
 
 ```bash
 cp .env.example .env
-nano .env      # DATABASE_URL (§5.1a), CONTROLLER_URL e CONTROLLER_PUBLIC_URL com o IP do Pi
+nano .env      # DATABASE_URL (§5.1a); CONTROLLER_URL/CONTROLLER_PUBLIC_URL viraram
+               # so um FALLBACK -- cada dispositivo pode ter o seu proprio
+               # controller_url cadastrado em /dispositivos
 python server.py
 ```
+
+Depois de subir o servidor, cadastre a localidade/dispositivo (§5.1a-bis) ou,
+se for o Raspberry já em produção, rode a migração (§9-bis) — sem isso não
+existe token, e todo dispositivo é rejeitado com `401`.
 
 Procure na saída as linhas `>> Modulo de autenticacao instalado` e
 `>> Modulo de borda instalado`. Se a segunda não aparecer, o `borda.py` não
@@ -415,15 +430,18 @@ foi carregado e as rotas `/api/edge/*` não existem.
 ### 5.4 Verificar
 
 `/api/borda` (como quase toda rota do painel, desde a etapa Configuração)
-exige sessão — sem cookie, a resposta é `401`. Para testar por `curl`, logue
-primeiro e reaproveite o cookie:
+exige sessão — sem cookie, a resposta é `401`. Também exige `device_id`
+desde a etapa multi-dispositivo (§9-bis) — pegue o `id` em `/api/dispositivos`.
+Para testar por `curl`, logue primeiro e reaproveite o cookie:
 
 ```bash
 curl -s -c /tmp/cookies.txt -X POST localhost:8001/api/login \
      -H 'Content-Type: application/json' \
      -d '{"username": "admin", "senha": "hydroconecta"}'
 
-curl -s -b /tmp/cookies.txt localhost:8001/api/borda | python3 -m json.tool
+curl -s -b /tmp/cookies.txt localhost:8001/api/dispositivos | python3 -m json.tool
+# pegue o "id" do dispositivo desejado na saída acima
+curl -s -b /tmp/cookies.txt "localhost:8001/api/borda?device_id=<uuid>" | python3 -m json.tool
 ```
 
 Com `online: true` e `relatado.fps` preenchido, o Pi está conversando com o
@@ -511,7 +529,8 @@ ao padrão em menos de um segundo.
 ```bash
 # runtime, vale até o servidor reiniciar
 curl -X POST http://SERVIDOR:8001/api/inferencia \
-     -H 'Content-Type: application/json' -d '{"conf": 0.45}'
+     -H 'Content-Type: application/json' \
+     -d '{"device_id": "<uuid-do-dispositivo>", "conf": 0.45}'
 ```
 
 ---
@@ -600,6 +619,10 @@ meio-ângulo cobre a seleção com 30% de folga.
 
 ## 9. Transporte: HTTP e MQTT
 
+**Isto aqui é só a ponte MQTT de teste, sem token, sempre um único
+dispositivo (`DEVICE_ID`) -- não confundir com o pipeline HTTP multi-
+dispositivo do §9-bis, que é o caminho de produção hoje.**
+
 Para testar o modo MQTT antes de existir o ThingsBoard, use um broker local:
 
 ```bash
@@ -623,7 +646,8 @@ vez, no cadastro do dispositivo (painel de administração ainda a construir,
 
 ```bash
 curl -X POST http://SERVIDOR:8001/api/transporte \
-     -H 'Content-Type: application/json' -d '{"transporte": "mqtt"}'
+     -H 'Content-Type: application/json' \
+     -d '{"device_id": "<uuid-do-dispositivo>", "transporte": "mqtt"}'
 ```
 
 **O token nunca desce do servidor pela rede.** Ele mora no `edge/.env`. O
@@ -640,6 +664,81 @@ formato nativo (`{"ts", "values"}`). **O quadro de vídeo não deve ir por
 telemetria**: cada mensagem é persistida no banco, e gravar 4 JPEG por segundo
 encheria o disco a troco de nada. O agente publica num tópico próprio, efêmero
 (`MQTT_TOPICO_FRAME`, QoS 0, sem retain).
+
+---
+
+## 9-bis. Multi-dispositivo (HTTP): migração obrigatória
+
+Antes desta etapa, o servidor falava com **um único** Raspberry hardcoded
+(`CAMERA_LAT`/`CAMERA_LON`/`CAMERA_ALT_ABOVE_GROUND` em `server.py`,
+`UTM_ZONE`/`GEO_OFFSET_*`/`MODEL_UP_AXIS` em `glb_geo.py`). Agora cada
+chamada HTTP de dispositivo (`/api/edge/*`, e `/api/telemetry`/
+`/api/detection` usadas pelo `controller.py`) **exige** o cabeçalho
+`Authorization: Bearer <token>`, resolvido contra o cadastro feito em
+`/dispositivos` (§5.1a-bis) -- **sem exceção e sem modo de compatibilidade**:
+essa foi uma escolha deliberada para não deixar um caminho tokenless
+esquecido rodando em produção. Isso inclui o Raspberry que já está no ar: ele
+**vai parar de conseguir falar com o servidor** assim que esta atualização
+subir, até ser migrado.
+
+### Passo a passo
+
+1. **Atualize o servidor primeiro** (§5), com o banco já migrado (as
+   `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` de `server/db.py` rodam
+   sozinhas ao iniciar).
+2. **Rode o script de migração no servidor**, uma única vez (idempotente --
+   rodar de novo não duplica nada):
+   ```bash
+   cd server
+   source venv/bin/activate    # se usar virtualenv
+   python3 migrar_dispositivo_legado.py
+   ```
+   Ele cria (ou reaproveita, se já existir) a localidade "Barragem Oiticica"
+   com os mesmos parâmetros geográficos que estavam hardcoded, aponta para o
+   `static/model.glb` **já existente** (sem reenviar/redescomprimir nada) e
+   marca o modelo como pronto direto. Depois cria o dispositivo legado com
+   um token novo e imprime algo como:
+   ```
+   Cole isto em edge/.env no Raspberry (mantenha o resto do arquivo):
+
+   DEVICE_ID=oiticica-cam-01
+   DEVICE_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+   ```
+3. **No Raspberry**, edite `edge/.env` e cole as duas linhas acima (o
+   `DEVICE_ID` já deve bater com o que já está lá). Reinicie o agente:
+   ```bash
+   sudo systemctl restart agente-borda
+   sudo journalctl -u agente-borda -f   # confirme que voltou a mandar telemetria
+   ```
+4. **Se usar o `controller.py`** (ambiente de desktop sem Pi, §3), edite
+   `controller/.env` e adicione o mesmo `DEVICE_TOKEN` (pode reaproveitar o
+   dispositivo legado ou cadastrar um novo em `/dispositivos` para o
+   controller).
+5. Se o Pi ficar em `pill-online: offline` no dashboard depois disso, o
+   token está errado/faltando -- confira `edge/.env` e os logs do agente
+   (uma tentativa sem token, ou com token inválido, aparece no servidor como
+   `401` em `/api/edge/telemetria`).
+
+### Novos dispositivos
+
+Um dispositivo cadastrado em `/dispositivos` **sem** o `migrar_dispositivo_legado.py`
+já nasce funcional: o cadastro gera o token, e o operador só precisa colar
+`DEVICE_ID`/`DEVICE_TOKEN` no `edge/.env` daquele Raspberry. Se a localidade
+dele ainda não tiver modelo 3D pronto (upload/descompressão em andamento, ou
+sem cadastro de localidade ainda), o dispositivo funciona normalmente em PTZ
+e vídeo -- só a visão 3D fica indisponível até o cadastro da localidade
+ficar completo (sem *fallback* para a geometria de outro dispositivo, ver
+§16).
+
+### No dashboard
+
+`server/static/dashboard.html` agora mostra um seletor de dispositivo no
+canto superior direito (populado por `/api/dispositivos`, respeitando o
+mesmo filtro "só os próprios, admin vê todos" do cadastro). A escolha fica
+salva por navegador (`localStorage`) e também na URL (`?device_id=...`, para
+favoritar/compartilhar um link direto de uma câmera específica). Sem nenhum
+dispositivo cadastrado para o usuário logado, a tela mostra um aviso e não
+tenta carregar modelo 3D nem vídeo.
 
 ---
 
@@ -660,39 +759,41 @@ encheria o disco a troco de nada. O agente publica num tópico próprio, efêmer
 
 ### Servidor (porta 8001)
 
-Colunas **Sessão**: rotas do dispositivo (Pi/`controller.py`) nunca exigem
-login -- não têm navegador nem cookie. Todo o resto exige sessão válida
-(ver §5.1a); sem ela, `/api/*` responde `401` e páginas HTML redirecionam
-para `/login`.
+Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
+`Authorization: Bearer <token>` (§9-bis) em vez de sessão -- sem token válido,
+`401`. Todo o resto exige sessão válida de operador (ver §5.1a); sem ela,
+`/api/*` responde `401` e páginas HTML redirecionam para `/login`.
 
-| Rota | Método | Sessão | Função |
+| Rota | Método | Autenticação | Função |
 |---|---|---|---|
-| `/api/edge/telemetria` | POST | não | telemetria do Pi; responde com o estado desejado |
-| `/api/edge/deteccao` | POST | não | evento de detecção (só coordenadas) |
-| `/api/edge/frame` | POST | não | quadro JPEG cru (não base64) |
-| `/api/edge/imagem` | POST | não | evidência completa pedida pelo operador |
-| `/api/telemetry`, `/api/detection` | POST | não | mesma função acima, usadas pelo `controller.py` |
-| `/api/stream/start` \| `renovar` \| `stop` | POST | sim | janela de vídeo de 60 s |
-| `/api/stream/atual.jpg` | GET | sim | último quadro recebido |
-| `/api/transporte` | POST | sim | alterna entre `http` e `mqtt` (sem botão no painel, ver §9) |
-| `/api/inferencia` | POST | sim | ajusta limiares em runtime |
-| `/api/borda` | GET | sim | painel de estado da borda |
-| `/api/aim` \| `/api/locate` | POST | sim | close por seleção; revisitar detecção |
-| `/api/detection/{id}/pedir_imagem` | POST | sim | pede a foto completa ao Pi ("Abrir") |
+| `/api/edge/telemetria` | POST | token | telemetria do Pi; responde com o estado desejado |
+| `/api/edge/deteccao` | POST | token | evento de detecção (só coordenadas) |
+| `/api/edge/frame` | POST | token | quadro JPEG cru (não base64) |
+| `/api/edge/imagem` | POST | token | evidência completa pedida pelo operador |
+| `/api/telemetry`, `/api/detection` | POST | token | mesma função acima, usadas pelo `controller.py` |
+| `/api/dispositivos` | GET/POST | sessão | listar (próprios; todos se admin) / criar dispositivo |
+| `/api/dispositivos/{id}` | DELETE | sessão | excluir (só o dono ou admin) |
+| `/api/camera_info` \| `/api/view` | GET | sessão | pose/geometria e cone sob demanda -- exige `?device_id=` |
+| `/api/stream/start` \| `renovar` \| `stop` | POST | sessão | janela de vídeo de 60 s -- exige `device_id` |
+| `/api/stream/atual.jpg` | GET | sessão | último quadro recebido -- exige `device_id` |
+| `/api/transporte` | POST | sessão | alterna entre `http` e `mqtt` (sem botão no painel, ver §9) -- exige `device_id` |
+| `/api/inferencia` | POST | sessão | ajusta limiares em runtime -- exige `device_id` |
+| `/api/borda` | GET | sessão | painel de estado da borda -- exige `?device_id=` |
+| `/api/aim` | POST | sessão | close por seleção -- exige `device_id` |
+| `/api/locate` | POST | sessão | revisitar detecção -- dispositivo vem da PRÓPRIA detecção salva, não do cliente |
+| `/api/detection/{id}/pedir_imagem` | POST | sessão | pede a foto completa ao Pi ("Abrir") -- dispositivo idem `/api/locate` |
 | `/login`, `/api/login` | GET/POST | não | tela e endpoint de entrada |
-| `/api/logout` | POST | sim | encerra a sessão atual |
-| `/config` | GET | sim | tema, própria senha, administração de usuários |
-| `/api/usuarios/me` | GET | sim | dados do usuário logado |
-| `/api/usuarios/me/senha` \| `/tema` | POST | sim | própria senha / próprio tema |
+| `/api/logout` | POST | sessão | encerra a sessão atual |
+| `/config` | GET | sessão | tema, própria senha, administração de usuários |
+| `/api/usuarios/me` | GET | sessão | dados do usuário logado |
+| `/api/usuarios/me/senha` \| `/tema` | POST | sessão | própria senha / próprio tema |
 | `/api/usuarios` | GET/POST | admin | listar / criar usuários |
 | `/api/usuarios/{id}/redefinir_senha` | POST | admin | força troca de senha de outro usuário |
 | `/api/usuarios/{id}` | DELETE | admin | exclui usuário (nunca a si mesmo nem o último admin) |
-| `/dispositivos` | GET | sim | tela de cadastro de localidades/dispositivos |
-| `/api/localidades` | GET/POST | sim | listar / criar localidade |
-| `/api/localidades/{id}` | GET/DELETE | sim | obter / excluir localidade |
-| `/api/localidades/{id}/modelo` | POST | sim | upload do `.glb` (multipart); descomprime Draco em segundo plano |
-| `/api/dispositivos` | GET/POST | sim | listar (próprios; todos se admin) / criar dispositivo |
-| `/api/dispositivos/{id}` | DELETE | sim | excluir (só o dono ou admin) |
+| `/dispositivos` | GET | sessão | tela de cadastro de localidades/dispositivos |
+| `/api/localidades` | GET/POST | sessão | listar / criar localidade |
+| `/api/localidades/{id}` | GET/DELETE | sessão | obter / excluir localidade |
+| `/api/localidades/{id}/modelo` | POST | sessão | upload do `.glb` (multipart); descomprime Draco em segundo plano |
 
 ### Payloads
 
@@ -756,11 +857,14 @@ estado antigo, chegando fora de ordem, sobrescreva um mais novo.
 
 ### `edge/.env` — agente de borda
 
-Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`.
+Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
+**`DEVICE_TOKEN`** (gerado ao cadastrar o dispositivo em `/dispositivos`,
+§9-bis -- sem ele o agente nem sobe, `_req()` falha rápido).
 
 | Variável | Padrão | Para quê |
 |---|---|---|
 | `SERVER_URL` | `http://127.0.0.1:8001` | servidor do dashboard, no modo HTTP |
+| `DEVICE_TOKEN` | **obrigatória** | token do dispositivo (Bearer, em toda chamada HTTP a `/api/edge/*`) |
 | `MQTT_HOST` / `MQTT_TOKEN` | vazias | broker; o token nunca desce do servidor |
 | `MQTT_FALLBACK_SEGUNDOS` | 30 | tempo mudo antes de voltar para HTTP |
 | `TRANSPORTE_INICIAL` | `http` | transporte usado antes do primeiro estado |
@@ -785,24 +889,30 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`.
 | `DATABASE_URL` | ver `.env.example` | conexão PostgreSQL (usuários/sessões, §5.1a) |
 | `SESSION_COOKIE_SECURE` | `false` | `true` só atrás de HTTPS de verdade (reverse proxy) |
 | `SESSAO_DURACAO_H` | 168 (7 dias) | validade do cookie de sessão |
-| `CONTROLLER_URL` | `http://127.0.0.1:8090` | servidor → Pi |
-| `CONTROLLER_PUBLIC_URL` | = acima | navegador → Pi (PTZ direto) |
+| `CONTROLLER_URL` | `http://127.0.0.1:8090` | *fallback* servidor → Pi, só para dispositivos sem `controller_url` próprio cadastrado |
+| `CONTROLLER_PUBLIC_URL` | = acima | *fallback* navegador → Pi (PTZ direto), idem acima |
 | `STREAM_JANELA_S` | 60 | duração do pedido de vídeo |
 | `STREAM_FPS` / `STREAM_LARGURA` / `STREAM_QUALIDADE` | 4 / 640 / 60 | parâmetros pedidos ao Pi |
-| `PAN_SIGN` / `TILT_SIGN` | -1 / 1 | sentido de rotação |
-| `CAMERA_ABS_ALT` | — | elevação absoluta da lente |
+| `PAN_SIGN` / `TILT_SIGN` | -1 / 1 | sentido de rotação (global -- é fiação de câmera, não propriedade da localidade) |
 | `CONE_HALF_ANGLE_WIDE` / `_TELE` | 18 / 2 | abertura do cone em graus |
 | `CONE_RING_RAYS` | 24 | raios do anel (16 é mais leve) |
-| `DEDUP_RAIO_M` | 1.5 | raio 3D para considerar a mesma fissura |
+| `DEDUP_RAIO_M` | 1.5 | raio 3D para considerar a mesma fissura (por dispositivo -- nunca compara entre dispositivos diferentes) |
 | `DEDUP_ANG_DEG` | 1.5 | tolerância angular sem ponto 3D nos dois lados |
 | `REARME_SEGUNDOS` | 600 | antes de um ponto tratado reabrir alerta |
-| `MQTT_BRIDGE` / `MQTT_HOST` / `MQTT_PORT` | false / 127.0.0.1 / 1883 | ponte MQTT para testes |
-| `DEVICE_ID` | `oiticica-cam-01` | identificador do dispositivo |
+| `MQTT_BRIDGE` / `MQTT_HOST` / `MQTT_PORT` | false / 127.0.0.1 / 1883 | ponte MQTT de teste (§9) -- só o dispositivo único legado, sem token |
+| `DEVICE_ID` | `oiticica-cam-01` | identificador do dispositivo **só na ponte MQTT de teste** acima; no HTTP (produção) a identidade vem do `DEVICE_TOKEN` cadastrado, não desta variável |
+
+> `CAMERA_ABS_ALT` existia antes da etapa multi-dispositivo (elevação
+> absoluta da lente, sobrescrevendo a estimativa de terreno) e **não existe
+> mais**: hoje isso é `alt_acima_solo`, cadastrado por dispositivo em
+> `/dispositivos` (relativo ao terreno, não absoluto).
 
 ### `controller/.env` — ambiente de teste sem Pi
 
-Mesmas credenciais de câmera, mais `SERVER_URL`, `YOLO_CONF_THRESHOLD` (0.558)
-e `DETECTION_COOLDOWN_SECONDS` (5).
+Mesmas credenciais de câmera, mais `SERVER_URL`, `YOLO_CONF_THRESHOLD` (0.558),
+`DETECTION_COOLDOWN_SECONDS` (5) e **`DEVICE_TOKEN`** (obrigatória, mesmo
+esquema do `edge/.env` -- `/api/telemetry`/`/api/detection` também exigem
+Bearer agora).
 
 ---
 
@@ -1006,8 +1116,12 @@ indesejável, mova para variável de ambiente.
   vértices vizinhos, porque a câmera fica ~36 m além da borda norte do modelo. A
   estimativa (87,07) praticamente coincide com o ponto de malha mais próximo
   (86,63), o que pode significar que ambos estão ancorados no topo da estrutura
-  em vez do chão. Erro aqui vira erro sistemático de tilt: ao instalar, meça a
-  elevação real e defina `CAMERA_ABS_ALT`.
+  em vez do chão. Erro aqui vira erro sistemático de tilt: ao cadastrar o
+  dispositivo em `/dispositivos`, informe a altura real da lente acima do
+  solo (`alt_acima_solo`) em vez de confiar no padrão de 7 m. (A variável
+  `CAMERA_ABS_ALT`, que existia antes da etapa multi-dispositivo para
+  sobrescrever com uma elevação absoluta, não existe mais -- cada
+  dispositivo cadastrado só tem `alt_acima_solo`, relativo ao terreno.)
 - **Sentido do pan** corrigido com `PAN_SIGN=-1`, ainda por confirmar em campo.
 - **O limiar de confiança existe em dois lugares** (`edge/.env` e
   `server/borda.py`) e o do servidor vence silenciosamente. O correto seria o
@@ -1034,10 +1148,23 @@ indesejável, mova para variável de ambiente.
     OpenStreetMap), transporte HTTP/MQTT e geração de token/tópicos
     (`server/dispositivos.py`, `server/static/dispositivos.html`). Cada
     usuário só vê/exclui os próprios dispositivos; admin vê todos.
-    **Ainda não faz** o pipeline ao vivo (`server/borda.py`) reconhecer N
-    dispositivos por token — isso continua conversando com UM Raspberry só,
-    do jeito que já está em produção; um dispositivo cadastrado é só
-    catálogo até essa próxima etapa (rotear por token) existir.
+  - ✅ **Pipeline ao vivo multi-dispositivo (HTTP)**: `server/borda.py` e
+    `server/server.py` agora resolvem o dispositivo pelo token Bearer em
+    TODA chamada HTTP (`/api/edge/*`, `/api/telemetry`, `/api/detection`) e
+    mantêm um registro em memória por dispositivo
+    (`server/registro_dispositivos.py`) -- cada um com seu próprio
+    `GeoModel`/pose de câmera (via a localidade cadastrada), sua própria
+    janela de stream e seu próprio estado desejado. Sem token válido, a
+    chamada recebe `401`; sem localidade pronta cadastrada, o dispositivo
+    fica **sem posição 3D** (PTZ e vídeo continuam funcionando, só a visão 3D
+    fica indisponível até o cadastro ficar completo) -- decisão explícita,
+    sem *fallback* silencioso para a geometria de outro dispositivo. Ver
+    §9-bis para a migração obrigatória do Raspberry já em produção.
+    **Ainda não faz**: a ponte MQTT (`MQTT_BRIDGE=true`, ver §9) continua
+    servindo só o dispositivo único legado via `DEVICE_ID`, sem token e sem
+    passar pelo registro -- ela existe apenas para testar o modo MQTT
+    localmente com um `mosquitto`, e essa multiplexação por dispositivo fica
+    para quando o ThingsBoard entrar de verdade.
   - ⏳ **Dashboard**: grid de widgets redimensionável, N dashboards por
     usuário, filtro por localidade — ainda não construído (tabela
     `dashboards` já criada, com `layout JSONB`). O

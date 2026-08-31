@@ -185,6 +185,7 @@ def telemetry_loop():
                         "coord_z": round(zoom_pct, 2),
                         "detect": False,
                     },
+                    headers={"Authorization": f"Bearer {config.DEVICE_TOKEN}"},
                     timeout=2,
                 )
                 last = (pan_deg, tilt_deg, zoom_pct)
@@ -263,6 +264,7 @@ def detection_loop():
                     "image_b64": base64.b64encode(buf_orig.tobytes()).decode() if ok_orig else None,
                     "mask_image_b64": base64.b64encode(buf_mask.tobytes()).decode() if ok_mask else None,
                 },
+                headers={"Authorization": f"Bearer {config.DEVICE_TOKEN}"},
                 timeout=5,
             )
             print(f"[detection] rachadura detectada! p={pan_deg} t={tilt_deg} z={zoom_pct}")

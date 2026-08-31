@@ -2,8 +2,19 @@
 # server.py - Servidor do dashboard
 #
 # Novidades desta versão:
-#   • O payload de telemetria agora inclui o "footprint" do cone: o contorno
-#     real onde o campo de visão encosta na parede (raycasting em leque).
+#   • Multi-dispositivo: nao existe mais UM GeoModel/camera fixos no
+#     processo. Cada dispositivo cadastrado (server/dispositivos.py) tem seu
+#     proprio GeoModel (via a localidade) e sua propria pose de camera,
+#     resolvidos sob demanda por server/registro_dispositivos.py. Rotas que
+#     antes nao precisavam de nada agora recebem device_id (aim/locate
+#     resolvem pelo device_id GRAVADO NA PROPRIA DETECCAO, nao pedem pro
+#     cliente -- mais dificil de usar o dispositivo errado por engano).
+#   • /api/telemetry e /api/detection (usadas pelo controller.py, o ambiente
+#     de desktop sem Pi -- README §3) agora tambem exigem token de
+#     dispositivo (header Authorization: Bearer), a mesma autenticacao que
+#     o agente de borda usa em /api/edge/*.
+#   • O payload de telemetria inclui o "footprint" do cone: o contorno real
+#     onde o campo de visão encosta na parede (raycasting em leque).
 #   • /api/aim  -> recebe um ponto 3D + os cantos do retângulo desenhado no
 #     dashboard e converte em pan/tilt/zoom reais, mandando a câmera pra lá.
 #   • Proxy PTZ (/api/ptz/*) mantido como fallback; o dashboard prefere falar
@@ -22,7 +33,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import requests
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -37,25 +48,12 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(_Path(__file__).parent / ".env")
 
-from glb_geo import (  # noqa: E402
-    GeoModel, MODEL_UP_AXIS, PAN_SIGN, TILT_SIGN,
-    UTM_HEMISPHERE_SOUTH, UTM_ZONE,
-)
+from glb_geo import PAN_SIGN, TILT_SIGN  # noqa: E402
 
 import auth  # noqa: E402
 import db  # noqa: E402
 import dispositivos  # noqa: E402
-
-# --- Posição real da câmera -------------------------------------------------
-CAMERA_LAT = -6.152425824994227
-CAMERA_LON = -37.12619639369007
-CAMERA_ALT_ABOVE_GROUND = 7.0  # metros
-
-# URL que o SERVER usa para falar com o controller
-CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://127.0.0.1:8090")
-# URL que o NAVEGADOR usa para falar com o controller (troque pelo IP do
-# Raspberry quando o dashboard for acessado de outra máquina)
-CONTROLLER_PUBLIC_URL = os.getenv("CONTROLLER_PUBLIC_URL", CONTROLLER_URL)
+import registro_dispositivos as registro  # noqa: E402
 
 HISTORY_DIR = "history"
 HISTORY_INDEX = os.path.join(HISTORY_DIR, "index.json")
@@ -66,9 +64,10 @@ HISTORY_INDEX = os.path.join(HISTORY_DIR, "index.json")
 FALSOS_SUBDIR = "falsos_positivos"
 FALSOS_DIR = os.path.join(HISTORY_DIR, FALSOS_SUBDIR)
 
-# Raio, em METROS REAIS do modelo, dentro do qual duas deteccoes sao
-# consideradas a MESMA rachadura. Comparacao feita no ponto 3D de impacto
-# calculado por raycasting -- nao e aproximacao angular.
+# Raio, em METROS REAIS do modelo, dentro do qual duas deteccoes DO MESMO
+# DISPOSITIVO sao consideradas a MESMA rachadura. Comparacao feita no ponto
+# 3D de impacto calculado por raycasting -- nao e aproximacao angular.
+# Dispositivos diferentes nunca deduplicam entre si (ver detection_core).
 DEDUP_RAIO_M = float(os.getenv("DEDUP_RAIO_M", "1.5"))
 
 # Fallback usado SO quando nenhuma das duas deteccoes intercepta a malha
@@ -80,12 +79,6 @@ DEDUP_ANG_DEG = float(os.getenv("DEDUP_ANG_DEG", "1.5"))
 # alerta -- e exatamente o sinal de que o problema nao foi resolvido.
 # Coloque 0 para permitir reabertura imediata.
 REARME_SEGUNDOS = float(os.getenv("REARME_SEGUNDOS", "600"))
-
-# --- Parâmetros do cone -----------------------------------------------------
-CONE_HALF_ANGLE_WIDE = float(os.getenv("CONE_HALF_ANGLE_WIDE", "18.0"))  # zoom 0%
-CONE_HALF_ANGLE_TELE = float(os.getenv("CONE_HALF_ANGLE_TELE", "2.0"))   # zoom 100%
-CONE_RING_RAYS = int(os.getenv("CONE_RING_RAYS", "24"))
-CONE_MAX_RANGE = float(os.getenv("CONE_MAX_RANGE", "250.0"))
 
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(FALSOS_DIR, exist_ok=True)
@@ -146,7 +139,9 @@ def _mesmo_ponto(entrada, hit_point, pan, tilt):
     Prioridade absoluta para a distancia 3D real (metros) entre os pontos de
     impacto calculados por raycasting contra a malha. A comparacao angular so
     entra quando NENHUM dos dois intercepta o modelo -- ai nao existe ponto
-    3D para comparar."""
+    3D para comparar. So e chamada entre deteccoes do MESMO dispositivo (ver
+    detection_core) -- dois dispositivos podem, por coincidencia, ter pan/
+    tilt parecidos sem ter nada a ver um com o outro."""
     hp = entrada.get("hit_point")
     if hit_point is not None and hp is not None:
         d = float(np.linalg.norm(np.asarray(hp, dtype=float)
@@ -162,73 +157,35 @@ def _status(entrada):
     return entrada.get("status") or "pendente"
 
 
-def _utm_de(hit_point):
+def _utm_de(device, hit_point):
     """Coordenadas UTM reais do ponto 3D de impacto (raycasting), para
     mostrar no dashboard -- e a "coordenada da deteccao" que o Pi nunca
     calcula: ele so manda pan/tilt/zoom, o server e quem sabe a geometria
-    do modelo e converte para o mundo real."""
-    if hit_point is None:
+    do modelo (via a localidade do dispositivo) e converte para o mundo
+    real."""
+    if hit_point is None or device is None or device.geo is None:
         return None
-    utm_x, utm_y, alt = geo.local_to_utm(hit_point)
+    utm_x, utm_y, alt = device.geo.local_to_utm(hit_point)
     return {
-        "zona": UTM_ZONE, "hemisferio_sul": UTM_HEMISPHERE_SOUTH,
+        "zona": device.geo.utm_zone, "hemisferio_sul": device.geo.utm_hemisferio_sul,
         "x": round(utm_x, 2), "y": round(utm_y, 2), "alt": round(alt, 2),
     }
 
+
+def _modelo_3d_url(caminho):
+    """Converte o caminho em disco do .glb (sempre "static/...", ver
+    dispositivos.py e migrar_dispositivo_legado.py) na URL servida pelo
+    mount StaticFiles("/model" -> "static/"). None quando a localidade nao
+    tem modelo pronto ainda."""
+    if not caminho:
+        return None
+    p = caminho.replace(os.sep, "/")
+    if p.startswith("static/"):
+        p = p[len("static/"):]
+    return f"/model/{p}"
+
+
 http = requests.Session()
-
-# --- Carrega o modelo real e calibra a direção base -------------------------
-geo = GeoModel()
-
-_bounds = geo.mesh.bounds
-print(f">> Bounding box real do modelo (.glb): min={_bounds[0]} max={_bounds[1]}")
-
-local_x, local_y = geo.latlon_to_local_xy(CAMERA_LAT, CAMERA_LON)
-print(f">> Câmera convertida para X/Y local: ({local_x:.2f}, {local_y:.2f})")
-
-# --- Determinação da altura da câmera ---------------------------------------
-# Ordem de preferência:
-#   1. CAMERA_ABS_ALT (se você souber a elevação absoluta da lente)
-#   2. Raio vertical direto (quando a câmera está sobre a área reconstruída)
-#   3. Percentil baixo dos vértices vizinhos = nível do terreno estimado
-_abs_alt = os.getenv("CAMERA_ABS_ALT")
-CAMERA_ABS_ALT = float(_abs_alt) if _abs_alt else None
-
-ground_hit = geo.surface_height_at(local_x, local_y)
-
-if CAMERA_ABS_ALT is not None:
-    camera_local_pos = geo.build_local_point(local_x, local_y, CAMERA_ABS_ALT)
-    print(f">> Altura da lente definida manualmente (CAMERA_ABS_ALT): {CAMERA_ABS_ALT}")
-elif ground_hit is not None:
-    terreno = geo.local_up_value(ground_hit)
-    camera_local_pos = geo.build_local_point(local_x, local_y, terreno + CAMERA_ALT_ABOVE_GROUND)
-    print(f">> Terreno sob a câmera (raio vertical): {terreno:.2f} "
-          f"-> lente a {terreno + CAMERA_ALT_ABOVE_GROUND:.2f}")
-else:
-    est = geo.estimate_ground_height(local_x, local_y)
-    if est is not None:
-        terreno, n_vert, raio = est
-        camera_local_pos = geo.build_local_point(local_x, local_y, terreno + CAMERA_ALT_ABOVE_GROUND)
-        print(f">> Câmera fora da área reconstruída. Terreno estimado pelo percentil 8 de "
-              f"{n_vert} vértices num raio de {raio:.0f}m: {terreno:.2f} "
-              f"-> lente a {terreno + CAMERA_ALT_ABOVE_GROUND:.2f}")
-        print(f"   (para comparação, o ponto de malha mais próximo está em "
-              f"{geo.local_up_value(geo.closest_point_on_mesh(geo.build_local_point(local_x, local_y, terreno))[0]):.2f})")
-    else:
-        nearest_point, _d = geo.closest_point_on_mesh(
-            geo.build_local_point(local_x, local_y, geo.local_up_value(geo.mesh.centroid))
-        )
-        terreno = geo.local_up_value(nearest_point)
-        camera_local_pos = geo.build_local_point(local_x, local_y, terreno + CAMERA_ALT_ABOVE_GROUND)
-        print(f">> Fallback: altura do ponto de malha mais próximo ({terreno:.2f}) + "
-              f"{CAMERA_ALT_ABOVE_GROUND}m. Considere definir CAMERA_ABS_ALT.")
-
-closest_wall_point, _dist = geo.closest_point_on_mesh(camera_local_pos)
-base_forward = closest_wall_point - camera_local_pos
-base_forward = base_forward / np.linalg.norm(base_forward)
-
-print(f">> Câmera posicionada em (local): {camera_local_pos}")
-print(f">> Direção 'pan=0/tilt=0' (geometria real): {base_forward}")
 
 app = FastAPI(title="Dashboard Server")
 app.mount("/model", StaticFiles(directory="static"), name="model")
@@ -240,42 +197,17 @@ dispositivos.instalar(app)
 
 
 # ----------------------------------------------------------------------------
-# Cone: zoom <-> meio-ângulo
-# ----------------------------------------------------------------------------
-def half_angle_for_zoom(zoom_pct):
-    t = max(0.0, min(100.0, float(zoom_pct))) / 100.0
-    return CONE_HALF_ANGLE_WIDE + (CONE_HALF_ANGLE_TELE - CONE_HALF_ANGLE_WIDE) * t
-
-
-def zoom_for_half_angle(half_angle):
-    span = CONE_HALF_ANGLE_WIDE - CONE_HALF_ANGLE_TELE
-    if span <= 0:
-        return 0.0
-    pct = (CONE_HALF_ANGLE_WIDE - float(half_angle)) / span * 100.0
-    return max(0.0, min(100.0, pct))
-
-
-_view_cache = {"key": None, "value": None}
-
-
-def compute_view(pan_deg, tilt_deg, zoom_pct):
-    """Ponto de impacto + contorno real do cone contra a malha."""
-    key = (round(pan_deg, 2), round(tilt_deg, 2), round(zoom_pct, 1))
-    if _view_cache["key"] == key:
-        return _view_cache["value"]
-
-    half = half_angle_for_zoom(zoom_pct)
-    cone = geo.cone_footprint(
-        camera_local_pos, base_forward, pan_deg, tilt_deg,
-        half_angle_deg=half, n_rays=CONE_RING_RAYS, max_range=CONE_MAX_RANGE,
-    )
-    value = {
-        "hit_point": cone["center"] if cone["hit"] else None,
-        "cone": cone,
-    }
-    _view_cache["key"] = key
-    _view_cache["value"] = value
-    return value
+def _resolver_dispositivo_http(request: Request):
+    """Mesma autenticacao por token do agente de borda (server/borda.py),
+    usada aqui por quem fala com /api/telemetry e /api/detection
+    DIRETAMENTE por HTTP -- hoje, so o controller.py (README §3)."""
+    cabecalho = request.headers.get("authorization", "")
+    if not cabecalho.lower().startswith("bearer "):
+        return None
+    token = cabecalho[7:].strip()
+    if not token:
+        return None
+    return registro.por_token(token)
 
 
 # ----------------------------------------------------------------------------
@@ -329,37 +261,51 @@ def index():
 
 
 @app.get("/api/camera_info")
-def camera_info():
+def camera_info(device_id: str):
+    device = registro.por_id(device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    pronto = device.pronto()
     return {
-        "camera_local_pos": camera_local_pos.tolist(),
-        "base_forward": base_forward.tolist(),
-        "lat": CAMERA_LAT,
-        "lon": CAMERA_LON,
-        "alt": CAMERA_ALT_ABOVE_GROUND,
-        "controller_url": CONTROLLER_PUBLIC_URL,
-        "cone_ring_rays": CONE_RING_RAYS,
-        "half_angle_wide": CONE_HALF_ANGLE_WIDE,
-        "half_angle_tele": CONE_HALF_ANGLE_TELE,
-        "model_up_axis": MODEL_UP_AXIS,
+        "camera_local_pos": device.camera_local_pos.tolist() if pronto else None,
+        "base_forward": device.base_forward.tolist() if pronto else None,
+        "lat": device.lat,
+        "lon": device.lon,
+        "alt": device.alt_acima_solo,
+        "controller_url": device.controller_url_publica,
+        "modelo_3d_url": _modelo_3d_url(device.localidade_modelo_3d_path),
+        "cone_ring_rays": registro.CONE_RING_RAYS,
+        "half_angle_wide": registro.CONE_HALF_ANGLE_WIDE,
+        "half_angle_tele": registro.CONE_HALF_ANGLE_TELE,
+        "model_up_axis": device.geo.model_up_axis if pronto else None,
         "pan_sign": PAN_SIGN,
         "tilt_sign": TILT_SIGN,
+        "pronto_3d": pronto,
     }
 
 
 @app.get("/api/view")
-async def view(pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0):
+async def view(device_id: str, pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0):
     """Estado do cone sob demanda (usado na abertura do dashboard)."""
-    result = await run_in_threadpool(compute_view, pan, tilt, zoom)
+    device = registro.por_id(device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    result = await run_in_threadpool(device.compute_view, pan, tilt, zoom)
     return {"coord_p": pan, "coord_t": tilt, "coord_z": zoom, **result}
 
 
-@app.post("/api/telemetry")
-async def telemetry(payload: TelemetryPayload):
-    result = await run_in_threadpool(
-        compute_view, payload.coord_p, payload.coord_t, payload.coord_z
-    )
+async def telemetry_core(device_id, payload: TelemetryPayload):
+    """Nucleo compartilhado por HTTP (telemetry_route/borda.py) e pela ponte
+    MQTT legada (device_id=None nesse caso -- ver borda.py)."""
+    device = registro.por_id(device_id) if device_id else None
+    if device is not None:
+        result = await run_in_threadpool(
+            device.compute_view, payload.coord_p, payload.coord_t, payload.coord_z)
+    else:
+        result = {"hit_point": None, "cone": None}
     msg = {
         "type": "telemetry",
+        "device_id": device_id,
         "coord_p": payload.coord_p,
         "coord_t": payload.coord_t,
         "coord_z": payload.coord_z,
@@ -369,18 +315,37 @@ async def telemetry(payload: TelemetryPayload):
     return {"status": "ok", "hit_point": result["hit_point"]}
 
 
-@app.post("/api/detection")
-async def detection(payload: DetectionPayload):
+@app.post("/api/telemetry")
+async def telemetry_route(payload: TelemetryPayload, request: Request):
+    """So quem fala HTTP direto (controller.py) passa por aqui -- o agente
+    de borda entra por /api/edge/telemetria (server/borda.py), que ja
+    autentica e chama telemetry_core diretamente."""
+    device = _resolver_dispositivo_http(request)
+    if device is None:
+        return JSONResponse({"error": "token de dispositivo ausente ou inválido"},
+                            status_code=401)
+    return await telemetry_core(device.id, payload)
+
+
+async def detection_core(device_id, payload: DetectionPayload):
     """Registra uma deteccao NOVA.
 
     Se a camera continuar apontando para uma rachadura ja alertada e ainda
     nao tratada, nao criamos outro alerta: apenas incrementamos o contador de
     reincidencia da entrada existente. Isso evita a enxurrada de alertas
     identicos e tambem o crescimento inutil do disco com fotos repetidas.
+
+    A deduplicacao (vizinhas) so compara deteccoes do MESMO device_id --
+    inclusive o "bucket" None (controller.py sem device_id valido nunca
+    deveria acontecer hoje, mas None==None mantem essas juntas e separadas
+    de qualquer dispositivo de verdade, ver _mesmo_ponto).
     """
-    result = await run_in_threadpool(
-        compute_view, payload.coord_p, payload.coord_t, payload.coord_z
-    )
+    device = registro.por_id(device_id) if device_id else None
+    if device is not None:
+        result = await run_in_threadpool(
+            device.compute_view, payload.coord_p, payload.coord_t, payload.coord_z)
+    else:
+        result = {"hit_point": None, "cone": None}
     hit = result["hit_point"]
     agora = _agora()
     ts = payload.timestamp or agora.isoformat()
@@ -391,7 +356,8 @@ async def detection(payload: DetectionPayload):
     with _history_lock:
         dados = _ler_indice()
         vizinhas = [e for e in dados
-                    if _mesmo_ponto(e, hit, payload.coord_p, payload.coord_t)]
+                    if e.get("device_id") == device_id
+                    and _mesmo_ponto(e, hit, payload.coord_p, payload.coord_t)]
 
         # (1) Ja existe alerta ABERTO nesse ponto -> nao duplica.
         pendente = next((e for e in vizinhas if _status(e) == "pendente"), None)
@@ -447,6 +413,7 @@ async def detection(payload: DetectionPayload):
 
             entrada_nova = {
                 "id": det_id,
+                "device_id": device_id,
                 "timestamp": ts,
                 "ultima_vez": ts,
                 "repeticoes": 1,
@@ -454,7 +421,7 @@ async def detection(payload: DetectionPayload):
                 "coord_t": payload.coord_t,
                 "coord_z": payload.coord_z,
                 "hit_point": hit,
-                "utm": _utm_de(hit),
+                "utm": _utm_de(device, hit),
                 "image": image_path,
                 "mask_image": mask_path,
                 "status": "pendente",
@@ -474,6 +441,15 @@ async def detection(payload: DetectionPayload):
     if evento is not None:
         await manager.broadcast(evento)
     return resposta
+
+
+@app.post("/api/detection")
+async def detection_route(payload: DetectionPayload, request: Request):
+    device = _resolver_dispositivo_http(request)
+    if device is None:
+        return JSONResponse({"error": "token de dispositivo ausente ou inválido"},
+                            status_code=401)
+    return await detection_core(device.id, payload)
 
 
 @app.get("/api/history")
@@ -550,6 +526,7 @@ async def falso_positivo(det_id: str):
 # Mirar num ponto do modelo 3D (shift + arrastar no dashboard)
 # ----------------------------------------------------------------------------
 class AimPayload(BaseModel):
+    device_id: str
     point: list[float]                 # ponto 3D local (coords "cruas" do .glb)
     corners: list[list[float]] = []    # cantos do retângulo, também locais
     margin: float = 1.30               # folga para o objeto não ficar colado na borda
@@ -558,29 +535,35 @@ class AimPayload(BaseModel):
 
 @app.post("/api/aim")
 def aim(payload: AimPayload):
+    device = registro.por_id(payload.device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    if not device.pronto():
+        return JSONResponse({"error": "dispositivo sem modelo 3D pronto"}, status_code=400)
+
     alvo = np.asarray(payload.point, dtype=float)
-    direcao = alvo - camera_local_pos
+    direcao = alvo - device.camera_local_pos
     if np.linalg.norm(direcao) < 1e-6:
         return JSONResponse({"error": "ponto coincide com a câmera"}, status_code=400)
 
-    pan_deg, tilt_deg = geo.direction_to_pan_tilt(base_forward, direcao)
+    pan_deg, tilt_deg = device.geo.direction_to_pan_tilt(device.base_forward, direcao)
 
     # Meio-ângulo necessário: maior desvio angular entre o centro e os cantos
     maior_angulo = 0.0
     for c in payload.corners:
-        v = np.asarray(c, dtype=float) - camera_local_pos
+        v = np.asarray(c, dtype=float) - device.camera_local_pos
         if np.linalg.norm(v) < 1e-6:
             continue
-        maior_angulo = max(maior_angulo, geo.angle_between(direcao, v))
+        maior_angulo = max(maior_angulo, device.geo.angle_between(direcao, v))
 
     if maior_angulo <= 0.05:
         # Retângulo minúsculo ou nenhum canto acertou o modelo: aproxima bem.
-        half = CONE_HALF_ANGLE_TELE * 1.5
+        half = registro.CONE_HALF_ANGLE_TELE * 1.5
     else:
         half = maior_angulo * float(payload.margin)
 
-    half = max(CONE_HALF_ANGLE_TELE, min(CONE_HALF_ANGLE_WIDE, half))
-    zoom_pct = zoom_for_half_angle(half)
+    half = max(registro.CONE_HALF_ANGLE_TELE, min(registro.CONE_HALF_ANGLE_WIDE, half))
+    zoom_pct = registro.zoom_for_half_angle(half)
 
     resultado = {
         "coord_p": round(pan_deg, 2),
@@ -595,7 +578,7 @@ def aim(payload: AimPayload):
 
     try:
         r = http.post(
-            f"{CONTROLLER_URL}/command/absolute",
+            f"{device.controller_url}/command/absolute",
             json={
                 "pan_deg": resultado["coord_p"],
                 "tilt_deg": resultado["coord_t"],
@@ -627,10 +610,20 @@ async def locate(payload: LocatePayload):
     if entrada is None:
         return JSONResponse({"error": "detecção não encontrada"}, status_code=404)
 
+    # O dispositivo vem da PROPRIA entrada (gravado quando a deteccao
+    # chegou) -- nao do cliente, pra nunca recalcular com a geometria do
+    # dispositivo errado.
+    device = registro.por_id(entrada.get("device_id")) if entrada.get("device_id") else None
+    if device is None:
+        return JSONResponse(
+            {"error": "dispositivo desta detecção não encontrado (cadastro "
+                      "anterior à etapa multi-dispositivo, ou excluído)"},
+            status_code=404)
+
     # Recalcula a geometria a partir do pan/tilt/zoom gravados. Isso corrige
     # automaticamente entradas antigas, salvas antes do ajuste de PAN_SIGN.
     result = await run_in_threadpool(
-        compute_view, entrada["coord_p"], entrada["coord_t"], entrada["coord_z"]
+        device.compute_view, entrada["coord_p"], entrada["coord_t"], entrada["coord_z"]
     )
 
     resposta = {
@@ -649,7 +642,7 @@ async def locate(payload: LocatePayload):
 
     try:
         r = http.post(
-            f"{CONTROLLER_URL}/command/absolute",
+            f"{device.controller_url}/command/absolute",
             json={
                 "pan_deg": entrada["coord_p"],
                 "tilt_deg": entrada["coord_t"],
@@ -668,21 +661,23 @@ async def locate(payload: LocatePayload):
 # Proxy PTZ (fallback: o dashboard prefere falar direto com o controller)
 # ----------------------------------------------------------------------------
 class CommandPayload(BaseModel):
+    device_id: str
     pan_delta: float = 0.0
     tilt_delta: float = 0.0
     zoom_delta: float = 0.0
 
 
 class ContinuousPayload(BaseModel):
+    device_id: str
     pan_speed: float = 0.0
     tilt_speed: float = 0.0
     zoom_speed: float = 0.0
     hold_ms: int = 800
 
 
-def _proxy(path, body=None):
+def _proxy(controller_url, path, body=None):
     try:
-        r = http.post(f"{CONTROLLER_URL}{path}", json=body, timeout=5)
+        r = http.post(f"{controller_url}{path}", json=body, timeout=5)
         return r.json()
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=502)
@@ -690,22 +685,35 @@ def _proxy(path, body=None):
 
 @app.post("/api/command")
 def send_command(cmd: CommandPayload):
-    return _proxy("/command", cmd.model_dump())
+    device = registro.por_id(cmd.device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    return _proxy(device.controller_url, "/command", cmd.model_dump(exclude={"device_id"}))
 
 
 @app.post("/api/ptz/continuous")
 def ptz_continuous(cmd: ContinuousPayload):
-    return _proxy("/command/continuous", cmd.model_dump())
+    device = registro.por_id(cmd.device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    return _proxy(device.controller_url, "/command/continuous",
+                 cmd.model_dump(exclude={"device_id"}))
 
 
 @app.post("/api/ptz/stop")
-def ptz_stop():
-    return _proxy("/command/stop", {})
+def ptz_stop(device_id: str):
+    device = registro.por_id(device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    return _proxy(device.controller_url, "/command/stop", {})
 
 
 @app.post("/api/command/home")
-def send_home():
-    return _proxy("/command/home", {})
+def send_home(device_id: str):
+    device = registro.por_id(device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    return _proxy(device.controller_url, "/command/home", {})
 
 
 # ----------------------------------------------------------------------------
@@ -715,15 +723,14 @@ import borda  # noqa: E402
 
 borda.instalar(app, borda.Contexto(
     manager=manager,
-    telemetry=telemetry,
-    detection=detection,
+    telemetry_core=telemetry_core,
+    detection_core=detection_core,
     TelemetryPayload=TelemetryPayload,
     DetectionPayload=DetectionPayload,
     history_dir=HISTORY_DIR,
     ler_indice=_ler_indice,
     escrever_indice=_escrever_indice,
     history_lock=_history_lock,
-    controller_url=CONTROLLER_URL,
 ))
 
 

@@ -11,6 +11,11 @@
 #   • Correção: o eixo de tilt agora é recalculado APÓS o pan (cabeçote real
 #     inclina em torno do eixo horizontal já rotacionado).
 #   • Usa o intersector Embree quando disponível (muito mais rápido).
+#   • GeoModel agora recebe o georreferenciamento (zona UTM, offsets, eixo
+#     "para cima") pelo CONSTRUTOR, não mais como constante de módulo -- é o
+#     que permite N localidades (N .glb, cada um com seu georreferenciamento
+#     próprio, ver server/dispositivos.py e a tabela `localidades`) em vez de
+#     um único modelo fixo por processo.
 # ============================================================================
 import os
 
@@ -18,33 +23,22 @@ import trimesh
 import numpy as np
 from pyproj import Transformer
 
-# --- Preenchido a partir de odm_georeferencing_model_geo.txt:
-#   WGS84 UTM 24S
-#   707543 9319434
-UTM_ZONE = 24
-UTM_HEMISPHERE_SOUTH = True
-GEO_OFFSET_X = 707543.0
-GEO_OFFSET_Y = 9319434.0
-GEO_OFFSET_Z = 0.0
-
-# Eixo "para cima" do modelo ("Z" para exports típicos de fotogrametria/ODM).
-MODEL_UP_AXIS = "Z"
-
 # --- Sentido de rotação do pan/tilt ------------------------------------------
 # O ONVIF não padroniza para que lado o pan positivo gira. Nesta câmera, o pan
 # positivo corresponde ao sentido HORÁRIO visto de cima, que é o oposto da
 # convenção matemática -- daí o -1. Se em outra câmera o cone andar espelhado,
 # troque o sinal (via env PAN_SIGN=1, sem editar código).
 # O mesmo vale para o tilt (TILT_SIGN=-1 se subir/descer estiver trocado).
+#
+# Continuam globais (um valor só, para o processo inteiro) mesmo depois do
+# modelo virar multi-localidade: é a convenção de fiação do CABEÇOTE PTZ, não
+# do modelo 3D -- nada hoje sugere que duas câmeras/dispositivos precisem de
+# sinais diferentes, e criar essa variação por dispositivo sem um caso real
+# seria complexidade especulativa. Ver README, pendências conhecidas.
 PAN_SIGN = float(os.getenv("PAN_SIGN", "-1"))
 TILT_SIGN = float(os.getenv("TILT_SIGN", "1"))
 
 MODEL_PATH = "static/model.glb"
-
-
-def _utm_transformer():
-    epsg = f"326{UTM_ZONE:02d}" if UTM_HEMISPHERE_SOUTH is False else f"327{UTM_ZONE:02d}"
-    return Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
 
 
 def _normalize(v):
@@ -64,7 +58,15 @@ def _rotate(vec, axis, angle):
 
 
 class GeoModel:
-    def __init__(self, path=MODEL_PATH):
+    def __init__(self, path, utm_zone, utm_hemisferio_sul, geo_offset_x, geo_offset_y,
+                 geo_offset_z=0.0, model_up_axis="Z"):
+        self.utm_zone = int(utm_zone)
+        self.utm_hemisferio_sul = bool(utm_hemisferio_sul)
+        self.geo_offset_x = float(geo_offset_x)
+        self.geo_offset_y = float(geo_offset_y)
+        self.geo_offset_z = float(geo_offset_z)
+        self.model_up_axis = model_up_axis
+
         scene = trimesh.load(path, force="scene")
         self.mesh = trimesh.util.concatenate(
             [g for g in scene.geometry.values() if isinstance(g, trimesh.Trimesh)]
@@ -100,28 +102,33 @@ class GeoModel:
             print(">> Embree indisponível; usando raycasting em NumPy puro.")
             print("   Para acelerar o cone: pip install embreex")
 
-        self._transformer = _utm_transformer()
+        self._transformer = self._utm_transformer()
+
+    def _utm_transformer(self):
+        epsg = (f"326{self.utm_zone:02d}" if self.utm_hemisferio_sul is False
+                else f"327{self.utm_zone:02d}")
+        return Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
 
     # ------------------------------------------------------------------
     # Convenção de eixos
     # ------------------------------------------------------------------
     def _up_vector(self):
-        return np.array([0.0, 1.0, 0.0]) if MODEL_UP_AXIS == "Y" else np.array([0.0, 0.0, 1.0])
+        return np.array([0.0, 1.0, 0.0]) if self.model_up_axis == "Y" else np.array([0.0, 0.0, 1.0])
 
     def build_local_point(self, local_x, local_y, up_value):
-        if MODEL_UP_AXIS == "Z":
+        if self.model_up_axis == "Z":
             return np.array([local_x, local_y, up_value])
         return np.array([local_x, up_value, -local_y])
 
     def local_up_value(self, point):
-        return point[2] if MODEL_UP_AXIS == "Z" else point[1]
+        return point[2] if self.model_up_axis == "Z" else point[1]
 
     # ------------------------------------------------------------------
     # Geo
     # ------------------------------------------------------------------
     def latlon_to_local_xy(self, lat, lon):
         utm_x, utm_y = self._transformer.transform(lon, lat)
-        return utm_x - GEO_OFFSET_X, utm_y - GEO_OFFSET_Y
+        return utm_x - self.geo_offset_x, utm_y - self.geo_offset_y
 
     def local_to_utm(self, point):
         """Inverso de latlon_to_local_xy/build_local_point: dado um ponto do
@@ -130,25 +137,25 @@ class GeoModel:
         offset" (ver latlon_to_local_xy), a volta e so somar o offset de
         volta -- nao precisa de nenhuma projecao nova."""
         point = np.asarray(point, dtype=float)
-        if MODEL_UP_AXIS == "Z":
+        if self.model_up_axis == "Z":
             local_x, local_y = point[0], point[1]
         else:
             local_x, local_y = point[0], -point[2]
-        altitude = self.local_up_value(point) + GEO_OFFSET_Z
-        return (float(local_x + GEO_OFFSET_X),
-                float(local_y + GEO_OFFSET_Y),
+        altitude = self.local_up_value(point) + self.geo_offset_z
+        return (float(local_x + self.geo_offset_x),
+                float(local_y + self.geo_offset_y),
                 float(altitude))
 
     def latlon_alt_to_local(self, lat, lon, alt):
         local_x, local_y = self.latlon_to_local_xy(lat, lon)
-        local_up = alt - GEO_OFFSET_Z
-        if MODEL_UP_AXIS == "Y":
+        local_up = alt - self.geo_offset_z
+        if self.model_up_axis == "Y":
             return np.array([local_x, local_up, -local_y])
         return np.array([local_x, local_y, local_up])
 
     def surface_height_at(self, local_x, local_y, search_height=100000.0):
-        up_idx = 2 if MODEL_UP_AXIS == "Z" else 1
-        if MODEL_UP_AXIS == "Z":
+        up_idx = 2 if self.model_up_axis == "Z" else 1
+        if self.model_up_axis == "Z":
             origin = np.array([local_x, local_y, search_height])
             direction = np.array([0.0, 0.0, -1.0])
         else:
@@ -188,7 +195,7 @@ class GeoModel:
 
     def _az_el(self, v):
         v = _normalize(v)
-        if MODEL_UP_AXIS == "Z":
+        if self.model_up_axis == "Z":
             return np.arctan2(v[1], v[0]), np.arcsin(np.clip(v[2], -1.0, 1.0))
         return np.arctan2(-v[2], v[0]), np.arcsin(np.clip(v[1], -1.0, 1.0))
 
@@ -299,10 +306,10 @@ class GeoModel:
 
         Retorna (altura, n_vertices_usados, raio_efetivo) ou None.
         """
-        up_idx = 2 if MODEL_UP_AXIS == "Z" else 1
+        up_idx = 2 if self.model_up_axis == "Z" else 1
         v = self.mesh.vertices
 
-        if MODEL_UP_AXIS == "Z":
+        if self.model_up_axis == "Z":
             dx = v[:, 0] - local_x
             dy = v[:, 1] - local_y
         else:
