@@ -5,49 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Dispositivos - Barragem Oiticica</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="/estatico/layout.css" />
 <style>
-  :root {
-    --bg: #0b1220; --panel: #121b2e; --border: #223049;
-    --text: #dbe4f3; --muted: #8093b3; --accent: #4fa3ff; --danger: #ff5c5c; --ok: #3f9c5c; --warn: #a8871f;
-  }
-  body.tema-claro {
-    --bg: #f5f7fa; --panel: #ffffff; --border: #d5dbe5;
-    --text: #16202f; --muted: #5a6a85; --accent: #1668c4; --danger: #c62828; --ok: #12703a; --warn: #8a6b00;
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, sans-serif; }
-  #topo {
-    display:flex; align-items:center; gap:14px; padding:12px 20px;
-    border-bottom:1px solid var(--border); background:var(--panel);
-  }
-  #topo h1 { font-size:14px; margin:0; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
-  #topo .espaco { flex:1; }
-  #topo a, #topo button {
-    color:var(--text); text-decoration:none; font-size:13px; background:transparent;
-    border:1px solid var(--border); border-radius:6px; padding:6px 12px; cursor:pointer;
-    font-family:inherit;
-  }
-  #topo a:hover, #topo button:hover { border-color:var(--accent); }
-  main { max-width:860px; margin:0 auto; padding:24px 20px 60px; }
+  /* Tokens, casca (menu lateral + barra de titulo), tabela, formulario e
+     botoes vem de /estatico/layout.css. Aqui fica so o que e desta tela. */
+  main { max-width:900px; margin:0 auto; }
   section {
-    background:var(--panel); border:1px solid var(--border); border-radius:10px;
-    padding:18px 20px; margin-bottom:22px;
+    background:var(--panel); border:1px solid var(--border); border-radius:var(--raio);
+    box-shadow:var(--sombra); padding:18px 20px; margin-bottom:22px;
   }
-  section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 14px; }
-  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 5px; }
-  input, select {
-    width:100%; padding:8px 10px; background:var(--bg); color:var(--text);
-    border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit;
-  }
-  button.acao {
-    margin-top:14px; padding:8px 16px; background:var(--accent); color:#fff;
-    border:0; border-radius:6px; font-size:13px; cursor:pointer; font-family:inherit;
-  }
-  button.acao:disabled { opacity:.6; cursor:wait; }
-  .msg { font-size:12px; margin-top:10px; min-height:14px; }
-  .msg.erro { color:var(--danger); }
-  .msg.ok { color:var(--ok); }
-  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; }
+  section h2 { font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin:0 0 14px; font-weight:600; }
+  table { margin-top:6px; }
   th, td { text-align:left; padding:7px 6px; border-bottom:1px solid var(--border); vertical-align:top; }
   th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; }
   td button { font-size:11px; padding:4px 8px; margin-right:4px; margin-bottom:4px; }
@@ -95,24 +63,38 @@
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     color:var(--muted); font-size:12px; pointer-events:none;
   }
+
+  #modal-editar {
+    position:fixed; inset:0; background:rgba(0,0,0,.8); display:none;
+    align-items:center; justify-content:center; z-index:30; padding:20px;
+  }
+  #modal-editar.open { display:flex; }
+  #modal-editar .box {
+    width:min(92vw, 560px); max-height:90vh; overflow:auto; background:var(--panel);
+    border:1px solid var(--border); border-radius:10px; padding:18px 20px;
+  }
+  #modal-editar h3 { margin:0 0 4px; font-size:14px; }
+  #modal-editar .sub { color:var(--muted); font-size:12px; margin:0 0 14px; }
+  #modal-editar .acoes { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+  .motivo-3d {
+    display:block; margin-top:3px; color:var(--warn); font-size:11px;
+  }
+  .motivo-3d.ok { color:var(--ok); }
 </style>
 </head>
 <body>
-<div id="topo">
-  <h1>Dispositivos</h1>
-  <div class="espaco"></div>
-  <span id="quem" style="font-size:12px;color:var(--muted)"></span>
-  <a href="/">← Painel</a>
-  <a href="/config">Configuração</a>
-  <button id="btn-sair" type="button">Sair</button>
-</div>
+<div class="app-shell" id="shell">
+  <div class="conteudo">
+    <div class="pagina pagina--rola">
 
 <main>
   <div class="aviso">
-    Este cadastro ainda não liga sozinho no pipeline ao vivo (telemetria/detecção/stream
-    continua falando só com o Raspberry configurado em <code>server/.env</code>). Serve para
-    planejar/documentar os dispositivos e gerar as credenciais que vão para o
-    <code>edge/.env</code> de cada um.
+    Para um dispositivo ter <b>visão 3D</b> no painel ele precisa de três coisas:
+    uma <b>localidade</b> associada, a <b>latitude/longitude</b> da câmera e o
+    <b>modelo .glb</b> daquela localidade com status <b>pronto</b>. A coluna
+    “Localidade” abaixo diz o que está faltando em cada um — use <b>Editar</b>
+    para corrigir sem precisar recriar o dispositivo (recriar geraria um token
+    novo e derrubaria o Raspberry que já está em campo).
   </div>
 
   <section>
@@ -197,8 +179,16 @@
         <label for="dev-alt">Altura acima do solo (m)</label>
         <input id="dev-alt" type="number" step="any" />
       </div>
+      <div>
+        <label for="dev-lat">Latitude</label>
+        <input id="dev-lat" type="number" step="any" placeholder="-6.152426" />
+      </div>
+      <div>
+        <label for="dev-lon">Longitude</label>
+        <input id="dev-lon" type="number" step="any" placeholder="-37.126196" />
+      </div>
       <div class="full">
-        <label>Localização (clique no mapa para marcar)</label>
+        <label>Localização (clique no mapa, ou digite acima)</label>
         <div id="mapa"></div>
         <p class="muted" id="dev-coords">Nenhum ponto marcado ainda.</p>
       </div>
@@ -210,6 +200,62 @@
     <div class="credenciais" id="credenciais"></div>
   </section>
 </main>
+
+    </div><!-- .pagina -->
+  </div><!-- .conteudo -->
+</div><!-- .app-shell -->
+
+<div id="modal-editar">
+  <div class="box">
+    <h3 id="editar-titulo">Editar dispositivo</h3>
+    <p class="sub">O token e os tópicos MQTT não mudam — o Raspberry em campo
+       continua funcionando com o <code>.env</code> que já tem.</p>
+    <form id="form-editar" class="grid2">
+      <div>
+        <label for="ed-nome">Nome</label>
+        <input id="ed-nome" required />
+      </div>
+      <div>
+        <label for="ed-proprietario">Proprietário</label>
+        <input id="ed-proprietario" placeholder="ex.: SEMARH" />
+      </div>
+      <div>
+        <label for="ed-localidade">Localidade</label>
+        <select id="ed-localidade"><option value="">(nenhuma)</option></select>
+      </div>
+      <div>
+        <label for="ed-transporte">Transporte</label>
+        <select id="ed-transporte">
+          <option value="http">HTTP</option>
+          <option value="mqtt">MQTT</option>
+        </select>
+      </div>
+      <div>
+        <label for="ed-lat">Latitude</label>
+        <input id="ed-lat" type="number" step="any" />
+      </div>
+      <div>
+        <label for="ed-lon">Longitude</label>
+        <input id="ed-lon" type="number" step="any" />
+      </div>
+      <div>
+        <label for="ed-alt">Altura acima do solo (m)</label>
+        <input id="ed-alt" type="number" step="any" />
+      </div>
+      <div>
+        <label for="ed-controller">URL do controlador (opcional)</label>
+        <input id="ed-controller" placeholder="http://172.16.1.2:8090" />
+      </div>
+      <div class="full">
+        <div class="msg" id="msg-editar"></div>
+        <div class="acoes">
+          <button type="button" id="editar-cancelar">Cancelar</button>
+          <button class="acao" type="submit" style="margin-top:0">Salvar</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
 
 <div id="modal-visualizar">
   <div class="box">
@@ -224,38 +270,94 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/estatico/layout.js"></script>
 <script>
 const SERVER_BASE = window.location.origin;
-let eu = null;
 let localidadesCache = [];
 let devLat = null, devLon = null;
 
-function aplicarTema(tema) {
-  document.body.classList.toggle("tema-claro", tema === "claro");
-}
-
-document.getElementById("btn-sair").addEventListener("click", async () => {
-  try { await fetch(`${SERVER_BASE}/api/logout`, { method: "POST" }); } catch (e) {}
-  location.href = "/login";
-});
+// Menu lateral, barra de titulo, usuario logado, tema e "Sair" ficam todos
+// em /estatico/layout.js (compartilhado com o painel e a configuracao).
+Layout.montar({ ativo: "dispositivos", titulo: "Dispositivos" });
 
 // ---------------------------------------------------------------------
 // Mapa (Leaflet + OpenStreetMap, sem chave de API)
 // ---------------------------------------------------------------------
-const mapa = L.map("mapa").setView([-6.152425, -37.126196], 14);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  attribution: "&copy; OpenStreetMap",
-  maxZoom: 19,
-}).addTo(mapa);
+// O Leaflet vem de CDN. Se ele nao carregar (servidor sem internet, CDN
+// bloqueada), o mapa e a UNICA coisa que deve faltar -- antes, o erro
+// derrubava o script inteiro e a pagina ficava sem listagem e sem cadastro,
+// justamente as telas que consertam um dispositivo mal configurado.
+let mapa = null;
 let marcador = null;
+try {
+  if (typeof L === "undefined") throw new Error("biblioteca de mapa não carregou");
+  mapa = L.map("mapa").setView([-6.152425, -37.126196], 14);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap",
+    maxZoom: 19,
+  }).addTo(mapa);
+  mapa.on("click", (ev) => definirCoordenadas(ev.latlng.lat, ev.latlng.lng));
+} catch (e) {
+  console.warn("Mapa indisponível; use os campos de latitude/longitude.", e);
+  const div = document.getElementById("mapa");
+  div.style.display = "flex";
+  div.style.alignItems = "center";
+  div.style.justifyContent = "center";
+  div.style.textAlign = "center";
+  div.style.padding = "16px";
+  div.style.color = "var(--muted)";
+  div.style.fontSize = "12px";
+  div.textContent = "Mapa indisponível (sem acesso ao OpenStreetMap). "
+                  + "Digite a latitude e a longitude nos campos acima.";
+}
 
-mapa.on("click", (ev) => {
-  devLat = ev.latlng.lat;
-  devLon = ev.latlng.lng;
-  if (marcador) marcador.setLatLng(ev.latlng); else marcador = L.marker(ev.latlng).addTo(mapa);
-  document.getElementById("dev-coords").textContent =
-    `${devLat.toFixed(6)}, ${devLon.toFixed(6)}`;
-});
+// Mapa e campos digitados são duas vistas do MESMO par lat/lon: clicar no
+// mapa preenche os campos, digitar move o marcador. Quem não tem o ponto no
+// mapa (só as coordenadas do projeto, do GPS ou do relatório) consegue
+// cadastrar sem caçar o pixel certo; quem tem, continua clicando.
+function definirCoordenadas(lat, lon, opcoes = {}) {
+  const { moverMapa = false, atualizarCampos = true } = opcoes;
+  devLat = (lat === null || lat === undefined || Number.isNaN(lat)) ? null : lat;
+  devLon = (lon === null || lon === undefined || Number.isNaN(lon)) ? null : lon;
+
+  if (atualizarCampos) {
+    document.getElementById("dev-lat").value = devLat === null ? "" : devLat;
+    document.getElementById("dev-lon").value = devLon === null ? "" : devLon;
+  }
+
+  const rotulo = document.getElementById("dev-coords");
+  if (devLat === null || devLon === null) {
+    if (marcador && mapa) { mapa.removeLayer(marcador); marcador = null; }
+    rotulo.textContent = "Nenhum ponto marcado ainda.";
+    return;
+  }
+
+  rotulo.textContent = `${devLat.toFixed(6)}, ${devLon.toFixed(6)}`;
+  if (!mapa) return;   // sem mapa, os campos digitados bastam
+  const ponto = [devLat, devLon];
+  if (marcador) marcador.setLatLng(ponto); else marcador = L.marker(ponto).addTo(mapa);
+  if (moverMapa) mapa.setView(ponto, Math.max(mapa.getZoom(), 16));
+}
+
+for (const id of ["dev-lat", "dev-lon"]) {
+  document.getElementById(id).addEventListener("change", () => {
+    const lat = parseFloat(document.getElementById("dev-lat").value);
+    const lon = parseFloat(document.getElementById("dev-lon").value);
+    if (Number.isNaN(lat) || Number.isNaN(lon)) {
+      // Só um dos dois preenchido ainda não é uma posição: não apaga o que
+      // a pessoa está digitando, só não marca nada no mapa.
+      definirCoordenadas(null, null, { atualizarCampos: false });
+      return;
+    }
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      document.getElementById("dev-coords").textContent =
+        "Latitude precisa estar entre -90 e 90, e longitude entre -180 e 180.";
+      devLat = devLon = null;
+      return;
+    }
+    definirCoordenadas(lat, lon, { moverMapa: true, atualizarCampos: false });
+  });
+}
 
 // ---------------------------------------------------------------------
 // Localidades
@@ -318,14 +420,20 @@ async function carregarLocalidades() {
   localidadesCache.forEach(loc => {
     const opt = document.createElement("option");
     opt.value = loc.id;
-    opt.textContent = loc.nome;
+    // Mostra o status do modelo aqui também: escolher uma localidade cujo
+    // .glb ainda está processando (ou deu erro) é a causa mais comum de o
+    // dispositivo nascer sem visão 3D.
+    opt.textContent = loc.modelo_status === "pronto"
+      ? loc.nome : `${loc.nome} (modelo: ${loc.modelo_status})`;
     select.appendChild(opt);
   });
   select.value = atual;
 
-  // Enquanto algum modelo estiver processando, continua checando.
+  // Enquanto algum modelo estiver processando, continua checando. Quando
+  // termina, a listagem de dispositivos também muda (o "motivo_sem_3d"
+  // deixa de existir), então recarrega as duas.
   if (localidadesCache.some(l => l.modelo_status === "processando")) {
-    setTimeout(carregarLocalidades, 4000);
+    setTimeout(() => { carregarLocalidades(); carregarDispositivos(); }, 4000);
   }
 }
 
@@ -384,7 +492,9 @@ document.getElementById("form-localidade").addEventListener("submit", async (ev)
 // Dispositivos
 // ---------------------------------------------------------------------
 function envSnippet(dev) {
-  const base = `DEVICE_ID=${dev.entity_id}\n`;
+  // DEVICE_TOKEN e obrigatorio nos dois modos desde a etapa
+  // multi-dispositivo: e ele que autentica o Raspberry em /api/edge/*.
+  const base = `DEVICE_ID=${dev.entity_id}\nDEVICE_TOKEN=${dev.token}\n`;
   if (dev.transporte === "mqtt") {
     return base +
       `TRANSPORTE_INICIAL=mqtt\n` +
@@ -393,9 +503,7 @@ function envSnippet(dev) {
       `MQTT_TOKEN=${dev.token}\n` +
       `MQTT_TOPICO_FRAME=${dev.topico_frame}\n`;
   }
-  return base +
-    `SERVER_URL=${SERVER_BASE}\n` +
-    `# (o cabecalho X-Device-Id usa o DEVICE_ID acima; nao ha token no modo HTTP hoje)\n`;
+  return base + `SERVER_URL=${SERVER_BASE}\n`;
 }
 
 function mostrarCredenciais(dev) {
@@ -412,13 +520,22 @@ async function carregarDispositivos() {
   const corpo = document.querySelector("#tabela-dispositivos tbody");
   corpo.innerHTML = "";
   lista.forEach(dev => {
+    // Diz na propria listagem por que a visao 3D ainda nao liga -- e o
+    // lugar onde a pessoa pode consertar (botao "Editar" ao lado).
+    const aviso = dev.motivo_sem_3d
+      ? `<span class="motivo-3d">⚠ ${escapar(dev.motivo_sem_3d)}</span>`
+      : `<span class="motivo-3d ok">✔ visão 3D pronta</span>`;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapar(dev.nome)}<br/><span class="muted">${escapar(dev.entity_id)}</span></td>
-      <td>${escapar(dev.localidade_nome || "—")}</td>
+      <td>${escapar(dev.localidade_nome || "—")}${aviso}</td>
       <td>${dev.transporte.toUpperCase()}</td>
       <td></td>`;
     const tdAcoes = tr.lastElementChild;
+
+    const btnEditar = document.createElement("button");
+    btnEditar.textContent = "Editar";
+    btnEditar.addEventListener("click", () => abrirEdicao(dev));
 
     const btnCred = document.createElement("button");
     btnCred.textContent = "Ver credenciais";
@@ -428,10 +545,101 @@ async function carregarDispositivos() {
     btnExcluir.textContent = "Excluir";
     btnExcluir.addEventListener("click", () => excluirDispositivo(dev.id, dev.nome));
 
-    tdAcoes.append(btnCred, btnExcluir);
+    tdAcoes.append(btnEditar, btnCred, btnExcluir);
     corpo.appendChild(tr);
   });
 }
+
+// ---------------------------------------------------------------------
+// Edicao de dispositivo ja cadastrado
+//
+// Sem isto, um dispositivo criado antes da localidade existir (ou com
+// "(nenhuma)") so ganhava modelo 3D sendo excluido e recriado -- o que
+// gera um token novo e derruba o Raspberry que ja esta em campo.
+// ---------------------------------------------------------------------
+let editandoId = null;
+
+function abrirEdicao(dev) {
+  editandoId = dev.id;
+  document.getElementById("editar-titulo").textContent = `Editar “${dev.nome}”`;
+  document.getElementById("ed-nome").value = dev.nome || "";
+  document.getElementById("ed-proprietario").value = dev.proprietario || "";
+  document.getElementById("ed-transporte").value = dev.transporte || "http";
+  document.getElementById("ed-lat").value = dev.lat === null ? "" : dev.lat;
+  document.getElementById("ed-lon").value = dev.lon === null ? "" : dev.lon;
+  document.getElementById("ed-alt").value =
+    dev.alt_acima_solo === null ? "" : dev.alt_acima_solo;
+  document.getElementById("ed-controller").value = dev.controller_url || "";
+
+  const select = document.getElementById("ed-localidade");
+  select.innerHTML = '<option value="">(nenhuma)</option>';
+  localidadesCache.forEach(loc => {
+    const opt = document.createElement("option");
+    opt.value = loc.id;
+    opt.textContent = loc.modelo_status === "pronto"
+      ? loc.nome : `${loc.nome} (modelo: ${loc.modelo_status})`;
+    select.appendChild(opt);
+  });
+  select.value = dev.localidade_id || "";
+
+  const msg = document.getElementById("msg-editar");
+  msg.className = "msg"; msg.textContent = "";
+  document.getElementById("modal-editar").classList.add("open");
+}
+
+function fecharEdicao() {
+  editandoId = null;
+  document.getElementById("modal-editar").classList.remove("open");
+}
+
+document.getElementById("editar-cancelar").addEventListener("click", fecharEdicao);
+document.getElementById("modal-editar").addEventListener("click", (ev) => {
+  if (ev.target.id === "modal-editar") fecharEdicao();
+});
+
+function numeroOuNulo(id) {
+  const bruto = document.getElementById(id).value.trim();
+  if (!bruto) return null;
+  const n = parseFloat(bruto);
+  return Number.isNaN(n) ? null : n;
+}
+
+document.getElementById("form-editar").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!editandoId) return;
+  const msg = document.getElementById("msg-editar");
+  msg.className = "msg"; msg.textContent = "Salvando…";
+
+  const lat = numeroOuNulo("ed-lat");
+  const lon = numeroOuNulo("ed-lon");
+  if ((lat === null) !== (lon === null)) {
+    msg.className = "msg erro";
+    msg.textContent = "Informe latitude E longitude, ou deixe as duas em branco.";
+    return;
+  }
+
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/dispositivos/${editandoId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nome: document.getElementById("ed-nome").value.trim(),
+        proprietario: document.getElementById("ed-proprietario").value.trim() || null,
+        localidade_id: document.getElementById("ed-localidade").value || null,
+        transporte: document.getElementById("ed-transporte").value,
+        lat, lon,
+        alt_acima_solo: numeroOuNulo("ed-alt"),
+        controller_url: document.getElementById("ed-controller").value.trim() || null,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) { msg.className = "msg erro"; msg.textContent = j.error || "Falha."; return; }
+    fecharEdicao();
+    carregarDispositivos();
+  } catch (e) {
+    msg.className = "msg erro"; msg.textContent = "Não consegui falar com o servidor.";
+  }
+});
 
 async function excluirDispositivo(id, nome) {
   if (!confirm(`Excluir o dispositivo "${nome}"?`)) return;
@@ -462,8 +670,13 @@ document.getElementById("form-dispositivo").addEventListener("submit", async (ev
     const j = await r.json();
     if (!r.ok) { msg.className = "msg erro"; msg.textContent = j.error || "Falha."; return; }
     msg.className = "msg ok";
-    msg.textContent = `Dispositivo "${j.nome}" criado.`;
+    msg.textContent = j.motivo_sem_3d
+      ? `Dispositivo "${j.nome}" criado — mas ainda sem visão 3D: ${j.motivo_sem_3d}.`
+      : `Dispositivo "${j.nome}" criado, com visão 3D pronta.`;
     document.getElementById("form-dispositivo").reset();
+    // reset() limpa os campos, mas o marcador do mapa e o par lat/lon em
+    // memoria ficariam do cadastro anterior.
+    definirCoordenadas(null, null);
     mostrarCredenciais(j);
     carregarDispositivos();
   } catch (e) {
@@ -473,15 +686,10 @@ document.getElementById("form-dispositivo").addEventListener("submit", async (ev
 
 // ---------------------------------------------------------------------
 async function init() {
-  try {
-    eu = await fetch(`${SERVER_BASE}/api/usuarios/me`).then(r => r.json());
-  } catch (e) {
-    location.href = "/login";
-    return;
-  }
-  document.getElementById("quem").textContent = `${eu.username} (${eu.papel})`;
-  aplicarTema(eu.tema || "escuro");
-  setTimeout(() => mapa.invalidateSize(), 200);
+  // O Leaflet calcula o tamanho do mapa na criacao; como ele nasce dentro
+  // de um layout que ainda esta se acomodando (menu lateral), precisa de um
+  // invalidateSize() depois que tudo assentou.
+  if (mapa) setTimeout(() => mapa.invalidateSize(), 200);
   carregarLocalidades();
   carregarDispositivos();
 }

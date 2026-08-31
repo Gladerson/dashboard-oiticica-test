@@ -330,18 +330,19 @@ def atualizar_status_modelo(localidade_id, status, erro=None):
 # ============================================================================
 def listar_dispositivos(dono_usuario_id=None):
     """Sem dono_usuario_id, lista todos (uso do admin). Com ele, so os do
-    dono -- 'cada usuario so tem acesso aos seus dispositivos'."""
+    dono -- 'cada usuario so tem acesso aos seus dispositivos'.
+
+    Usa o mesmo SELECT com a localidade achatada das outras consultas: a
+    listagem precisa do modelo_status para conseguir dizer POR QUE um
+    dispositivo ainda nao tem visao 3D (ver _dispositivo_publico)."""
     with pool.connection() as conn:
         if dono_usuario_id is None:
             return conn.execute(
-                "SELECT d.*, l.nome AS localidade_nome FROM dispositivos d "
-                "LEFT JOIN localidades l ON l.id = d.localidade_id "
-                "ORDER BY d.criado_em"
+                _SELECT_DISPOSITIVO_COM_LOCALIDADE + " ORDER BY d.criado_em"
             ).fetchall()
         return conn.execute(
-            "SELECT d.*, l.nome AS localidade_nome FROM dispositivos d "
-            "LEFT JOIN localidades l ON l.id = d.localidade_id "
-            "WHERE d.dono_usuario_id = %s ORDER BY d.criado_em",
+            _SELECT_DISPOSITIVO_COM_LOCALIDADE
+            + " WHERE d.dono_usuario_id = %s ORDER BY d.criado_em",
             (dono_usuario_id,),
         ).fetchall()
 
@@ -407,6 +408,33 @@ def criar_dispositivo(entity_id, entity_type, nome, proprietario, localidade_id,
              alt_acima_solo, transporte, token, topico_telemetria, topico_atributos,
              topico_frame, dono_usuario_id, controller_url, controller_url_publica),
         ).fetchone()
+
+
+# Campos que a edicao de dispositivo pode mexer. De proposito NAO inclui
+# token/entity_id/topicos: trocar isso quebraria o Raspberry que ja esta em
+# campo com aquele token no .env, e nao e o que "editar o cadastro"
+# significa para quem opera.
+CAMPOS_EDITAVEIS_DISPOSITIVO = (
+    "nome", "proprietario", "localidade_id", "lat", "lon", "alt_acima_solo",
+    "transporte", "controller_url", "controller_url_publica",
+)
+
+
+def atualizar_dispositivo(dispositivo_id, campos):
+    """Atualiza so as chaves presentes em 'campos' (as demais ficam como
+    estao). Retorna a linha ja com localidade_nome, do mesmo jeito que
+    listar_dispositivos, para a resposta da API nao precisar de outra
+    consulta."""
+    campos = {k: v for k, v in campos.items() if k in CAMPOS_EDITAVEIS_DISPOSITIVO}
+    if not campos:
+        return dispositivo_por_id_com_localidade(dispositivo_id)
+    atribuicoes = ", ".join(f"{k} = %s" for k in campos)
+    valores = list(campos.values()) + [dispositivo_id]
+    with pool.connection() as conn:
+        conn.execute(
+            f"UPDATE dispositivos SET {atribuicoes} WHERE id = %s", valores
+        )
+    return dispositivo_por_id_com_localidade(dispositivo_id)
 
 
 def excluir_dispositivo(dispositivo_id):

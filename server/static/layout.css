@@ -1,0 +1,244 @@
+/* ==========================================================================
+   layout.css - Casca visual compartilhada pelas telas do painel
+   (dashboard, dispositivos, configuracao).
+
+   Antes cada pagina tinha seu proprio cabecalho: o dashboard usava uma
+   barra FLUTUANTE (position:fixed) que passava por cima do widget de
+   video, cobrindo o nome da camera. Aqui a navegacao virou um menu
+   lateral fixo, no estilo do ThingsBoard, que ocupa espaco proprio no
+   layout em vez de flutuar sobre o conteudo.
+
+   As paginas continuam donas do seu proprio conteudo -- este arquivo so
+   define os tokens de cor, a casca (menu + barra de titulo) e os
+   componentes comuns (cartao, tabela, formulario, botao).
+   ========================================================================== */
+
+:root {
+  --bg: #0b1220;
+  --panel: #121b2e;
+  --panel-2: #0f1728;
+  --border: #223049;
+  --text: #dbe4f3;
+  --muted: #8093b3;
+  --accent: #4fa3ff;
+  --accent-fraco: rgba(79, 163, 255, .14);
+  --danger: #ff5c5c;
+  --ok: #3f9c5c;
+  --warn: #a8871f;
+  --sidebar-bg: #0d1524;
+  --sombra: 0 1px 2px rgba(0, 0, 0, .35);
+  --raio: 10px;
+  --largura-menu: 216px;
+  --largura-menu-fechado: 62px;
+  --altura-topo: 54px;
+}
+
+body.tema-claro {
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --panel-2: #f0f3f8;
+  --border: #d5dbe5;
+  --text: #16202f;
+  --muted: #5a6a85;
+  --accent: #1668c4;
+  --accent-fraco: rgba(22, 104, 196, .10);
+  --danger: #c62828;
+  --ok: #12703a;
+  --warn: #8a6b00;
+  --sidebar-bg: #10233d;
+  --sombra: 0 1px 2px rgba(16, 32, 55, .10);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+}
+
+/* --- Casca ---------------------------------------------------------------
+   min-height (nao height) para as paginas que rolam; o dashboard fecha em
+   100vh com a classe .app-shell--fixo. */
+.app-shell { display: flex; min-height: 100vh; }
+.app-shell--fixo { height: 100vh; overflow: hidden; }
+
+/* --- Menu lateral --------------------------------------------------------
+   O menu e sempre escuro, nos dois temas: e o que da a identidade visual e
+   o que separa "navegacao" de "conteudo" num relance. */
+.sidebar {
+  width: var(--largura-menu);
+  flex: 0 0 var(--largura-menu);
+  background: var(--sidebar-bg);
+  border-right: 1px solid rgba(255, 255, 255, .06);
+  display: flex;
+  flex-direction: column;
+  transition: width .16s ease, flex-basis .16s ease;
+}
+.app-shell.menu-fechado .sidebar {
+  width: var(--largura-menu-fechado);
+  flex-basis: var(--largura-menu-fechado);
+}
+
+.sidebar-marca {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  height: var(--altura-topo);
+  flex: 0 0 var(--altura-topo);
+  border-bottom: 1px solid rgba(255, 255, 255, .06);
+  color: #eaf1fb;
+  overflow: hidden;
+}
+.sidebar-marca .sigla {
+  flex: 0 0 auto;
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, #2f7fd4, #4fa3ff);
+  color: #fff; font-weight: 700; font-size: 12px; letter-spacing: .02em;
+}
+.sidebar-marca .nome { font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.sidebar-marca .nome small {
+  display: block; color: #8fa6c6; font-weight: 400; font-size: 10.5px;
+}
+.app-shell.menu-fechado .sidebar-marca .nome { display: none; }
+
+.sidebar-nav { padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.sidebar-nav a {
+  display: flex; align-items: center; gap: 11px;
+  padding: 9px 10px; border-radius: 8px;
+  color: #a9bcd8; text-decoration: none; font-size: 13px;
+  white-space: nowrap; overflow: hidden;
+  border-left: 2px solid transparent;
+}
+.sidebar-nav a:hover { background: rgba(255, 255, 255, .05); color: #eaf1fb; }
+.sidebar-nav a.ativo {
+  background: rgba(79, 163, 255, .16);
+  color: #fff;
+  border-left-color: var(--accent);
+}
+.sidebar-nav a svg { flex: 0 0 18px; width: 18px; height: 18px; }
+.app-shell.menu-fechado .sidebar-nav a span { display: none; }
+.app-shell.menu-fechado .sidebar-nav a { justify-content: center; padding: 9px 0; }
+
+.sidebar-rodape {
+  border-top: 1px solid rgba(255, 255, 255, .06);
+  padding: 10px 12px;
+  display: flex; align-items: center; gap: 9px;
+  color: #a9bcd8; font-size: 12px; overflow: hidden;
+}
+.sidebar-rodape .avatar {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+  background: #24405f; color: #dbe9ff;
+  display: grid; place-items: center; font-size: 11px; font-weight: 600;
+}
+.sidebar-rodape .quem { flex: 1; min-width: 0; }
+.sidebar-rodape .quem b { display: block; color: #eaf1fb; font-weight: 600; }
+.sidebar-rodape .quem span { color: #7f96b7; font-size: 10.5px; }
+.sidebar-rodape button {
+  background: transparent; border: 1px solid rgba(255, 255, 255, .14);
+  color: #a9bcd8; border-radius: 6px; padding: 5px 7px; cursor: pointer;
+  font-family: inherit; display: grid; place-items: center;
+}
+.sidebar-rodape button:hover { border-color: var(--accent); color: #fff; }
+.app-shell.menu-fechado .sidebar-rodape { flex-direction: column; padding: 10px 6px; }
+.app-shell.menu-fechado .sidebar-rodape .quem { display: none; }
+
+/* --- Coluna de conteudo --------------------------------------------------
+   min-width:0 e essencial: sem isso um filho largo (a tabela, o canvas 3D)
+   empurra a coluna e o menu perde a largura. */
+.conteudo { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.topbar {
+  height: var(--altura-topo);
+  flex: 0 0 var(--altura-topo);
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.topbar h1 {
+  margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.topbar .espaco { flex: 1; }
+.topbar .acoes { display: flex; align-items: center; gap: 8px; }
+
+.botao-menu {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 7px; width: 30px; height: 30px; cursor: pointer;
+  display: grid; place-items: center; flex: 0 0 auto; font-family: inherit;
+}
+.botao-menu:hover { border-color: var(--accent); color: var(--text); }
+
+/* Area util da pagina. As telas que rolam usam .pagina--rola. */
+.pagina { flex: 1; min-height: 0; }
+.pagina--rola { overflow: auto; padding: 20px 22px 56px; }
+
+/* --- Componentes comuns -------------------------------------------------- */
+.cartao {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--raio);
+  box-shadow: var(--sombra);
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+.cartao > h2 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); margin: 0 0 14px; font-weight: 600;
+}
+
+label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 5px; }
+
+input, select, textarea {
+  width: 100%; padding: 8px 10px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 7px;
+  font-size: 13px; font-family: inherit;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-fraco);
+}
+
+button { font-family: inherit; }
+button.acao {
+  margin-top: 14px; padding: 8px 16px;
+  background: var(--accent); color: #fff;
+  border: 0; border-radius: 7px; font-size: 13px; cursor: pointer;
+}
+button.acao:hover { filter: brightness(1.08); }
+button.acao:disabled { opacity: .6; cursor: wait; }
+button.perigo { background: var(--danger); }
+
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--border); }
+th {
+  color: var(--muted); font-weight: 600; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .05em;
+}
+tbody tr:hover { background: var(--accent-fraco); }
+td button {
+  font-size: 11px; padding: 5px 9px; margin-right: 5px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 6px; cursor: pointer;
+}
+td button:hover { border-color: var(--accent); }
+
+.muted { color: var(--muted); }
+.msg { font-size: 12px; margin-top: 10px; min-height: 14px; }
+.msg.erro { color: var(--danger); }
+.msg.ok { color: var(--ok); }
+
+/* Em tela estreita o menu vira so os icones, sem precisar de JS. */
+@media (max-width: 860px) {
+  .sidebar { width: var(--largura-menu-fechado); flex-basis: var(--largura-menu-fechado); }
+  .sidebar-marca .nome, .sidebar-nav a span, .sidebar-rodape .quem { display: none; }
+  .sidebar-nav a { justify-content: center; padding: 9px 0; }
+  .sidebar-rodape { flex-direction: column; padding: 10px 6px; }
+}

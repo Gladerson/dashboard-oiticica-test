@@ -367,6 +367,14 @@ def _esquecer(device_id):
             _id_por_token.pop(antigo.token, None)
 
 
+def esquecer(device_id):
+    """Descarta o runtime sem remontar -- usado quando o dispositivo e
+    EXCLUIDO. Importante para o token tambem sair do ar na hora: sem isto,
+    o token de um dispositivo excluido continuaria autenticando ate o
+    processo reiniciar, porque _id_por_token e um cache em memoria."""
+    _esquecer(device_id)
+
+
 def recarregar(device_id):
     """Forca reconstrucao do runtime (ex.: depois de editar o dispositivo
     em server/dispositivos.py)."""

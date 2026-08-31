@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 import auth
 import db
+import registro_dispositivos as registro
 
 MODELOS_DIR = Path("static/modelos")
 MODELOS_DIR.mkdir(parents=True, exist_ok=True)
@@ -61,6 +62,21 @@ class DispositivoPayload(BaseModel):
     transporte: str = "http"
 
 
+class DispositivoEdicaoPayload(BaseModel):
+    """Edicao parcial: so o que vier no corpo e alterado (exclude_unset).
+    Por isso todo campo e opcional e nao tem valor padrao util -- "nao
+    mandou" e diferente de "mandou null" (que limpa o campo)."""
+    nome: str | None = None
+    proprietario: str | None = None
+    localidade_id: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    alt_acima_solo: float | None = None
+    transporte: str | None = None
+    controller_url: str | None = None
+    controller_url_publica: str | None = None
+
+
 def _localidade_publica(l):
     return {
         "id": str(l["id"]), "nome": l["nome"], "modelo_3d_path": l["modelo_3d_path"],
@@ -72,6 +88,32 @@ def _localidade_publica(l):
     }
 
 
+def motivo_sem_3d(d):
+    """Por que este dispositivo ainda nao tem visao 3D -- ou None quando
+    esta tudo certo. Uma frase so, ja pronta para a tela: antes o dashboard
+    mostrava as tres causas possiveis de uma vez ("localidade nao
+    cadastrada, sem lat/lon, ou modelo processando") e o operador tinha que
+    adivinhar qual delas era a dele.
+
+    Recebe uma linha vinda do SELECT com a localidade achatada
+    (_SELECT_DISPOSITIVO_COM_LOCALIDADE em db.py)."""
+    if not d.get("localidade_id"):
+        return ("sem localidade: edite o dispositivo e escolha a localidade "
+                "onde ele está instalado")
+    if d.get("lat") is None or d.get("lon") is None:
+        return ("sem latitude/longitude: edite o dispositivo e marque a "
+                "posição da câmera (no mapa ou digitando)")
+    status = d.get("localidade_modelo_status")
+    if status == "pronto":
+        return None
+    if status == "processando":
+        return "o modelo 3D da localidade ainda está sendo processado"
+    if status == "erro":
+        return ("o modelo 3D da localidade falhou ao processar: veja o erro "
+                "na lista de localidades e envie o .glb de novo")
+    return "a localidade ainda não tem um modelo 3D enviado"
+
+
 def _dispositivo_publico(d):
     return {
         "id": str(d["id"]), "entity_id": d["entity_id"], "entity_type": d["entity_type"],
@@ -80,8 +122,11 @@ def _dispositivo_publico(d):
         "localidade_nome": d.get("localidade_nome"),
         "lat": d["lat"], "lon": d["lon"], "alt_acima_solo": d["alt_acima_solo"],
         "transporte": d["transporte"], "token": d["token"],
+        "controller_url": d.get("controller_url"),
+        "controller_url_publica": d.get("controller_url_publica"),
         "topico_telemetria": d["topico_telemetria"], "topico_atributos": d["topico_atributos"],
         "topico_frame": d["topico_frame"], "criado_em": d["criado_em"].isoformat(),
+        "motivo_sem_3d": motivo_sem_3d(d),
     }
 
 
@@ -99,6 +144,14 @@ def _descomprimir_draco(localidade_id, caminho_final: Path):
             check=True, capture_output=True, timeout=600, text=True,
         )
         db.atualizar_status_modelo(localidade_id, "pronto")
+        # Sem isto, um dispositivo cujo runtime ja foi montado enquanto o
+        # modelo ainda estava "processando" fica com geo=None PARA SEMPRE (o
+        # registro so consulta o banco na primeira vez que resolve aquele
+        # dispositivo) -- o dashboard continuaria dizendo "sem modelo 3D
+        # pronto" mesmo com o banco dizendo 'pronto', ate reiniciar o
+        # servidor. Aqui o modelo acabou de ficar pronto: descarta os
+        # runtimes daquela localidade pra serem remontados no proximo acesso.
+        registro.invalidar_localidade(localidade_id)
     except FileNotFoundError:
         db.atualizar_status_modelo(
             localidade_id, "erro",
@@ -144,6 +197,9 @@ def instalar(app):
     @app.delete("/api/localidades/{localidade_id}")
     def excluir_localidade(localidade_id: str, _usuario=Depends(auth.usuario_atual)):
         db.excluir_localidade(localidade_id)
+        # Os dispositivos que apontavam pra ela ficam sem localidade: os
+        # runtimes em memoria precisam parar de usar o GeoModel antigo.
+        registro.invalidar_localidade(localidade_id)
         return {"status": "ok"}
 
     @app.post("/api/localidades/{localidade_id}/modelo")
@@ -172,6 +228,10 @@ def instalar(app):
             return JSONResponse({"error": str(e)}, status_code=400)
 
         db.definir_modelo_localidade(localidade_id, str(destino))
+        # O arquivo em disco ACABOU de ser sobrescrito: qualquer GeoModel ja
+        # carregado dessa localidade agora descreve um modelo que nao existe
+        # mais. Descarta antes de comecar a descomprimir.
+        registro.invalidar_localidade(localidade_id)
         threading.Thread(target=_descomprimir_draco, args=(localidade_id, destino),
                          daemon=True).start()
         return {"status": "ok", "modelo_status": "processando"}
@@ -221,7 +281,50 @@ def instalar(app):
             )
         except Exception as e:
             return JSONResponse({"error": f"não consegui criar: {e}"}, status_code=400)
-        return _dispositivo_publico(dict(novo, localidade_nome=None))
+        # Rele com a localidade junto: e o que motivo_sem_3d precisa para
+        # dizer, ja na resposta da criacao, se a visao 3D vai funcionar.
+        return _dispositivo_publico(db.dispositivo_por_id_com_localidade(novo["id"]))
+
+    @app.patch("/api/dispositivos/{dispositivo_id}")
+    def editar_dispositivo(dispositivo_id: str, payload: DispositivoEdicaoPayload,
+                           usuario=Depends(auth.usuario_atual)):
+        """Edita o cadastro de um dispositivo que JA existe. Sem isto, um
+        dispositivo criado antes da localidade existir (ou criado com
+        "(nenhuma)") ficava sem jeito de ganhar modelo 3D a nao ser
+        excluindo e recriando -- o que trocaria o token e derrubaria o
+        Raspberry em campo."""
+        alvo = db.dispositivo_por_id(dispositivo_id)
+        if alvo is None:
+            return JSONResponse({"error": "não encontrado"}, status_code=404)
+        if usuario["papel"] != "admin" and str(alvo["dono_usuario_id"]) != str(usuario["id"]):
+            return JSONResponse({"error": "sem permissão"}, status_code=403)
+
+        campos = payload.model_dump(exclude_unset=True)
+
+        if "nome" in campos:
+            campos["nome"] = (campos["nome"] or "").strip()
+            if not campos["nome"]:
+                return JSONResponse({"error": "nome obrigatorio"}, status_code=400)
+        if "proprietario" in campos:
+            campos["proprietario"] = (campos["proprietario"] or "").strip() or None
+        if "transporte" in campos and campos["transporte"] not in ("http", "mqtt"):
+            return JSONResponse({"error": "transporte inválido"}, status_code=400)
+        if campos.get("localidade_id") and db.localidade_por_id(campos["localidade_id"]) is None:
+            return JSONResponse({"error": "localidade não encontrada"}, status_code=400)
+        for chave in ("controller_url", "controller_url_publica"):
+            if chave in campos:
+                campos[chave] = (campos[chave] or "").strip() or None
+
+        try:
+            atualizado = db.atualizar_dispositivo(dispositivo_id, campos)
+        except Exception as e:
+            return JSONResponse({"error": f"não consegui salvar: {e}"}, status_code=400)
+
+        # O runtime em memoria foi montado com os valores ANTIGOS (inclusive
+        # a pose da camera e o GeoModel da localidade antiga): descarta pra
+        # ser remontado com o cadastro novo no proximo acesso.
+        registro.recarregar(dispositivo_id)
+        return _dispositivo_publico(atualizado)
 
     @app.delete("/api/dispositivos/{dispositivo_id}")
     def excluir_dispositivo(dispositivo_id: str, usuario=Depends(auth.usuario_atual)):
@@ -231,6 +334,10 @@ def instalar(app):
         if usuario["papel"] != "admin" and str(alvo["dono_usuario_id"]) != str(usuario["id"]):
             return JSONResponse({"error": "sem permissão"}, status_code=403)
         db.excluir_dispositivo(dispositivo_id)
+        # Sem isto o token do dispositivo excluido continuaria autenticando
+        # em /api/edge/* ate o servidor reiniciar (o mapa token -> runtime e
+        # um cache em memoria).
+        registro.esquecer(dispositivo_id)
         return {"status": "ok"}
 
     print(">> Modulo de dispositivos instalado (cadastro de localidades/dispositivos CV-SHM).")
