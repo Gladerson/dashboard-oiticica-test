@@ -3,22 +3,46 @@
 <head>
 <meta charset="UTF-8" />
 <title>Dashboard - Barragem Oiticica</title>
+<link rel="stylesheet" href="/estatico/layout.css" />
 <style>
-  :root {
-    --bg: #0b1220;
-    --panel: #121b2e;
-    --border: #223049;
-    --text: #dbe4f3;
-    --muted: #8093b3;
-    --accent: #4fa3ff;
-    --danger: #ff5c5c;
+  /* Tokens de cor, casca (menu lateral + barra de titulo) e componentes
+     comuns vem de /estatico/layout.css. Aqui fica o que e do painel. */
+
+  /* Grade do painel: 3D à esquerda, coluna de widgets à direita.
+     As duas medidas são variáveis porque os divisores (#divisor-col e
+     #divisor-lin) as reescrevem enquanto o operador arrasta -- é assim que
+     dá pra deixar a telinha do stream maior sem mexer no código. */
+  #app {
+    display:grid;
+    grid-template-columns: 1fr 6px var(--largura-painel, 400px);
+    grid-template-rows: var(--altura-video, 62%) 6px 1fr;
+    height:100%;
   }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, sans-serif; }
-  #app { display:grid; grid-template-columns: 1fr 360px; grid-template-rows: 60vh 40vh; height:100vh; }
-  #viewport { grid-column:1; grid-row:1/3; position:relative; overflow:hidden; }
-  #video-panel { grid-column:2; grid-row:1; border-left:1px solid var(--border); padding:12px; overflow:auto; }
-  #history-panel { grid-column:2; grid-row:2; border-left:1px solid var(--border); border-top:1px solid var(--border); padding:12px; overflow:auto; }
+  #viewport { grid-column:1; grid-row:1/4; position:relative; overflow:hidden; }
+  #video-panel   { grid-column:3; grid-row:1; padding:12px; overflow:auto; }
+  #history-panel { grid-column:3; grid-row:3; padding:12px; overflow:auto; }
+
+  /* Divisores. Ficam entre as áreas (coluna/linha próprias na grade), então
+     arrastar não sobrepõe nada -- só redistribui espaço. */
+  .divisor { background:var(--border); position:relative; }
+  .divisor::after {
+    content:""; position:absolute; background:var(--muted); opacity:.5; border-radius:2px;
+  }
+  .divisor:hover, .divisor.arrastando { background:var(--accent); }
+  #divisor-col {
+    grid-column:2; grid-row:1/4; cursor:col-resize;
+  }
+  #divisor-col::after { top:50%; left:1px; width:4px; height:26px; transform:translateY(-50%); }
+  #divisor-lin {
+    grid-column:3; grid-row:2; cursor:row-resize;
+  }
+  #divisor-lin::after { left:50%; top:1px; height:4px; width:26px; transform:translateX(-50%); }
+  /* Enquanto arrasta, nada de seleção de texto nem de o iframe/canvas
+     roubar o ponteiro. */
+  body.redimensionando { user-select:none; cursor:col-resize; }
+  body.redimensionando.linha { cursor:row-resize; }
+  body.redimensionando #viewport canvas { pointer-events:none; }
+
   h2 { font-size:14px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 8px; }
   #video-feed { width:100%; border-radius:8px; border:1px solid var(--border); background:#000; }
   #ptz-controls { display:grid; grid-template-columns: repeat(3, 44px); grid-gap:6px; margin-top:12px; justify-content:center; }
@@ -157,27 +181,14 @@
   body.tema-claro .history-item img              { background:#e9edf3; }
   body.tema-claro .history-actions .localizar    { border-color:#7fa6d9; }
 
-  #nav-conta {
-    position: fixed; top: 10px; right: 12px; z-index: 20;
-    display: flex; gap: 6px; align-items: center;
-  }
-  #nav-conta a, #nav-conta button {
-    background: var(--panel); color: var(--text);
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: 6px 10px; font-size: 12px; line-height: 1;
-    font-family: inherit; cursor: pointer; text-decoration: none;
-  }
-  #nav-conta a:hover, #nav-conta button:hover { border-color: var(--accent); }
-  #nav-conta span { font-size: 11px; color: var(--muted); }
+  /* O seletor de dispositivo mora na barra de titulo (antes a navegação
+     flutuava por cima do viewport e cobria o nome da câmera no widget). */
   #sel-dispositivo {
-    background: var(--panel); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 10px; font-size: 12px; font-family: inherit;
-    cursor: pointer; max-width: 220px;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 10px; font-size: 12.5px; font-family: inherit;
+    cursor: pointer; max-width: 260px; width: auto;
   }
-  #sem-dispositivo {
-    background: var(--panel); color: var(--danger); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 10px; font-size: 12px;
-  }
+  #sem-dispositivo { color: var(--danger); font-size: 12px; }
   #viewport-sem-3d {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     text-align: center; padding: 24px; color: var(--muted); font-size: 13px; line-height: 1.6;
@@ -210,10 +221,17 @@
                  padding:2px 8px; border-radius:10px; }
   #video-wrap.ativo #video-badge { display:block; }
   #video-badge .ponto { color:var(--danger); }
-  #borda-linha { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;
+  /* Grade 2x2 FIXA, não flex com wrap. Com flex-wrap, "24.5 fps" ocupava
+     mais largura que "8 fps", a pastilha "vídeo: X KB" caía para uma
+     terceira linha e empurrava o PTZ para baixo -- o operador clicava onde
+     o botão estava um segundo antes. Com duas linhas sempre, a altura do
+     bloco não depende do texto e o PTZ nunca se move. */
+  #borda-linha { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px;
                  font-size:11px; color:var(--muted); }
   #borda-linha .pill { border:1px solid var(--border); border-radius:999px;
-                       padding:2px 8px; background:var(--panel); }
+                       padding:2px 8px; background:var(--panel);
+                       white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+                       text-align:center; }
   #borda-linha .pill.on  { border-color:#3f9c5c; color:var(--text); }
   #borda-linha .pill.off { border-color:#a8871f; }
   #limiar-row { margin-top:10px; }
@@ -237,27 +255,20 @@
 </style>
 </head>
 <body>
-<div id="nav-conta">
-  <span id="nav-usuario"></span>
-  <select id="sel-dispositivo" hidden></select>
-  <span id="sem-dispositivo" hidden>Nenhum dispositivo cadastrado</span>
-  <a href="/dispositivos">Dispositivos</a>
-  <a href="/config">Configuração</a>
-  <button id="btn-sair" type="button">Sair</button>
-</div>
+<div class="app-shell app-shell--fixo" id="shell">
+  <div class="conteudo">
+    <div class="pagina">
 
 <div id="app">
   <div id="viewport">
-    <div id="overlay-badge">Barragem Oiticica &mdash; Shift + arrastar para dar close</div>
+    <div id="overlay-badge">Shift + arrastar para dar close na região</div>
     <div id="sel-box"></div>
     <div id="status-toast"></div>
-    <div id="viewport-sem-3d" hidden>
-      Este dispositivo ainda não tem um modelo 3D pronto (localidade não
-      cadastrada, sem lat/lon, ou modelo ainda processando).<br/>
-      Cadastre em <a href="/dispositivos">Dispositivos</a> para habilitar a
-      visão 3D. PTZ e vídeo continuam funcionando normalmente.
-    </div>
+    <div id="viewport-sem-3d" hidden></div>
   </div>
+
+  <div class="divisor" id="divisor-col" title="Arraste para alargar ou estreitar o painel"></div>
+  <div class="divisor" id="divisor-lin" title="Arraste para dar mais espaço à telinha ou ao histórico"></div>
 
   <div id="video-panel">
     <h2>Câmera ao vivo</h2>
@@ -313,6 +324,10 @@
   </div>
 </div>
 
+    </div><!-- .pagina -->
+  </div><!-- .conteudo -->
+</div><!-- .app-shell -->
+
 <div id="modal">
   <div class="box">
     <div id="modal-img-wrap">
@@ -342,6 +357,97 @@
     </div>
   </div>
 </div>
+
+<script src="/estatico/layout.js"></script>
+<script>
+// Menu lateral + barra de titulo (compartilhados com /dispositivos e
+// /config). O seletor de dispositivo e o marcador "sem dispositivo" vao
+// para a area de acoes da barra: antes eram uma barra FLUTUANTE por cima
+// do viewport, que cobria o cabecalho do widget de video.
+(function () {
+  const { acoes } = Layout.montar({ ativo: "dashboard", titulo: "Painel — Barragem Oiticica" });
+  const sel = document.createElement("select");
+  sel.id = "sel-dispositivo";
+  sel.hidden = true;
+  const semDispositivo = document.createElement("span");
+  semDispositivo.id = "sem-dispositivo";
+  semDispositivo.hidden = true;
+  semDispositivo.textContent = "Nenhum dispositivo cadastrado";
+  acoes.append(semDispositivo, sel);
+})();
+</script>
+
+<!-- ---------------------------------------------------------------------
+     Divisores arrastaveis do painel direito.
+
+     Ficam fora do modulo do Three.js de proposito: nao dependem dele e
+     precisam funcionar mesmo que o modelo 3D nao carregue.
+     O tamanho escolhido fica salvo por navegador -- quem trabalha o dia
+     todo com a telinha grande nao precisa reajustar a cada acesso.
+     --------------------------------------------------------------------- -->
+<script>
+(function () {
+  const app = document.getElementById("app");
+  const LARGURA_MIN = 300, LARGURA_MAX_FRACAO = 0.75;
+  const ALTURA_MIN = 22, ALTURA_MAX = 85;   // em % da altura do painel
+
+  function ler(chave, padrao) {
+    try {
+      const v = localStorage.getItem(chave);
+      return v === null ? padrao : v;
+    } catch (e) { return padrao; }
+  }
+  function gravar(chave, valor) {
+    try { localStorage.setItem(chave, valor); } catch (e) { /* modo privado */ }
+  }
+
+  // Restaura o que o operador deixou ajustado da ultima vez.
+  app.style.setProperty("--largura-painel", ler("oiticica_largura_painel", "400px"));
+  app.style.setProperty("--altura-video", ler("oiticica_altura_video", "62%"));
+
+  function arrastar(divisor, aoMover, classeExtra) {
+    divisor.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      divisor.setPointerCapture(ev.pointerId);
+      divisor.classList.add("arrastando");
+      document.body.classList.add("redimensionando");
+      if (classeExtra) document.body.classList.add(classeExtra);
+
+      const mover = (e) => aoMover(e);
+      const soltar = () => {
+        divisor.removeEventListener("pointermove", mover);
+        divisor.removeEventListener("pointerup", soltar);
+        divisor.removeEventListener("pointercancel", soltar);
+        divisor.classList.remove("arrastando");
+        document.body.classList.remove("redimensionando");
+        if (classeExtra) document.body.classList.remove(classeExtra);
+      };
+      divisor.addEventListener("pointermove", mover);
+      divisor.addEventListener("pointerup", soltar);
+      divisor.addEventListener("pointercancel", soltar);
+    });
+  }
+
+  arrastar(document.getElementById("divisor-col"), (e) => {
+    const caixa = app.getBoundingClientRect();
+    // Distancia da borda DIREITA: e a largura que o painel deve ter.
+    let largura = caixa.right - e.clientX;
+    largura = Math.max(LARGURA_MIN, Math.min(caixa.width * LARGURA_MAX_FRACAO, largura));
+    const valor = `${Math.round(largura)}px`;
+    app.style.setProperty("--largura-painel", valor);
+    gravar("oiticica_largura_painel", valor);
+  });
+
+  arrastar(document.getElementById("divisor-lin"), (e) => {
+    const caixa = app.getBoundingClientRect();
+    let pct = ((e.clientY - caixa.top) / caixa.height) * 100;
+    pct = Math.max(ALTURA_MIN, Math.min(ALTURA_MAX, pct));
+    const valor = `${pct.toFixed(1)}%`;
+    app.style.setProperty("--altura-video", valor);
+    gravar("oiticica_altura_video", valor);
+  }, "linha");
+})();
+</script>
 
 <script type="importmap">
 { "imports": {
@@ -766,8 +872,13 @@ async function init() {
   if (!info.pronto_3d) {
     // Dispositivo cadastrado mas sem localidade/modelo 3D pronto: PTZ e
     // vídeo continuam funcionando, só a visão 3D fica indisponível (sem
-    // fallback -- ver README, etapa multi-dispositivo).
-    document.getElementById("viewport-sem-3d").hidden = false;
+    // fallback -- ver README, etapa multi-dispositivo). O servidor diz
+    // QUAL das condições está faltando, em vez de listar todas elas.
+    mostrarAvisoSem3D(
+      info.motivo_sem_3d || "este dispositivo ainda não tem um modelo 3D pronto",
+      `Ajuste em <a href="/dispositivos">Dispositivos</a> (botão “Editar”).
+       PTZ e vídeo continuam funcionando normalmente.`
+    );
     animate();
     return;
   }
@@ -838,11 +949,18 @@ function animate() {
   renderer.render(scene, camera3d);
 }
 
-window.addEventListener("resize", () => {
-  camera3d.aspect = viewport.clientWidth / viewport.clientHeight;
+// ResizeObserver em vez de window.resize: o viewport tambem muda de tamanho
+// quando o operador arrasta um divisor ou recolhe o menu lateral, e nenhum
+// dos dois dispara resize da janela. Observando o elemento, os tres casos
+// (janela, divisor, menu) caem no mesmo caminho.
+function ajustarViewport() {
+  const l = viewport.clientWidth, a = viewport.clientHeight;
+  if (!l || !a) return;            // painel recolhido: nada a redesenhar
+  camera3d.aspect = l / a;
   camera3d.updateProjectionMatrix();
-  renderer.setSize(viewport.clientWidth, viewport.clientHeight);
-});
+  renderer.setSize(l, a);
+}
+new ResizeObserver(ajustarViewport).observe(viewport);
 
 // ---------------------------------------------------------------------
 // WebSocket
@@ -1724,48 +1842,29 @@ async function atualizarPainelBorda() {
 
 setInterval(atualizarPainelBorda, 3000);
 
+// Aviso central do viewport: o mesmo espaço serve para "nenhum dispositivo
+// cadastrado" e para "este dispositivo ainda não tem visão 3D", que são
+// situações diferentes e pedem instruções diferentes.
+function mostrarAvisoSem3D(titulo, detalheHtml) {
+  const aviso = document.getElementById("viewport-sem-3d");
+  aviso.innerHTML = `<div><b>${titulo}</b><br/>${detalheHtml}</div>`;
+  aviso.hidden = false;
+}
+
 (async () => {
   deviceId = await resolverDispositivo();
   if (!deviceId) {
     console.warn("Nenhum dispositivo cadastrado -- cadastre um em /dispositivos.");
-    const aviso = document.getElementById("viewport-sem-3d");
-    aviso.innerHTML = 'Nenhum dispositivo cadastrado ainda.<br/>' +
-      'Cadastre um em <a href="/dispositivos">Dispositivos</a> para começar.';
-    aviso.hidden = false;
+    mostrarAvisoSem3D(
+      "Nenhum dispositivo cadastrado ainda.",
+      'Cadastre um em <a href="/dispositivos">Dispositivos</a> para começar.'
+    );
     animate();   // cena vazia (so o grid), pra nao deixar o viewport parado
     return;
   }
   init();
   loadHistory();
 })();
-</script>
-
-<script>
-  // ---- Tema (a troca agora mora em /config; aqui so aplicamos o que foi
-  // salvo -- por localStorage, de imediato, e pela conta, assim que
-  // /api/usuarios/me responder) ----
-  (function () {
-    const KEY = "oiticica_tema";
-    let atual = "escuro";
-    try { atual = localStorage.getItem(KEY) || "escuro"; } catch (e) {}
-    document.body.classList.toggle("tema-claro", atual === "claro");
-  })();
-
-  // ---- Conta: usuario logado + sair ----
-  (function () {
-    fetch("/api/usuarios/me").then(r => r.ok ? r.json() : null).then(eu => {
-      if (!eu) return;
-      document.getElementById("nav-usuario").textContent = eu.username;
-      const claro = eu.tema === "claro";
-      document.body.classList.toggle("tema-claro", claro);
-      try { localStorage.setItem("oiticica_tema", eu.tema); } catch (e) {}
-    }).catch(() => {});
-
-    document.getElementById("btn-sair").addEventListener("click", async () => {
-      try { await fetch("/api/logout", { method: "POST" }); } catch (e) {}
-      location.href = "/login";
-    });
-  })();
 </script>
 </body>
 </html>

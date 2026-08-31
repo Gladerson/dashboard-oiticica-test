@@ -103,10 +103,12 @@ dashboard_oiticica_test/
 │   ├── dispositivos.py             # cadastro de localidades (modelo 3D) e dispositivos CV-SHM
 │   ├── migrar_dispositivo_legado.py  # cadastra o dispositivo/localidade que antes eram hardcoded (§9-bis)
 │   ├── prepare_model.sh            # remove compressão Draco do .glb (rodar uma vez, uso manual)
+│   ├── static/layout.css           # casca visual comum: menu lateral, barra de título, cartões, tabelas
+│   ├── static/layout.js            # monta o menu/barra nas três telas (um lugar só para a navegação)
 │   ├── static/dashboard.html       # Three.js: modelo, cone, telinha, histórico, marcações 3D
 │   ├── static/login.html           # tela de entrada
 │   ├── static/config.html          # tema, própria senha, administração de usuários (admin)
-│   ├── static/dispositivos.html    # cadastro + mapa Leaflet + preview 3D (Three.js) do modelo enviado
+│   ├── static/dispositivos.html    # cadastro/edição + mapa Leaflet + preview 3D (Three.js) do modelo enviado
 │   ├── static/modelos/             # .glb enviados pela aba Dispositivos (fora do Git)
 │   ├── history/                    # detecções salvas em runtime (fora do Git)
 │   ├── requirements.txt
@@ -145,6 +147,7 @@ dashboard_oiticica_test/
 | raycasting, cone, coordenadas 3D | `server/glb_geo.py` (`GeoModel`, um por localidade) |
 | histórico, dedup, WebSocket | `server/server.py` |
 | interface, marcações 3D, telinha | `server/static/dashboard.html` |
+| menu lateral, barra de título, tema | `server/static/layout.css` + `layout.js` |
 | login, sessão, usuários | `server/auth.py` + `server/db.py` |
 | localidades, modelos 3D, dispositivos | `server/dispositivos.py` |
 | compilação do modelo | `notebook/` na ordem numérica da §6 |
@@ -362,20 +365,43 @@ logado (não só admin). Duas listas:
   não tem cone, PTZ ou qualquer coisa ligada a telemetria — isso continua
   exclusivo do widget CV-SHM em `dashboard.html`.
 - **Dispositivos** — nome, proprietário (ex.: SEMARH), localidade,
-  transporte (HTTP/MQTT) e posição no mapa (Leaflet + OpenStreetMap, clique
-  para marcar lat/lon — sem chave de API). Ao criar, gera um `entity_id`
-  (`urn:ngsi-ld:CV-SHM:<slug>-<aleatório>`, inspirado em NGSI/FIWARE), um
-  token e os tópicos MQTT — mostrados como um trecho pronto para colar no
-  `edge/.env` daquele Raspberry ("Ver credenciais" na listagem).
+  transporte (HTTP/MQTT) e posição da câmera. A posição pode ser marcada
+  **clicando no mapa** (Leaflet + OpenStreetMap, sem chave de API) **ou
+  digitada** nos campos de latitude/longitude — os dois são a mesma coisa e
+  ficam sincronizados nos dois sentidos, porque nem sempre se acha o ponto
+  no mapa e muitas vezes a coordenada já vem pronta do projeto ou do GPS.
+  Ao criar, gera um `entity_id` (`urn:ngsi-ld:CV-SHM:<slug>-<aleatório>`,
+  inspirado em NGSI/FIWARE), um token e os tópicos MQTT — mostrados como um
+  trecho pronto para colar no `edge/.env` daquele Raspberry ("Ver
+  credenciais" na listagem).
 
-**Importante — escopo desta etapa:** é só cadastro. O pipeline ao vivo
-(`server/borda.py`) continua falando com **um** Raspberry por vez, do jeito
-que já está em produção — nada aqui muda telemetria, detecção ou stream. Um
-dispositivo cadastrado não passa a "funcionar" sozinho; a próxima etapa é
-ensinar o pipeline a rotear por token, permitindo N dispositivos
-simultâneos. Por isso a listagem não tem "online/offline" de verdade ainda.
+#### Para o dispositivo ter visão 3D
 
-Cada usuário só vê e só pode excluir os próprios dispositivos; admin vê e
+São **três** condições, e a coluna “Localidade” da listagem diz qual está
+faltando em cada dispositivo (em vez de o painel mostrar as três de uma vez
+e deixar o operador adivinhar):
+
+1. uma **localidade** associada ao dispositivo;
+2. **latitude/longitude** da câmera preenchidas;
+3. o **`.glb` daquela localidade** com status **pronto**.
+
+Faltando qualquer uma, o dispositivo continua funcionando em PTZ e vídeo —
+só a visão 3D fica indisponível, sem *fallback* para a geometria de outro
+dispositivo (§9-bis).
+
+#### Editar em vez de recriar
+
+O botão **Editar** na listagem altera localidade, lat/lon, altura,
+transporte e URL do controlador de um dispositivo **que já existe**. Use-o
+sempre que faltar alguma das três condições acima: `PATCH` não mexe no
+token nem nos tópicos, então o Raspberry que já está em campo continua
+funcionando com o `.env` que ele já tem. **Excluir e recriar geraria um
+token novo** e derrubaria esse Raspberry até alguém ir lá trocar o `.env`.
+
+Excluir um dispositivo invalida o token **na hora**, sem esperar reinício do
+servidor.
+
+Cada usuário só vê, edita e exclui os próprios dispositivos; admin vê e
 mexe em todos. Localidades e o modelo 3D em si continuam catálogo comum,
 sem dono.
 
@@ -487,6 +513,14 @@ scp best_backbone.hef best_head.onnx PI:~/Projetos/dashboard_oiticica_test/edge/
 > precisam ser refeitos. Entre **nano e small o `CORTE_IDX` permanece 215**,
 > porque as duas escalas têm a mesma profundidade e diferem só na largura.
 
+> **O HEF em produção foi gerado com `quantizar_compilar_v2.py`**
+> (`optimization_level=2`, 256 imagens de calibração), em 27/08/2026.
+> O `quantizar_compilar.py` não declara `model_optimization_flavor` e usa 100
+> imagens — fica como caminho rápido para validar o pipeline, não para gerar o
+> modelo definitivo. Os dois gravam em `best_backbone.hef`, então o nome do
+> arquivo não distingue: confira com
+> `grep optimization_level compilacao_v2.txt`.
+
 **Calibre somente com imagens originais.** Imagem aumentada (espelhada,
 rotacionada, com brilho alterado) não representa o que a câmera vê, e calibrar
 com elas desloca as estatísticas de ativação para uma distribuição que não
@@ -536,6 +570,37 @@ curl -X POST http://SERVIDOR:8001/api/inferencia \
 ---
 
 ## 8. Como funciona
+
+### Interface: menu lateral e painel ajustável
+
+As três telas (painel, Dispositivos, Configuração) compartilham a mesma
+casca: um **menu lateral** fixo à esquerda, no estilo do ThingsBoard, e uma
+barra de título com as ações da tela. A casca mora em
+`server/static/layout.css` + `layout.js` — um lugar só, em vez de o mesmo
+cabeçalho copiado em três arquivos.
+
+O menu recolhe para só os ícones (botão ☰, ou automaticamente abaixo de
+860 px de largura) e a escolha fica salva por navegador.
+
+No painel, a coluna da direita é **ajustável**: arraste o divisor vertical
+para alargar a telinha do stream e o horizontal para dar mais espaço ao
+histórico. Os dois tamanhos ficam salvos por navegador, então quem trabalha
+o dia todo com a telinha grande não reajusta a cada acesso. O canvas 3D
+acompanha via `ResizeObserver` (não `window.resize`: arrastar o divisor ou
+recolher o menu não redimensiona a janela).
+
+Duas decisões de layout que vieram de problemas reais de operação:
+
+- **A navegação não flutua mais sobre o vídeo.** Antes era uma barra
+  `position:fixed` no canto superior direito, que passava por cima do widget
+  da câmera e cobria o nome dela. Agora ocupa espaço próprio (menu + barra
+  de título), então nada fica escondido.
+- **As pastilhas de estado da borda são uma grade 2×2 fixa.** Antes eram
+  flex com quebra de linha: quando o fps passava de um dígito
+  (`24.5 fps`), a pastilha `vídeo: X KB` caía para uma terceira linha e
+  **empurrava o controle PTZ para baixo** — o operador clicava onde o botão
+  estava um segundo antes. Com duas linhas sempre, a altura do bloco não
+  depende do texto e o PTZ não se move.
 
 ### Movimentação PTZ
 
@@ -772,7 +837,8 @@ Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
 | `/api/edge/imagem` | POST | token | evidência completa pedida pelo operador |
 | `/api/telemetry`, `/api/detection` | POST | token | mesma função acima, usadas pelo `controller.py` |
 | `/api/dispositivos` | GET/POST | sessão | listar (próprios; todos se admin) / criar dispositivo |
-| `/api/dispositivos/{id}` | DELETE | sessão | excluir (só o dono ou admin) |
+| `/api/dispositivos/{id}` | PATCH | sessão | editar o cadastro (localidade, lat/lon, altura, transporte, controller); **não** troca o token |
+| `/api/dispositivos/{id}` | DELETE | sessão | excluir (só o dono ou admin); o token para de valer na hora |
 | `/api/camera_info` \| `/api/view` | GET | sessão | pose/geometria e cone sob demanda -- exige `?device_id=` |
 | `/api/stream/start` \| `renovar` \| `stop` | POST | sessão | janela de vídeo de 60 s -- exige `device_id` |
 | `/api/stream/atual.jpg` | GET | sessão | último quadro recebido -- exige `device_id` |
@@ -932,6 +998,35 @@ Bearer agora).
 ## 13. Resolução de problemas
 
 Casos reais da implantação, com a causa e não apenas a solução.
+
+**“Este dispositivo ainda não tem um modelo 3D pronto”, mesmo com o `.glb`
+enviado e o dispositivo cadastrado** — havia duas causas distintas, e o
+painel antigo não separava uma da outra:
+
+1. **O dispositivo não tinha localidade associada.** Criar o dispositivo
+   antes da localidade existir (ou deixando “(nenhuma)”) era comum, e não
+   havia como corrigir depois: o cadastro só tinha criar e excluir. Agora a
+   listagem em `/dispositivos` diz exatamente o que falta em cada
+   dispositivo e o botão **Editar** associa a localidade sem trocar o token
+   (§5.1a-bis).
+2. **O servidor mantinha um `DispositivoRuntime` obsoleto em memória.** O
+   registro consulta o banco só na primeira vez que resolve cada
+   dispositivo (`server/registro_dispositivos.py`). Se o painel tocasse no
+   dispositivo enquanto o `.glb` ainda estava `processando`, o runtime
+   nascia com `geo=None` e **continuava assim mesmo depois de o banco virar
+   `pronto`** — até reiniciar o servidor. As funções de invalidação
+   existiam, mas nada as chamava. Agora `server/dispositivos.py` invalida ao
+   terminar a descompressão Draco, ao enviar um `.glb` novo, ao excluir a
+   localidade e ao editar o dispositivo; e `/api/camera_info` remonta o
+   runtime uma vez, por segurança, quando o banco diz que está tudo pronto e
+   o runtime discorda.
+
+**A página `/dispositivos` abre em branco (sem listas, sem formulário)** — o
+Leaflet vem de CDN (`unpkg.com`); num servidor sem saída para a internet, o
+`L` não existe e o erro derrubava o script inteiro, justamente a tela que
+conserta um dispositivo mal configurado. Hoje o mapa é opcional: falhando,
+aparece um aviso no lugar dele e os campos de latitude/longitude continuam
+funcionando normalmente.
 
 **`ONVIFError: No such file: .../wsdl/devicemgmt.wsdl`** — o `setup.py` do
 `onvif-zeep 0.2.12` tem um caminho com `python3.4` cravado no código, então o
@@ -1134,6 +1229,12 @@ indesejável, mova para variável de ambiente.
 - **`server/history/index.json` não tem proteção de concorrência** e cresce sem
   limite.
 - **`GridHelper`** do dashboard tem cores escuras fixas, que destoam no tema claro.
+- **O painel depende de CDN para o Three.js.** Se `cdnjs`/`jsdelivr` não
+  estiverem acessíveis, o módulo 3D não carrega e o painel inteiro fica sem
+  seletor de dispositivo, vídeo e histórico — tudo vive nesse mesmo módulo.
+  A tela `/dispositivos` já foi tornada resistente ao caso equivalente
+  (Leaflet, ver §13); o painel ainda não. Servir as bibliotecas do próprio
+  servidor resolveria os dois de vez.
 - **A qualidade da máscara foi medida só em imagens curadas de fissura.** O
   comportamento em cena ampla, com sombra e textura, ainda não foi quantificado.
 - **Painel de administração — construção por etapas (3 abas: Dashboard,
@@ -1142,12 +1243,15 @@ indesejável, mova para variável de ambiente.
     `server/auth.py`), admin padrão `admin`/`hydroconecta` com troca de
     senha obrigatória, papéis admin/usuário, tema movido para cá
     (`server/static/config.html`, `server/static/login.html`).
-  - ✅ **Dispositivos** (cadastro, §5.1a-bis): localidades com modelo 3D
-    (upload + descompressão Draco em segundo plano) e georreferenciamento
-    (N por sistema), dispositivos CV-SHM com localização no mapa (Leaflet/
-    OpenStreetMap), transporte HTTP/MQTT e geração de token/tópicos
-    (`server/dispositivos.py`, `server/static/dispositivos.html`). Cada
-    usuário só vê/exclui os próprios dispositivos; admin vê todos.
+  - ✅ **Dispositivos** (cadastro e edição, §5.1a-bis): localidades com
+    modelo 3D (upload + descompressão Draco em segundo plano) e
+    georreferenciamento (N por sistema), dispositivos CV-SHM com localização
+    no mapa (Leaflet/OpenStreetMap) **ou por coordenadas digitadas**,
+    transporte HTTP/MQTT e geração de token/tópicos
+    (`server/dispositivos.py`, `server/static/dispositivos.html`). Editar um
+    dispositivo já cadastrado (`PATCH`) não troca o token, então dá para
+    corrigir localidade/posição sem derrubar o Raspberry em campo. Cada
+    usuário só vê/edita/exclui os próprios dispositivos; admin vê todos.
   - ✅ **Pipeline ao vivo multi-dispositivo (HTTP)**: `server/borda.py` e
     `server/server.py` agora resolvem o dispositivo pelo token Bearer em
     TODA chamada HTTP (`/api/edge/*`, `/api/telemetry`, `/api/detection`) e

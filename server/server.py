@@ -189,6 +189,10 @@ http = requests.Session()
 
 app = FastAPI(title="Dashboard Server")
 app.mount("/model", StaticFiles(directory="static"), name="model")
+# Mesma pasta do mount acima, com um nome que descreve o que serve: as
+# telas puxam /estatico/layout.css e /estatico/layout.js. ("/model" ficou
+# com esse nome de quando so servia o .glb.)
+app.mount("/estatico", StaticFiles(directory="static"), name="estatico")
 app.mount("/history_files", StaticFiles(directory=HISTORY_DIR), name="history_files")
 
 db.iniciar()
@@ -266,7 +270,27 @@ def camera_info(device_id: str):
     if device is None:
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
     pronto = device.pronto()
+    # Quando nao esta pronto, diz exatamente QUAL condicao falhou -- le do
+    # banco (nao do runtime) porque o cadastro pode ter mudado depois que o
+    # runtime foi montado. So custa uma consulta no caso ruim.
+    motivo = None
+    if not pronto:
+        linha = db.dispositivo_por_id_com_localidade(device_id)
+        motivo = dispositivos.motivo_sem_3d(linha) if linha else None
+        if linha is not None and motivo is None:
+            # O banco diz que esta tudo certo e mesmo assim o runtime nao
+            # tem geometria: e um runtime velho, montado antes de o cadastro
+            # (ou o modelo) ficar pronto. Remonta uma vez e reavalia, em vez
+            # de mostrar "sem modelo 3D" sem motivo nenhum ate o servidor
+            # reiniciar. As invalidacoes em dispositivos.py ja cobrem os
+            # caminhos normais; isto e a rede de seguranca.
+            device = registro.recarregar(device_id) or device
+            pronto = device.pronto()
+            if not pronto:
+                motivo = ("o modelo 3D da localidade não pôde ser carregado "
+                          "no servidor; veja os avisos no log do servidor")
     return {
+        "motivo_sem_3d": motivo,
         "camera_local_pos": device.camera_local_pos.tolist() if pronto else None,
         "base_forward": device.base_forward.tolist() if pronto else None,
         "lat": device.lat,

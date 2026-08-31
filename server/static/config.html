@@ -4,49 +4,16 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Configuração - Barragem Oiticica</title>
+<link rel="stylesheet" href="/estatico/layout.css" />
 <style>
-  :root {
-    --bg: #0b1220; --panel: #121b2e; --border: #223049;
-    --text: #dbe4f3; --muted: #8093b3; --accent: #4fa3ff; --danger: #ff5c5c; --ok: #3f9c5c;
-  }
-  body.tema-claro {
-    --bg: #f5f7fa; --panel: #ffffff; --border: #d5dbe5;
-    --text: #16202f; --muted: #5a6a85; --accent: #1668c4; --danger: #c62828; --ok: #12703a;
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, sans-serif; }
-  #topo {
-    display:flex; align-items:center; gap:14px; padding:12px 20px;
-    border-bottom:1px solid var(--border); background:var(--panel);
-  }
-  #topo h1 { font-size:14px; margin:0; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
-  #topo .espaco { flex:1; }
-  #topo a, #topo button {
-    color:var(--text); text-decoration:none; font-size:13px; background:transparent;
-    border:1px solid var(--border); border-radius:6px; padding:6px 12px; cursor:pointer;
-    font-family:inherit;
-  }
-  #topo a:hover, #topo button:hover { border-color:var(--accent); }
-  main { max-width:640px; margin:0 auto; padding:24px 20px 60px; }
+  /* Tokens, casca, tabela, formulario e botoes vem de
+     /estatico/layout.css. Aqui fica so o que e desta tela. */
+  main { max-width:660px; margin:0 auto; }
   section {
-    background:var(--panel); border:1px solid var(--border); border-radius:10px;
-    padding:18px 20px; margin-bottom:20px;
+    background:var(--panel); border:1px solid var(--border); border-radius:var(--raio);
+    box-shadow:var(--sombra); padding:18px 20px; margin-bottom:20px;
   }
-  section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 14px; }
-  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 5px; }
-  input, select {
-    width:100%; padding:8px 10px; background:var(--bg); color:var(--text);
-    border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit;
-  }
-  button.acao {
-    margin-top:14px; padding:8px 16px; background:var(--accent); color:#fff;
-    border:0; border-radius:6px; font-size:13px; cursor:pointer; font-family:inherit;
-  }
-  button.acao:disabled { opacity:.6; cursor:wait; }
-  button.perigo { background:var(--danger); }
-  .msg { font-size:12px; margin-top:10px; min-height:14px; }
-  .msg.erro { color:var(--danger); }
-  .msg.ok { color:var(--ok); }
+  section h2 { font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin:0 0 14px; font-weight:600; }
   #banner-troca {
     display:none; background:#3a2a10; border:1px solid #a8871f; color:#f0d999;
     border-radius:8px; padding:10px 14px; font-size:12px; margin-bottom:20px;
@@ -58,24 +25,16 @@
     color:var(--muted); border-radius:6px; cursor:pointer; font-size:13px; font-family:inherit;
   }
   .tema-row button.sel { border-color:var(--accent); color:var(--text); }
-  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; }
-  th, td { text-align:left; padding:7px 6px; border-bottom:1px solid var(--border); }
-  th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; }
+  table { margin-top:6px; }
   td .tag { font-size:10px; padding:1px 6px; border-radius:999px; border:1px solid var(--border); }
-  td button { font-size:11px; padding:4px 8px; margin-right:4px; }
   #form-criar { display:grid; grid-template-columns: 1fr 1fr; gap:0 12px; }
   #form-criar .full { grid-column: 1 / -1; }
 </style>
 </head>
 <body>
-<div id="topo">
-  <h1>Configuração</h1>
-  <div class="espaco"></div>
-  <span id="quem" style="font-size:12px;color:var(--muted)"></span>
-  <a href="/">← Painel</a>
-  <a href="/dispositivos">Dispositivos</a>
-  <button id="btn-sair" type="button">Sair</button>
-</div>
+<div class="app-shell" id="shell">
+  <div class="conteudo">
+    <div class="pagina pagina--rola">
 
 <main>
   <div id="banner-troca">
@@ -135,9 +94,17 @@
   </section>
 </main>
 
+    </div><!-- .pagina -->
+  </div><!-- .conteudo -->
+</div><!-- .app-shell -->
+
+<script src="/estatico/layout.js"></script>
 <script>
 const SERVER_BASE = window.location.origin;
 let eu = null;
+
+// Menu lateral, barra de titulo, usuario logado e "Sair": /estatico/layout.js.
+Layout.montar({ ativo: "config", titulo: "Configuração" });
 
 function aplicarTema(tema) {
   document.body.classList.toggle("tema-claro", tema === "claro");
@@ -160,11 +127,6 @@ async function definirTema(tema) {
 
 document.querySelectorAll(".tema-row button").forEach(b => {
   b.addEventListener("click", () => definirTema(b.dataset.tema));
-});
-
-document.getElementById("btn-sair").addEventListener("click", async () => {
-  try { await fetch(`${SERVER_BASE}/api/logout`, { method: "POST" }); } catch (e) {}
-  location.href = "/login";
 });
 
 document.getElementById("form-senha").addEventListener("submit", async (ev) => {
@@ -280,7 +242,8 @@ async function init() {
     location.href = "/login";
     return;
   }
-  document.getElementById("quem").textContent = `${eu.username} (${eu.papel})`;
+  // O layout.js ja mostra quem esta logado no rodape do menu; aqui o
+  // aplicarTema local e o que marca qual botao de tema esta selecionado.
   aplicarTema(eu.tema || "escuro");
 
   const params = new URLSearchParams(location.search);
