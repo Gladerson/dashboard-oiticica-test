@@ -346,23 +346,37 @@ def instalar(app, contexto: Contexto):
 
     # ---- descida: dashboard -> servidor -> Pi (por device_id) --------------
     @app.post("/api/stream/start")
-    def stream_start(device_id: str):
+    def stream_start(device_id: str, largura: str | None = None):
+        """'largura' e de quantos pixels o dashboard precisa de fato (o
+        painel direito e redimensionavel). Sem ela, vale o padrao do
+        servidor."""
         device = rd.por_id(device_id)
         if device is None:
             return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
-        snap = device.estado.mudar(stream_expira=time.time() + rd.STREAM_JANELA_S)
+        snap = device.estado.mudar(
+            stream_expira=time.time() + rd.STREAM_JANELA_S,
+            stream_largura=rd.largura_stream_valida(largura),
+        )
         return {"status": "ok", "janela_s": rd.STREAM_JANELA_S, "estado": snap}
 
     @app.post("/api/stream/renovar")
-    def stream_renovar(device_id: str):
+    def stream_renovar(device_id: str, largura: str | None = None):
         device = rd.por_id(device_id)
         if device is None:
             return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
         with device.estado.lock:
             ativo = device.estado.stream_expira > time.time()
+            largura_atual = device.estado.stream_largura
         if not ativo:
             return {"status": "inativo"}
-        snap = device.estado.mudar(stream_expira=time.time() + rd.STREAM_JANELA_S)
+        nova = rd.largura_stream_valida(largura)
+        campos = {"stream_expira": time.time() + rd.STREAM_JANELA_S}
+        # So mexe na largura se ela realmente mudou: cada 'mudar' incrementa
+        # a versao do estado e dispara um push pro Pi, e a renovacao roda a
+        # cada movimento de PTZ.
+        if nova is not None and nova != largura_atual:
+            campos["stream_largura"] = nova
+        snap = device.estado.mudar(**campos)
         return {"status": "ok", "estado": snap}
 
     @app.post("/api/stream/stop")

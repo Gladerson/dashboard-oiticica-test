@@ -553,6 +553,36 @@ faixa larga, o F2 escolhe o extremo inferior por artefato. Prefira um **patamar
 estável**, onde dois limiares vizinhos produzem exatamente os mesmos acertos e
 erros.
 
+### O que pode (e o que não pode) mudar a detecção
+
+O caminho de visão computacional é **isolado** do trabalho de painel/servidor.
+Só três coisas alteram *se* uma rachadura é detectada:
+
+| O quê | Onde | Muda a detecção? |
+|---|---|---|
+| Pesos do modelo (`best_backbone.hef`, `best_head.onnx`) | só no Pi, **fora do Git** | sim — mas só ao recompilar (§6) |
+| Pré/pós-processamento (`letterbox`, decodificação, `nms`) | `edge/inferencia_hailo.py` | sim |
+| Limiar de confiança (`conf`) | `edge/.env` **e** estado desejado | sim — ver abaixo |
+| `contorno_normalizado` (contorno da máscara) | `edge/inferencia_hailo.py` | **não** — é só o desenho da máscara já detectada |
+| Servidor, dashboard, cadastro, layout | `server/`, `static/` | **não** |
+
+Os pesos nunca entraram no repositório (`.hef`/`.onnx`/`.pt` estão no
+`.gitignore`), então nenhum commit consegue alterá-los: eles só mudam quando
+alguém roda o pipeline do §6 e copia os arquivos para o Pi.
+
+Desde que o pipeline de borda foi escrito (28/08), a **única** alteração em
+`edge/inferencia_hailo.py` foi em `contorno_normalizado`
+(`max_pontos` 24→64, `eps` 0.01→0.003) — uma função que roda **depois** da
+detecção, apenas para desenhar o contorno da máscara no dashboard.
+`letterbox`, a decodificação das saídas e o `nms` estão byte a byte iguais
+ao original, assim como `_jpeg`, `stream_loop` e `aplicar_estado` em
+`edge/agente_borda.py`. Para conferir você mesmo:
+
+```bash
+git log --oneline -- edge/inferencia_hailo.py
+git diff <primeiro-commit> HEAD -- edge/inferencia_hailo.py
+```
+
 ### O limiar existe em dois lugares
 
 `CONF_THRESHOLD` no `edge/.env` é apenas o **valor inicial**. Assim que o
@@ -631,6 +661,21 @@ metadados. Ao clicar, o servidor registra "quero stream por 60 s" no estado
 desejado; o Pi passa a publicar quadros JPEG; clicar de novo cancela. O servidor
 guarda o último quadro e avisa o navegador por WebSocket, que então o busca em
 `/api/stream/atual.jpg`.
+
+**A largura do stream acompanha o tamanho da telinha.** O dashboard manda em
+`/api/stream/start|renovar` de quantos pixels ele precisa de fato
+(largura exibida × `devicePixelRatio`, limitada a
+`LARGURA_STREAM_MIN`/`STREAM_LARGURA_MAX` = 320–1280), e isso entra no estado
+desejado como `stream.largura`. Sem isso, com o painel direito
+redimensionável, pedir sempre 640 px fazia o navegador **ampliar** a imagem
+justamente quando o operador alargava a telinha para enxergar melhor — o
+efeito era o stream “perder qualidade” ao ser aumentado. O Pi só
+**reduz** (`if w > largura`), nunca amplia: pedir mais que a resolução da
+câmera devolve o nativo, não um upscale artificial.
+
+Se o stream for pedido e nenhum quadro chegar em ~6 s, o painel diz o motivo
+provável (dispositivo offline, ou o dispositivo selecionado não é o que está
+ligado) em vez de deixar a telinha preta sem explicação.
 
 ### Ciclo de vida dos alertas
 
@@ -998,6 +1043,20 @@ Bearer agora).
 ## 13. Resolução de problemas
 
 Casos reais da implantação, com a causa e não apenas a solução.
+
+**O modelo 3D aparece “esvaecido” e não gira com o mouse** — não era o
+modelo nem a iluminação: o aviso “sem modelo 3D pronto” (`#viewport-sem-3d`)
+estava **sempre** desenhado por cima dele. A causa é uma pegadinha de CSS:
+o aviso tem `display:flex` num seletor de **id**, e isso vence a regra
+`[hidden] { display: none }` do navegador — ou seja, o atributo `hidden`
+deixa de esconder. O resultado era um véu escuro de 55 % (o “esvaecido”) que
+ainda por cima cobria `inset:0` e engolia os cliques antes de eles chegarem
+ao canvas, deixando o `OrbitControls` inerte. Corrigido com a guarda
+explícita `#viewport-sem-3d[hidden] { display: none; }`.
+
+> Vale para qualquer elemento novo: **se você definir `display` num seletor
+> de id ou classe, acrescente a guarda `[hidden]`**, senão o atributo
+> `hidden` vira decoração. O `#modal-status` do mesmo arquivo já fazia isso.
 
 **“Este dispositivo ainda não tem um modelo 3D pronto”, mesmo com o `.glb`
 enviado e o dispositivo cadastrado** — havia duas causas distintas, e o
