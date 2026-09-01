@@ -194,6 +194,13 @@
     text-align: center; padding: 24px; color: var(--muted); font-size: 13px; line-height: 1.6;
     background: rgba(11, 18, 32, 0.55); z-index: 5;
   }
+  /* OBRIGATORIO por causa da linha acima: `display` num seletor de ID vence
+     a regra `[hidden] { display: none }` do navegador, entao o atributo
+     hidden deixa de esconder. Sem esta guarda o aviso fica SEMPRE visivel
+     por cima do modelo -- um veu escuro de 55% (modelo "esvaecido") que
+     ainda por cima engole os cliques, deixando o modelo impossivel de
+     girar com o mouse. */
+  #viewport-sem-3d[hidden] { display: none; }
   body.tema-claro #viewport-sem-3d { background: rgba(255, 255, 255, 0.55); }
   .dispositivo-tag {
     display: inline-block; background: var(--panel); border: 1px solid var(--border);
@@ -986,6 +993,7 @@ ws.onmessage = (ev) => {
   if (msg.type === "frame" && streamAtivo && mesmoDispositivo) {
     // O servidor so avisa "chegou o frame N"; o navegador busca a imagem.
     // O ?s= e o que impede o cache do navegador de congelar a telinha.
+    chegouQuadro = true;
     videoFeed.src = `${SERVER_BASE}/api/stream/atual.jpg?s=${msg.seq}&device_id=${encodeURIComponent(deviceId)}`;
     videoFeed.style.opacity = 1;
   }
@@ -1711,21 +1719,53 @@ async function loadHistory() {
 let streamAtivo = false;
 let streamFimEm = 0;
 let janelaStream = 60;
+let bordaOnline = null;   // null = ainda nao sabemos (primeiro /api/borda)
 
 const videoWrap = document.getElementById("video-wrap");
 const videoFeed = document.getElementById("video-feed");
 
 videoWrap.addEventListener("click", () => alternarStream());
 
+// Quantos pixels a telinha realmente ocupa na tela. Como o painel direito
+// é redimensionável, pedir sempre 640 px fazia o navegador AMPLIAR a imagem
+// quando o operador alargava a telinha -- justo quando ele quer enxergar
+// melhor. devicePixelRatio entra porque numa tela HiDPI cada pixel CSS são
+// dois físicos. O servidor limita o valor (LARGURA_STREAM_MIN/MAX).
+function larguraDesejadaDoStream() {
+  const css = videoWrap.clientWidth || 640;
+  const escala = Math.min(window.devicePixelRatio || 1, 2);
+  return Math.round(css * escala);
+}
+
+// Se o stream foi pedido e nenhum quadro chega, o silêncio não explica nada.
+// Este vigia diz o motivo mais provável em vez de deixar a telinha preta.
+let vigiaPrimeiroQuadro = null;
+let chegouQuadro = false;
+
+function armarVigiaDeQuadro() {
+  clearTimeout(vigiaPrimeiroQuadro);
+  chegouQuadro = false;
+  vigiaPrimeiroQuadro = setTimeout(() => {
+    if (!streamAtivo || chegouQuadro) return;
+    const nome = (dispositivosDisponiveis.find(d => d.id === deviceId) || {}).nome || "este dispositivo";
+    toast(bordaOnline === false
+      ? `Nenhuma imagem: “${nome}” está offline (o Raspberry não está falando com o servidor).`
+      : `Nenhuma imagem ainda de “${nome}”. Se houver mais de um dispositivo cadastrado, `
+        + `confira no seletor se o escolhido é o que está ligado.`, 6000);
+  }, 6000);
+}
+
 async function alternarStream(forcar) {
   if (!deviceId) return;
   const ligar = (forcar === undefined) ? !streamAtivo : forcar;
   try {
-    const r = await fetch(`${SERVER_BASE}/api/stream/${ligar ? "start" : "stop"}?device_id=${encodeURIComponent(deviceId)}`,
+    const largura = ligar ? `&largura=${larguraDesejadaDoStream()}` : "";
+    const r = await fetch(`${SERVER_BASE}/api/stream/${ligar ? "start" : "stop"}?device_id=${encodeURIComponent(deviceId)}${largura}`,
                           { method: "POST" });
     const j = await r.json();
     if (j.janela_s) janelaStream = j.janela_s;
     aplicarEstadoStream(ligar, ligar ? janelaStream : 0);
+    if (ligar) armarVigiaDeQuadro(); else clearTimeout(vigiaPrimeiroQuadro);
     toast(ligar
       ? `Stream pedido ao Raspberry — para sozinho em ${janelaStream | 0}s.`
       : "Stream encerrado. Voltamos a trafegar só metadados.");
@@ -1747,7 +1787,8 @@ function aplicarEstadoStream(ativo, restante) {
 async function renovarStreamSeAtivo() {
   if (!streamAtivo || !deviceId) return;
   try {
-    const r = await fetch(`${SERVER_BASE}/api/stream/renovar?device_id=${encodeURIComponent(deviceId)}`,
+    const r = await fetch(`${SERVER_BASE}/api/stream/renovar?device_id=${encodeURIComponent(deviceId)}`
+                          + `&largura=${larguraDesejadaDoStream()}`,
                           { method: "POST" });
     if ((await r.json()).status === "ok")
       streamFimEm = Date.now() + janelaStream * 1000;
@@ -1825,6 +1866,7 @@ async function atualizarPainelBorda() {
   }
 
   const rel = j.relatado || {};
+  bordaOnline = !!j.online;   // usado pelo vigia do primeiro quadro
   const online = document.getElementById("pill-online");
   online.textContent = j.online
     ? `borda: ${rel.transporte || j.estado.transporte}`

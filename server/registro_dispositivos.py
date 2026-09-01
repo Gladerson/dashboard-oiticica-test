@@ -46,6 +46,24 @@ STREAM_LARGURA = int(os.getenv("STREAM_LARGURA", "640"))
 STREAM_QUALIDADE = int(os.getenv("STREAM_QUALIDADE", "60"))
 STREAM_ANOTADO = os.getenv("STREAM_ANOTADO", "true").lower() in ("1", "true", "sim")
 
+# Limites da largura que o dashboard pode pedir. O teto existe para o Pi nao
+# gastar CPU/rede codificando mais pixels do que qualquer tela mostra; o piso
+# evita que um painel muito estreito peca uma imagem inutilizavel.
+LARGURA_STREAM_MIN = 320
+LARGURA_STREAM_MAX = int(os.getenv("STREAM_LARGURA_MAX", "1280"))
+
+
+def largura_stream_valida(largura):
+    """Normaliza a largura pedida pelo dashboard. None (ou lixo) -> None,
+    que faz o snapshot cair no padrao do servidor."""
+    if largura is None:
+        return None
+    try:
+        v = int(largura)
+    except (TypeError, ValueError):
+        return None
+    return max(LARGURA_STREAM_MIN, min(LARGURA_STREAM_MAX, v))
+
 # --- Cone de visao (globais: abertura de lente e faixa de zoom sao
 # propriedade da CAMERA/lente, nao da localidade -- mesmo espirito de
 # PAN_SIGN/TILT_SIGN em glb_geo.py) ------------------------------------------
@@ -83,6 +101,12 @@ class EstadoDesejado:
         self.versao = 1
         self.transporte = "http"
         self.stream_expira = 0.0
+        # None = usa o padrao do servidor (STREAM_LARGURA). O dashboard
+        # informa de quantos pixels ele precisa de verdade: com o painel
+        # direito redimensionavel, pedir sempre 640 px fazia o navegador
+        # AMPLIAR a imagem quando o operador alargava a telinha -- que e
+        # justamente quando ele quer ver melhor. Ver LARGURA_STREAM_MIN/MAX.
+        self.stream_largura = None
         self.inferencia = {"conf": 0.45, "iou": 0.45,
                            "intervalo_frames": 5, "cooldown_s": 5}
         self.pedidos_imagem = []
@@ -100,7 +124,7 @@ class EstadoDesejado:
                 "ativo": restante > 0,
                 "restante_s": round(restante, 1),
                 "fps": STREAM_FPS,
-                "largura": STREAM_LARGURA,
+                "largura": self.stream_largura or STREAM_LARGURA,
                 "qualidade": STREAM_QUALIDADE,
                 "anotado": STREAM_ANOTADO,
             },
