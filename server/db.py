@@ -301,6 +301,28 @@ def criar_localidade(nome, utm_zone, utm_hemisferio_sul, geo_offset_x, geo_offse
         ).fetchone()
 
 
+# O georreferenciamento pertence ao MODELO, nao ao "lugar": cada .glb sai da
+# fotogrametria com o seu proprio offset UTM (odm_georeferencing_model_geo.txt).
+# Trocar o .glb de uma localidade sem trocar o offset desloca tudo -- por isso
+# estes campos precisam ser editaveis depois de criados.
+CAMPOS_EDITAVEIS_LOCALIDADE = (
+    "nome", "utm_zone", "utm_hemisferio_sul",
+    "geo_offset_x", "geo_offset_y", "geo_offset_z", "model_up_axis",
+)
+
+
+def atualizar_localidade(localidade_id, campos):
+    """Atualiza so as chaves presentes em 'campos'. Retorna a linha nova."""
+    campos = {k: v for k, v in campos.items() if k in CAMPOS_EDITAVEIS_LOCALIDADE}
+    if not campos:
+        return localidade_por_id(localidade_id)
+    atribuicoes = ", ".join(f"{k} = %s" for k in campos)
+    valores = list(campos.values()) + [localidade_id]
+    with pool.connection() as conn:
+        conn.execute(f"UPDATE localidades SET {atribuicoes} WHERE id = %s", valores)
+    return localidade_por_id(localidade_id)
+
+
 def excluir_localidade(localidade_id):
     with pool.connection() as conn:
         conn.execute("DELETE FROM localidades WHERE id = %s", (localidade_id,))

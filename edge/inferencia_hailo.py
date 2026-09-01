@@ -264,11 +264,24 @@ def contorno_normalizado(mascara, bbox, largura, altura, max_pontos=64):
     if not contornos:
         return []
     maior = max(contornos, key=cv2.contourArea)
-    eps = 0.003 * cv2.arcLength(maior, True)
-    aprox = cv2.approxPolyDP(maior, eps, True).reshape(-1, 2)
-    if len(aprox) > max_pontos:
-        idx = np.linspace(0, len(aprox) - 1, max_pontos).astype(int)
-        aprox = aprox[idx]
+    perimetro = cv2.arcLength(maior, True)
+
+    # Quando nao cabe em max_pontos, AUMENTA o eps e simplifica de novo, em
+    # vez de descartar vertices uniformemente. O approxPolyDP (Douglas-
+    # Peucker) escolhe justamente os vertices que sustentam a forma; jogar
+    # fora 2 de cada 3 "na regua" descarta esses e mantem outros
+    # arbitrarios, deformando o contorno (cantos cortados, e ate
+    # auto-intersecao). Simplificar de novo com eps maior devolve um
+    # poligono menor que continua sendo uma simplificacao COERENTE.
+    eps = 0.003 * perimetro
+    for _ in range(24):
+        aprox = cv2.approxPolyDP(maior, eps, True).reshape(-1, 2)
+        if len(aprox) <= max_pontos:
+            break
+        eps *= 1.35
+    else:
+        aprox = aprox[:max_pontos]
+
     x0, y0 = bbox[0], bbox[1]
     return [[round((x0 + px) / largura, 4), round((y0 + py) / altura, 4)]
             for px, py in aprox]

@@ -375,6 +375,34 @@ logado (não só admin). Duas listas:
   trecho pronto para colar no `edge/.env` daquele Raspberry ("Ver
   credenciais" na listagem).
 
+#### O offset UTM pertence ao MODELO, não ao “lugar”
+
+Cada `.glb` sai da fotogrametria com o seu próprio offset
+(`odm_georeferencing_model_geo.txt`): as coordenadas dentro do arquivo são
+**UTM menos esse offset**. Dois recortes da mesma parede têm offsets
+diferentes — por exemplo, na Barragem Oiticica:
+
+| Recorte | Offset X | Offset Y |
+|---|---|---|
+| pedaço maior | 707728 | 9319402 |
+| pedaço menor | 707543 | 9319434 |
+
+Trocar o `.glb` de uma localidade **sem trocar o offset junto** desloca a
+câmera e todas as detecções exatamente pela diferença entre os dois — nesse
+par, 185 m em X e 32 m em Y, **187,7 m** de erro. O modelo aparece
+normalmente; o que sai do lugar é a *pose* dentro dele. É o sintoma clássico
+de “a detecção e a câmera caem em pontos diferentes”.
+
+Duas formas de trabalhar, as duas corretas:
+
+- **Uma localidade por modelo** (recomendado): “Oiticica — recorte maior” e
+  “Oiticica — recorte menor”, cada uma com o seu offset. Trocar de modelo
+  vira trocar a localidade do dispositivo em **Editar**, sem mexer em
+  número nenhum.
+- **Uma localidade só, trocando o `.glb`**: aí, depois de enviar o novo
+  arquivo, use **Editar** na localidade e ajuste o offset. O painel avisa
+  disso ao substituir um modelo que já existia.
+
 #### Para o dispositivo ter visão 3D
 
 São **três** condições, e a coluna “Localidade” da listagem diz qual está
@@ -665,13 +693,29 @@ guarda o último quadro e avisa o navegador por WebSocket, que então o busca em
 **A largura do stream acompanha o tamanho da telinha.** O dashboard manda em
 `/api/stream/start|renovar` de quantos pixels ele precisa de fato
 (largura exibida × `devicePixelRatio`, limitada a
-`LARGURA_STREAM_MIN`/`STREAM_LARGURA_MAX` = 320–1280), e isso entra no estado
+`LARGURA_STREAM_MIN`/`STREAM_LARGURA_MAX` = 320–960), e isso entra no estado
 desejado como `stream.largura`. Sem isso, com o painel direito
 redimensionável, pedir sempre 640 px fazia o navegador **ampliar** a imagem
 justamente quando o operador alargava a telinha para enxergar melhor — o
 efeito era o stream “perder qualidade” ao ser aumentado. O Pi só
 **reduz** (`if w > largura`), nunca amplia: pedir mais que a resolução da
 câmera devolve o nativo, não um upscale artificial.
+
+O teto de 960 px é conservador de propósito: cada quadro maior custa CPU de
+codificação **no Pi**, e é a mesma CPU que roda a inferência — um stream
+grande demais competiria com a detecção de rachaduras, que é a função
+principal do equipamento. Ajustável por `STREAM_LARGURA_MAX`.
+
+**Duas regras que evitam congestionar a rede e travar o PTZ:**
+
+- a janela do stream é renovada **no máximo uma vez a cada 10 s** (ela dura
+  60 s), e não a cada tique de PTZ;
+- um quadro novo é **descartado** se o anterior ainda estiver baixando —
+  vídeo ao vivo quer o quadro mais recente, não uma fila deles.
+
+Sem as duas, segurar um botão de PTZ gerava ~10 requisições por segundo, o
+navegador esgotava as conexões simultâneas e os comandos ficavam na fila: a
+câmera parava de responder por alguns segundos e depois voltava sozinha.
 
 Se o stream for pedido e nenhum quadro chegar em ~6 s, o painel diz o motivo
 provável (dispositivo offline, ou o dispositivo selecionado não é o que está
@@ -904,6 +948,7 @@ Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
 | `/dispositivos` | GET | sessão | tela de cadastro de localidades/dispositivos |
 | `/api/localidades` | GET/POST | sessão | listar / criar localidade |
 | `/api/localidades/{id}` | GET/DELETE | sessão | obter / excluir localidade |
+| `/api/localidades/{id}` | PATCH | sessão | corrigir georreferenciamento (offset UTM, zona, eixo) sem apagar a localidade |
 | `/api/localidades/{id}/modelo` | POST | sessão | upload do `.glb` (multipart); descomprime Draco em segundo plano |
 
 ### Payloads
@@ -947,6 +992,35 @@ bem escalares e strings, mas trata mal arrays aninhados dentro de `values`. O
 contorno da máscara são até 64 pares de números (~1 KB) em vez de dezenas de KB
 de JPEG — é o próprio `poly` que o dashboard desenha em cima da foto no "Ver
 máscara" (não existe uma segunda imagem com a máscara desenhada, ver §8).
+
+#### Por que o contorno tem 64 pontos (e não 24)
+
+Enquanto o `poly` só servia para deduplicar detecções, ninguém o via: 24
+pontos com `eps = 1 %` do perímetro bastavam. Quando a detecção deixou de
+enviar imagem e o "Ver máscara" passou a **desenhar o `poly`** por cima da
+foto, essa simplificação virou o que o operador enxerga — e 24 pontos num
+contorno de fissura ficam visivelmente grosseiros. Medido numa máscara
+sintética de fissura ramificada (IoU contra a máscara original):
+
+| Parâmetros | Pontos | IoU |
+|---|---|---|
+| 24 pontos, `eps` 1 % | ~11 | 0,247 |
+| 64 pontos, `eps` 0,3 % | ~39 | 0,634 |
+
+Ou seja: os 64 pontos são bem **mais** fiéis, e continuam custando ~1 KB.
+
+O que estava errado era o **corte** quando o contorno não cabia em 64
+pontos: o código descartava vértices uniformemente (`linspace`), o que joga
+fora justamente os vértices que o `approxPolyDP` (Douglas-Peucker) escolheu
+por sustentarem a forma, e mantém outros arbitrários — cantos cortados e até
+auto-interseção. Agora, se não couber, o `eps` **aumenta** e simplifica de
+novo: o polígono continua sendo uma simplificação coerente. Em contornos que
+disparam esse caminho a fidelidade sobe ~20 %; nos que não disparam (a
+maioria) o resultado é idêntico ao anterior.
+
+No **stream** a máscara sempre pareceu boa porque ali quem desenha é o
+próprio Pi, com a máscara de pixels inteira (`STREAM_ANOTADO`) — não passa
+por simplificação nenhuma.
 
 Estado desejado (servidor → Pi):
 
@@ -1044,6 +1118,48 @@ Bearer agora).
 
 Casos reais da implantação, com a causa e não apenas a solução.
 
+**A câmera e as detecções caem em pontos diferentes do modelo** — quase
+sempre é offset UTM trocado: o `.glb` foi substituído por outro recorte da
+mesma parede e o georreferenciamento continuou o do recorte antigo. Ver
+“O offset UTM pertence ao MODELO” (§5.1a-bis) e corrija em **Editar** na
+localidade.
+
+**Detecções “fantasma”, presas em “Solicitando imagem completa”** — a
+tradução entre o `det_id` do Raspberry e o id do histórico do servidor era
+feita só por um mapa **em memória** (`device.mapa_det`). Esse mapa se perde
+a cada reinício do servidor, a cada edição do dispositivo e ao recadastrá-lo
+— e aí “Abrir” pedia uma foto que ninguém mais sabia associar, sem nunca
+falhar de forma visível. O id da borda já era gravado no histórico
+(`borda_det_id`); agora é ele a fonte de verdade nos dois sentidos (pedido e
+recebimento), com o mapa em memória só como atalho. O modal também desiste
+depois de 15 s e explica, em vez de girar para sempre.
+
+**O vídeo some e o PTZ “trava” por alguns segundos, depois volta** —
+excesso de requisições simultâneas, não a rede. A renovação da janela de
+stream era disparada a **cada tique de PTZ** (300 ms enquanto o botão está
+pressionado): eram ~3 POSTs por segundo, cada um incrementando a versão do
+estado desejado e disparando um push para o Pi, somados a 4 quadros/s e ao
+`/api/borda`. Isso estoura o limite de conexões simultâneas do navegador e
+os comandos de PTZ ficam na fila. Agora a renovação é limitada a uma a cada
+10 s (a janela dura 60 s) e um quadro novo é **descartado** se o anterior
+ainda estiver baixando — vídeo ao vivo quer o quadro mais recente, não uma
+fila deles.
+
+**`server/history/` e `edge/evidencias/` têm contagens diferentes** — isso é
+esperado, não é bug. São coisas distintas:
+
+| Pasta | O que guarda | Quando cresce |
+|---|---|---|
+| `edge/evidencias/` (Pi) | o frame cru de **todo alerta novo** | a cada detecção que o servidor confirma como alerta novo |
+| `server/history/` | só as fotos que **alguém pediu** (“Abrir”) | quando o operador abre um alerta e a foto sobe |
+
+O `index.json` do servidor tem uma entrada por alerta; os arquivos `.jpg` em
+`history/` são um subconjunto — só os que foram solicitados. 8 evidências no
+Pi para 2 imagens no servidor significa que 8 alertas foram registrados e 2
+tiveram a foto pedida. É exatamente o “evidência sob demanda” do §8. Se o
+número de **alertas** no dashboard for menor que o de evidências no Pi, aí
+sim há algo a investigar (ver a entrada sobre evidência acima).
+
 **O modelo 3D aparece “esvaecido” e não gira com o mouse** — não era o
 modelo nem a iluminação: o aviso “sem modelo 3D pronto” (`#viewport-sem-3d`)
 estava **sempre** desenhado por cima dele. A causa é uma pegadinha de CSS:
@@ -1057,6 +1173,14 @@ explícita `#viewport-sem-3d[hidden] { display: none; }`.
 > Vale para qualquer elemento novo: **se você definir `display` num seletor
 > de id ou classe, acrescente a guarda `[hidden]`**, senão o atributo
 > `hidden` vira decoração. O `#modal-status` do mesmo arquivo já fazia isso.
+
+**A máscara em “Ver máscara” às vezes sai deslocada ou deformada** — o
+contorno vem em coordenadas 0..1 **do frame**, então só cai no lugar se a
+caixa do `<img>` já for a da foto. O desenho era feito logo depois de
+atribuir o `src`, sem esperar a imagem carregar: enquanto ela não chegava, o
+`<img>` tinha o tamanho mínimo do CSS (200×120) — outra proporção — e a
+máscara saía esticada. Como dependia de a foto estar em cache ou não, o
+defeito era intermitente. Agora o desenho espera o `load` da imagem.
 
 **“Este dispositivo ainda não tem um modelo 3D pronto”, mesmo com o `.glb`
 enviado e o dispositivo cadastrado** — havia duas causas distintas, e o

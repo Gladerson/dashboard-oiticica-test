@@ -46,11 +46,13 @@ STREAM_LARGURA = int(os.getenv("STREAM_LARGURA", "640"))
 STREAM_QUALIDADE = int(os.getenv("STREAM_QUALIDADE", "60"))
 STREAM_ANOTADO = os.getenv("STREAM_ANOTADO", "true").lower() in ("1", "true", "sim")
 
-# Limites da largura que o dashboard pode pedir. O teto existe para o Pi nao
-# gastar CPU/rede codificando mais pixels do que qualquer tela mostra; o piso
+# Limites da largura que o dashboard pode pedir. O teto e conservador de
+# proposito: cada quadro maior custa CPU de codificacao JPEG NO PI, e essa
+# CPU e a mesma que roda a inferencia -- stream grande demais competiria com
+# a deteccao de rachaduras, que e a funcao principal do equipamento. O piso
 # evita que um painel muito estreito peca uma imagem inutilizavel.
 LARGURA_STREAM_MIN = 320
-LARGURA_STREAM_MAX = int(os.getenv("STREAM_LARGURA_MAX", "1280"))
+LARGURA_STREAM_MAX = int(os.getenv("STREAM_LARGURA_MAX", "960"))
 
 
 def largura_stream_valida(largura):

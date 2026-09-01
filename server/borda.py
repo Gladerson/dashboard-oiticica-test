@@ -238,11 +238,35 @@ def _anotar_historico(det_servidor, v):
     return campos
 
 
+def _det_servidor_de(device, borda_det_id):
+    """Traduz o id de deteccao DA BORDA para o id do historico do servidor.
+
+    O mapa em memoria (device.mapa_det) e so um atalho: ele se perde quando
+    o servidor reinicia, quando o dispositivo e editado/recadastrado (o
+    runtime e remontado) ou quando a localidade e invalidada. Por isso a
+    fonte de verdade e o proprio historico, que ja grava 'borda_det_id' em
+    _anotar_historico. Sem esta busca, deteccoes antigas viravam
+    "fantasmas": o operador clicava em Abrir e a foto nunca chegava, porque
+    ninguem mais sabia a qual id da borda elas correspondiam."""
+    if not borda_det_id:
+        return None
+    atalho = device.mapa_det.get(borda_det_id)
+    if atalho:
+        return atalho
+    entrada = next((e for e in ctx.ler_indice()
+                    if e.get("borda_det_id") == borda_det_id), None)
+    if entrada is None:
+        return None
+    # Reaquece o atalho para as proximas trocas deste mesmo alerta.
+    device.mapa_det[borda_det_id] = entrada["id"]
+    return entrada["id"]
+
+
 def _anexar_imagem(device, v):
     """Chegou a evidencia completa pedida pelo operador (ou o aviso de que
     ela nao existe mais no Pi -- ja apagada pela limpeza por teto de disco,
     ou nunca gravada porque a deteccao nao virou alerta novo)."""
-    det_servidor = device.mapa_det.get(v.get("det_id"))
+    det_servidor = _det_servidor_de(device, v.get("det_id"))
     if not det_servidor:
         return {"status": "ignorado"}
     if not v.get("img_b64"):
@@ -433,9 +457,19 @@ def instalar(app, contexto: Contexto):
                 {"error": "dispositivo desta detecção não encontrado (cadastro "
                           "anterior à etapa multi-dispositivo, ou excluído)"},
                 status_code=404)
-        borda_id = next((b for b, s in device.mapa_det.items() if s == det_id), None)
-        if borda_id is None:
-            return JSONResponse({"error": "sem evidencia na borda"}, status_code=404)
+        # O id da borda vem da PROPRIA entrada do historico (gravado em
+        # _anotar_historico). Antes isto era uma busca reversa no mapa em
+        # memoria, que se perde a cada reinicio/edicao do dispositivo -- e
+        # a deteccao virava um "fantasma" preso em "Solicitando imagem".
+        borda_id = entrada.get("borda_det_id")
+        if not borda_id:
+            borda_id = next((b for b, s in device.mapa_det.items() if s == det_id), None)
+        if not borda_id:
+            return JSONResponse(
+                {"error": "esta detecção não tem evidência guardada na borda "
+                          "(o Raspberry só grava a foto do primeiro alerta de "
+                          "cada rachadura)"},
+                status_code=404)
         with device.estado.lock:
             pedidos = list(device.estado.pedidos_imagem)
         if borda_id not in pedidos:

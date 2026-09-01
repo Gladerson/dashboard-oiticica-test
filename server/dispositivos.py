@@ -52,6 +52,17 @@ class LocalidadePayload(BaseModel):
     model_up_axis: str = "Z"
 
 
+class LocalidadeEdicaoPayload(BaseModel):
+    """Edicao parcial (exclude_unset): so o que vier no corpo e alterado."""
+    nome: str | None = None
+    utm_zone: int | None = None
+    utm_hemisferio_sul: bool | None = None
+    geo_offset_x: float | None = None
+    geo_offset_y: float | None = None
+    geo_offset_z: float | None = None
+    model_up_axis: str | None = None
+
+
 class DispositivoPayload(BaseModel):
     nome: str
     proprietario: str | None = None
@@ -192,6 +203,40 @@ def instalar(app):
         except Exception as e:
             return JSONResponse(
                 {"error": f"não consegui criar (nome já existe?): {e}"}, status_code=400)
+        return _localidade_publica(nova)
+
+    @app.patch("/api/localidades/{localidade_id}")
+    def editar_localidade(localidade_id: str, payload: LocalidadeEdicaoPayload,
+                          _usuario=Depends(auth.usuario_atual)):
+        """Corrige o georreferenciamento de uma localidade que JA existe.
+
+        Necessario porque o offset UTM pertence ao MODELO: dois .glb da
+        mesma parede (um recorte maior e um menor) saem da fotogrametria
+        com offsets diferentes. Trocar o .glb sem trocar o offset desloca a
+        camera e as deteccoes em exatamente a diferenca entre os dois --
+        e, sem esta rota, so dava para consertar apagando a localidade
+        (o que desassocia todos os dispositivos)."""
+        loc = db.localidade_por_id(localidade_id)
+        if loc is None:
+            return JSONResponse({"error": "localidade não encontrada"}, status_code=404)
+
+        campos = payload.model_dump(exclude_unset=True)
+        if "nome" in campos:
+            campos["nome"] = (campos["nome"] or "").strip()
+            if not campos["nome"]:
+                return JSONResponse({"error": "nome obrigatorio"}, status_code=400)
+        if "model_up_axis" in campos and campos["model_up_axis"] not in ("Z", "Y"):
+            return JSONResponse({"error": "model_up_axis deve ser Z ou Y"}, status_code=400)
+
+        try:
+            nova = db.atualizar_localidade(localidade_id, campos)
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"não consegui salvar (nome já existe?): {e}"}, status_code=400)
+
+        # A geometria em memoria foi montada com os valores ANTIGOS: descarta
+        # o GeoModel e os runtimes que dependiam dele.
+        registro.invalidar_localidade(localidade_id)
         return _localidade_publica(nova)
 
     @app.delete("/api/localidades/{localidade_id}")
