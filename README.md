@@ -1018,9 +1018,33 @@ novo: o polígono continua sendo uma simplificação coerente. Em contornos que
 disparam esse caminho a fidelidade sobe ~20 %; nos que não disparam (a
 maioria) o resultado é idêntico ao anterior.
 
-No **stream** a máscara sempre pareceu boa porque ali quem desenha é o
-próprio Pi, com a máscara de pixels inteira (`STREAM_ANOTADO`) — não passa
-por simplificação nenhuma.
+#### Quem desenha a máscara — e o que isso custa no servidor
+
+São três atores diferentes, e **o servidor não é um deles**:
+
+| Onde aparece | Quem desenha | Como |
+|---|---|---|
+| **Stream** (telinha ao vivo) | o **Raspberry** | `detector.desenhar()` grava a máscara de pixels inteira no frame **antes** de codificar o JPEG (`STREAM_ANOTADO`) — sem simplificação |
+| **“Ver máscara”** (alerta aberto) | o **navegador** | um `<canvas>` por cima do `<img>`, traçando o polígono `poly` que já veio junto com a detecção (`desenharMascaraCanvas`, `server/static/dashboard.html`) |
+| — | o **servidor** | **nada**: ele só guarda os bytes que chegam e devolve o JSON e o arquivo |
+
+**O servidor não roda inferência nem processamento de imagem — nunca.** Ele
+não importa OpenCV, PIL, ONNX, Torch ou `hailo_platform`; a única biblioteca
+numérica lá é o `numpy`, e é para **geometria** (distâncias e o raycasting
+do cone contra a malha), não para pixels. Quando a foto sob demanda chega do
+Pi, o caminho inteiro é `base64.b64decode(...)` → `f.write(...)`: os bytes
+vão para o disco exatamente como saíram da câmera, sem decodificar, sem
+redesenhar e sem recomprimir.
+
+Ou seja: o custo de "Ver máscara" no servidor é **zero de CPU de visão** —
+serve um JPEG estático e alguns números. Toda a inferência acontece no
+Raspberry, na NPU Hailo (§1). O único trabalho pesado do servidor continua
+sendo o raycasting do cone, que é geometria pura e roda em *threadpool*
+(§8).
+
+Foi essa separação que permitiu a detecção parar de enviar imagem: o
+contorno são ~1 KB de números que servem para deduplicar **e** para
+desenhar, enquanto a foto só sobe se alguém pedir.
 
 Estado desejado (servidor → Pi):
 
