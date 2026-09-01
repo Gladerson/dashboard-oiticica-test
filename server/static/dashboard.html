@@ -347,7 +347,7 @@
       <button id="modal-foto">Solicitar novamente</button>
       <button id="modal-reconhecer">Reconhecer</button>
       <button id="modal-falso">Falso positivo</button>
-      <button onclick="document.getElementById('modal').classList.remove('open')">Fechar</button>
+      <button id="modal-fechar" type="button">Fechar</button>
     </div>
   </div>
 </div>
@@ -993,9 +993,17 @@ ws.onmessage = (ev) => {
   if (msg.type === "frame" && streamAtivo && mesmoDispositivo) {
     // O servidor so avisa "chegou o frame N"; o navegador busca a imagem.
     // O ?s= e o que impede o cache do navegador de congelar a telinha.
+    //
+    // Se o quadro anterior ainda esta baixando, DESCARTA este: video ao
+    // vivo quer o quadro mais novo, nao uma fila deles. Enfileirar era o
+    // que consumia as (poucas) conexoes simultaneas do navegador e deixava
+    // os comandos de PTZ esperando.
     chegouQuadro = true;
-    videoFeed.src = `${SERVER_BASE}/api/stream/atual.jpg?s=${msg.seq}&device_id=${encodeURIComponent(deviceId)}`;
-    videoFeed.style.opacity = 1;
+    if (!quadroBaixando) {
+      quadroBaixando = true;
+      videoFeed.src = `${SERVER_BASE}/api/stream/atual.jpg?s=${msg.seq}&device_id=${encodeURIComponent(deviceId)}`;
+      videoFeed.style.opacity = 1;
+    }
   }
   if (msg.type === "stream" && mesmoDispositivo) {
     aplicarEstadoStream(msg.ativo, msg.ativo ? janelaStream : 0);
@@ -1501,6 +1509,18 @@ document.getElementById("modal-img").addEventListener("load", () => {
 function desenharMascaraCanvas(entry) {
   const img = document.getElementById("modal-img");
   const canvas = document.getElementById("modal-mask-canvas");
+
+  // O contorno vem em coordenadas 0..1 DO FRAME, então só cai no lugar
+  // certo se a caixa do <img> já for a da foto. Enquanto ela não carregou,
+  // o <img> tem o tamanho mínimo do CSS (200x120) -- outra proporção -- e a
+  // máscara sairia esticada e deslocada. Era isso que fazia a máscara
+  // parecer pior/"fora do lugar" de forma intermitente: dependia de a foto
+  // ter chegado antes ou depois do desenho.
+  if (!img.complete || !img.naturalWidth) {
+    img.addEventListener("load", () => desenharMascaraCanvas(entry), { once: true });
+    return;
+  }
+
   const w = img.clientWidth, h = img.clientHeight;
   if (!w || !h) return;
 
@@ -1576,9 +1596,19 @@ function solicitarImagemSeNecessario(id) {
   pedirFotoCheia(id);
 }
 
+document.getElementById("modal-fechar").addEventListener("click", () => {
+  // Fechar cancela o pedido de foto em andamento: sem isto o aviso de
+  // "não chegou" apareceria depois, sobre uma detecção que o operador nem
+  // está mais olhando.
+  cancelarVigiaFoto();
+  modalAlvo = null;
+  document.getElementById("modal").classList.remove("open");
+});
+
 function abrirModal(id) {
   const reg = entradas.get(id);
   if (!reg) return;
+  cancelarVigiaFoto();
   modalAlvo = id;
   mascaraVisivel = false;
 
@@ -1616,6 +1646,7 @@ function abrirModal(id) {
 function aplicarFotoCheia(id) {
   const reg = entradas.get(id);
   if (!reg) return;
+  cancelarVigiaFoto();
   reg.entry.image = `${id}_orig.jpg`;
   renderEntrada(reg);
   if (modalAlvo !== id) return;
@@ -1629,6 +1660,7 @@ function aplicarFotoCheia(id) {
 // O Pi avisou que nao tem mais essa evidencia (limpeza por teto de disco)
 // ou que a deteccao nunca virou alerta novo (duplicata/rearme).
 function aplicarErroFoto(id, erro) {
+  cancelarVigiaFoto();
   if (modalAlvo !== id) return;
   mostrarStatusModal(`Evidência indisponível: ${erro || "não encontrada no Raspberry"}.`);
   document.getElementById("modal-foto").style.display = "";
@@ -1724,6 +1756,12 @@ let bordaOnline = null;   // null = ainda nao sabemos (primeiro /api/borda)
 const videoWrap = document.getElementById("video-wrap");
 const videoFeed = document.getElementById("video-feed");
 
+// Trava simples: enquanto um quadro esta baixando, o proximo aviso do
+// WebSocket e ignorado (ver o handler de "frame").
+let quadroBaixando = false;
+videoFeed.addEventListener("load", () => { quadroBaixando = false; });
+videoFeed.addEventListener("error", () => { quadroBaixando = false; });
+
 videoWrap.addEventListener("click", () => alternarStream());
 
 // Quantos pixels a telinha realmente ocupa na tela. Como o painel direito
@@ -1784,8 +1822,21 @@ function aplicarEstadoStream(ativo, restante) {
   }
 }
 
-async function renovarStreamSeAtivo() {
+// A janela do stream dura 60 s, então renovar de 10 em 10 s já a mantém viva
+// com folga. Sem este limite, a renovação saía a CADA tick de PTZ (300 ms
+// enquanto o botão está pressionado): eram ~3 POSTs por segundo, cada um
+// incrementando a versão do estado desejado e disparando um push para o Pi.
+// Somados aos quadros (4/s) e ao /api/borda, isso estourava o limite de
+// conexões simultâneas do navegador e os comandos de PTZ ficavam na fila --
+// a câmera "travava" por alguns segundos e depois voltava sozinha.
+const INTERVALO_RENOVACAO_MS = 10000;
+let ultimaRenovacao = 0;
+
+async function renovarStreamSeAtivo(forcar = false) {
   if (!streamAtivo || !deviceId) return;
+  const agora = Date.now();
+  if (!forcar && agora - ultimaRenovacao < INTERVALO_RENOVACAO_MS) return;
+  ultimaRenovacao = agora;
   try {
     const r = await fetch(`${SERVER_BASE}/api/stream/renovar?device_id=${encodeURIComponent(deviceId)}`
                           + `&largura=${larguraDesejadaDoStream()}`,
@@ -1831,14 +1882,50 @@ limiarSlider.addEventListener("change", async () => {
   }
 });
 
+// Se a foto pedida nunca chega, o modal não pode ficar preso em
+// "Solicitando imagem completa" para sempre: o Pi pode estar offline, ou a
+// evidência pode já ter sido apagada pelo teto de disco. Passado o prazo,
+// explica e oferece "Solicitar novamente".
+let vigiaFoto = null;
+const ESPERA_FOTO_MS = 15000;
+
+function cancelarVigiaFoto() { clearTimeout(vigiaFoto); vigiaFoto = null; }
+
+function armarVigiaFoto(id) {
+  cancelarVigiaFoto();
+  vigiaFoto = setTimeout(() => {
+    if (modalAlvo !== id) return;
+    const reg = entradas.get(id);
+    if (reg && urlDaImagem(reg.entry)) return;   // chegou nesse meio tempo
+    mostrarStatusModal(
+      bordaOnline === false
+        ? "A foto não chegou: o dispositivo está offline. Tente de novo quando ele voltar."
+        : "A foto não chegou. A evidência pode já ter sido apagada no Raspberry "
+          + "(teto de disco) ou o pedido se perdeu — use “Solicitar novamente”.");
+    document.getElementById("modal-foto").style.display = "";
+  }, ESPERA_FOTO_MS);
+}
+
 async function pedirFotoCheia(id) {
   try {
     const r = await fetch(`${SERVER_BASE}/api/detection/${id}/pedir_imagem`,
                           { method: "POST" });
-    toast(r.ok
-      ? "Pedindo a foto ao Raspberry..."
-      : "Esta detecção não tem evidência guardada na borda.");
+    if (r.ok) {
+      toast("Pedindo a foto ao Raspberry...");
+      armarVigiaFoto(id);
+      return;
+    }
+    // 404 aqui é uma resposta definitiva: não adianta ficar esperando.
+    cancelarVigiaFoto();
+    let motivo = "Esta detecção não tem evidência guardada na borda.";
+    try { motivo = (await r.json()).error || motivo; } catch (e) { /* sem corpo */ }
+    if (modalAlvo === id) {
+      mostrarStatusModal(motivo);
+      document.getElementById("modal-foto").style.display = "";
+    }
+    toast(motivo, 5000);
   } catch (e) {
+    cancelarVigiaFoto();
     toast("Não consegui pedir a foto.");
   }
 }

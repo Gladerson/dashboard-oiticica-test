@@ -64,18 +64,21 @@
     color:var(--muted); font-size:12px; pointer-events:none;
   }
 
-  #modal-editar {
+  /* Os dois modais de edicao (dispositivo e localidade) usam o mesmo visual. */
+  #modal-editar, #modal-editar-loc {
     position:fixed; inset:0; background:rgba(0,0,0,.8); display:none;
     align-items:center; justify-content:center; z-index:30; padding:20px;
   }
-  #modal-editar.open { display:flex; }
-  #modal-editar .box {
+  #modal-editar.open, #modal-editar-loc.open { display:flex; }
+  #modal-editar .box, #modal-editar-loc .box {
     width:min(92vw, 560px); max-height:90vh; overflow:auto; background:var(--panel);
     border:1px solid var(--border); border-radius:10px; padding:18px 20px;
   }
-  #modal-editar h3 { margin:0 0 4px; font-size:14px; }
-  #modal-editar .sub { color:var(--muted); font-size:12px; margin:0 0 14px; }
-  #modal-editar .acoes { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+  #modal-editar h3, #modal-editar-loc h3 { margin:0 0 4px; font-size:14px; }
+  #modal-editar .sub, #modal-editar-loc .sub {
+    color:var(--muted); font-size:12px; margin:0 0 14px; line-height:1.5; }
+  #modal-editar .acoes, #modal-editar-loc .acoes {
+    display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
   .motivo-3d {
     display:block; margin-top:3px; color:var(--warn); font-size:11px;
   }
@@ -204,6 +207,61 @@
     </div><!-- .pagina -->
   </div><!-- .conteudo -->
 </div><!-- .app-shell -->
+
+<div id="modal-editar-loc">
+  <div class="box">
+    <h3 id="editar-loc-titulo">Editar localidade</h3>
+    <p class="sub">O georreferenciamento pertence ao <b>modelo</b>: cada
+       <code>.glb</code> sai da fotogrametria com o seu próprio offset UTM
+       (<code>odm_georeferencing_model_geo.txt</code>). Se você trocar o
+       <code>.glb</code> por outro recorte da mesma parede, <b>troque o offset
+       junto</b> — senão a câmera e as detecções saem deslocadas exatamente
+       pela diferença entre os dois.</p>
+    <form id="form-editar-loc" class="grid2">
+      <div class="full">
+        <label for="edloc-nome">Nome</label>
+        <input id="edloc-nome" required />
+      </div>
+      <div>
+        <label for="edloc-zona">Zona UTM</label>
+        <input id="edloc-zona" type="number" required />
+      </div>
+      <div>
+        <label for="edloc-hemisferio">Hemisfério</label>
+        <select id="edloc-hemisferio">
+          <option value="true">Sul</option>
+          <option value="false">Norte</option>
+        </select>
+      </div>
+      <div>
+        <label for="edloc-x">Geo offset X (m)</label>
+        <input id="edloc-x" type="number" step="any" required />
+      </div>
+      <div>
+        <label for="edloc-y">Geo offset Y (m)</label>
+        <input id="edloc-y" type="number" step="any" required />
+      </div>
+      <div>
+        <label for="edloc-z">Geo offset Z (m)</label>
+        <input id="edloc-z" type="number" step="any" />
+      </div>
+      <div>
+        <label for="edloc-eixo">Eixo "para cima" do modelo</label>
+        <select id="edloc-eixo">
+          <option value="Z">Z (comum em fotogrametria/ODM)</option>
+          <option value="Y">Y</option>
+        </select>
+      </div>
+      <div class="full">
+        <div class="msg" id="msg-editar-loc"></div>
+        <div class="acoes">
+          <button type="button" id="editar-loc-cancelar">Cancelar</button>
+          <button class="acao" type="submit" style="margin-top:0">Salvar</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
 
 <div id="modal-editar">
   <div class="box">
@@ -393,7 +451,20 @@ async function carregarLocalidades() {
     inputArquivo.type = "file";
     inputArquivo.accept = ".glb";
     inputArquivo.style.display = "none";
-    inputArquivo.addEventListener("change", () => enviarModelo(loc.id, inputArquivo.files[0]));
+    inputArquivo.addEventListener("change", () => {
+      // Substituir o .glb de uma localidade que já tinha um é o caminho
+      // clássico para o modelo e o georreferenciamento saírem de sincronia:
+      // cada recorte da fotogrametria tem o SEU offset.
+      if (loc.modelo_status !== "nenhum" && !confirm(
+            `“${loc.nome}” já tem um modelo. Se este .glb for outro recorte da ` +
+            `mesma parede, o offset UTM provavelmente é diferente — lembre de ` +
+            `ajustá-lo em “Editar” depois do envio, senão a câmera e as ` +
+            `detecções vão sair deslocadas.\n\nEnviar mesmo assim?`)) {
+        inputArquivo.value = "";
+        return;
+      }
+      enviarModelo(loc.id, inputArquivo.files[0]);
+    });
 
     const btnUpload = document.createElement("button");
     btnUpload.textContent = "Enviar modelo .glb";
@@ -403,7 +474,11 @@ async function carregarLocalidades() {
     btnExcluir.textContent = "Excluir";
     btnExcluir.addEventListener("click", () => excluirLocalidade(loc.id, loc.nome));
 
-    tdAcoes.append(inputArquivo, btnUpload);
+    const btnEditarLoc = document.createElement("button");
+    btnEditarLoc.textContent = "Editar";
+    btnEditarLoc.addEventListener("click", () => abrirEdicaoLocalidade(loc));
+
+    tdAcoes.append(inputArquivo, btnEditarLoc, btnUpload);
     if (loc.modelo_status === "pronto") {
       const btnVer = document.createElement("button");
       btnVer.textContent = "Visualizar";
@@ -436,6 +511,71 @@ async function carregarLocalidades() {
     setTimeout(() => { carregarLocalidades(); carregarDispositivos(); }, 4000);
   }
 }
+
+// ---------------------------------------------------------------------
+// Edicao de localidade
+//
+// O offset UTM pertence ao MODELO, nao ao lugar: dois recortes da mesma
+// parede saem da fotogrametria com offsets diferentes. Sem esta edicao,
+// trocar o .glb obrigava a apagar a localidade (desassociando todos os
+// dispositivos) so para corrigir dois numeros.
+// ---------------------------------------------------------------------
+let editandoLocId = null;
+
+function abrirEdicaoLocalidade(loc) {
+  editandoLocId = loc.id;
+  document.getElementById("editar-loc-titulo").textContent = `Editar “${loc.nome}”`;
+  document.getElementById("edloc-nome").value = loc.nome || "";
+  document.getElementById("edloc-zona").value = loc.utm_zone;
+  document.getElementById("edloc-hemisferio").value = String(!!loc.utm_hemisferio_sul);
+  document.getElementById("edloc-x").value = loc.geo_offset_x;
+  document.getElementById("edloc-y").value = loc.geo_offset_y;
+  document.getElementById("edloc-z").value = loc.geo_offset_z;
+  document.getElementById("edloc-eixo").value = loc.model_up_axis || "Z";
+  const msg = document.getElementById("msg-editar-loc");
+  msg.className = "msg"; msg.textContent = "";
+  document.getElementById("modal-editar-loc").classList.add("open");
+}
+
+function fecharEdicaoLocalidade() {
+  editandoLocId = null;
+  document.getElementById("modal-editar-loc").classList.remove("open");
+}
+
+document.getElementById("editar-loc-cancelar")
+  .addEventListener("click", fecharEdicaoLocalidade);
+document.getElementById("modal-editar-loc").addEventListener("click", (ev) => {
+  if (ev.target.id === "modal-editar-loc") fecharEdicaoLocalidade();
+});
+
+document.getElementById("form-editar-loc").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!editandoLocId) return;
+  const msg = document.getElementById("msg-editar-loc");
+  msg.className = "msg"; msg.textContent = "Salvando…";
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/localidades/${editandoLocId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nome: document.getElementById("edloc-nome").value.trim(),
+        utm_zone: parseInt(document.getElementById("edloc-zona").value, 10),
+        utm_hemisferio_sul: document.getElementById("edloc-hemisferio").value === "true",
+        geo_offset_x: parseFloat(document.getElementById("edloc-x").value),
+        geo_offset_y: parseFloat(document.getElementById("edloc-y").value),
+        geo_offset_z: parseFloat(document.getElementById("edloc-z").value || "0"),
+        model_up_axis: document.getElementById("edloc-eixo").value,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) { msg.className = "msg erro"; msg.textContent = j.error || "Falha."; return; }
+    fecharEdicaoLocalidade();
+    carregarLocalidades();
+    carregarDispositivos();
+  } catch (e) {
+    msg.className = "msg erro"; msg.textContent = "Não consegui falar com o servidor.";
+  }
+});
 
 async function enviarModelo(localidadeId, arquivo) {
   if (!arquivo) return;
