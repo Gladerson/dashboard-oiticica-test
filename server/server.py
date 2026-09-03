@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -187,6 +188,15 @@ def _modelo_3d_url(caminho):
 
 
 http = requests.Session()
+# O PTZ manda uma requisicao a cada 300ms enquanto o operador segura o botao,
+# e cada uma delas vai para o Pi. Com o pool padrao (10) o dashboard, o
+# empurrador de estado e o pedido de imagem competiam pelas mesmas conexoes.
+# max_retries=0 e proposital: numa falha do controlador queremos o erro
+# agora, nao tres tentativas ocupando a conexao.
+_adaptador = requests.adapters.HTTPAdapter(
+    pool_connections=20, pool_maxsize=40, max_retries=0)
+http.mount("http://", _adaptador)
+http.mount("https://", _adaptador)
 
 app = FastAPI(title="Dashboard Server")
 app.mount("/model", StaticFiles(directory="static"), name="model")
@@ -322,6 +332,50 @@ async def view(device_id: str, pan: float = 0.0, tilt: float = 0.0, zoom: float 
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
     result = await run_in_threadpool(device.compute_view, pan, tilt, zoom)
     return {"coord_p": pan, "coord_t": tilt, "coord_z": zoom, **result}
+
+
+class MirarPayload(BaseModel):
+    device_id: str
+    ponto: list[float]
+    zoom: float | None = None
+    mover_camera: bool = False
+
+
+@app.post("/api/mirar")
+async def mirar(p: MirarPayload):
+    """Cone (e, se pedido, a camera real) apontados para um ponto do modelo.
+
+    Usado pela calibracao: durante ela o cone para de seguir a telemetria,
+    entao marcar um ponto nao mudava nada na tela -- o operador nao tinha
+    confirmacao visual de que o par (pan/tilt real, ponto 3D) foi aceito.
+    Agora o cone salta para o ponto marcado."""
+    device = registro.por_id(p.device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    if not device.pronto():
+        return JSONResponse({"error": "dispositivo sem modelo 3D pronto"}, status_code=400)
+    if len(p.ponto) != 3:
+        return JSONResponse({"error": "ponto precisa ser [x, y, z]"}, status_code=400)
+
+    pt = await run_in_threadpool(device.pan_tilt_para_ponto, p.ponto)
+    if pt is None:
+        return JSONResponse({"error": "ponto coincide com a câmera"}, status_code=400)
+    pan, tilt = pt
+    zoom = 0.0 if p.zoom is None else float(p.zoom)
+    result = await run_in_threadpool(device.compute_view, pan, tilt, zoom)
+    resposta = {"coord_p": pan, "coord_t": tilt, "coord_z": zoom,
+                "moved": False, **result}
+
+    if p.mover_camera:
+        r = await run_in_threadpool(
+            _proxy, device, "/command/absolute",
+            {"pan_deg": pan, "tilt_deg": tilt, "zoom_pct": zoom}, 8)
+        if isinstance(r, JSONResponse):     # 502: o motivo vai junto
+            resposta["erro_camera"] = json.loads(bytes(r.body).decode("utf-8"))
+        else:
+            resposta["controller"] = r
+            resposta["moved"] = True
+    return resposta
 
 
 async def telemetry_core(device_id, payload: TelemetryPayload):
@@ -705,12 +759,63 @@ class ContinuousPayload(BaseModel):
     hold_ms: int = 800
 
 
-def _proxy(controller_url, path, body=None):
+# Comandos de PTZ sao repetidos a 300ms; esperar 5s por um controlador que
+# nao responde so empilha requisicoes no navegador (o limite de conexoes por
+# origem) e faz o PTZ "travar". Melhor falhar rapido e avisar.
+TIMEOUT_PTZ_S = float(os.getenv("TIMEOUT_PTZ_S", "2.5"))
+
+
+def _proxy(device, path, body=None, timeout=TIMEOUT_PTZ_S):
+    """Repassa um comando para a API do Pi. Em caso de falha devolve 502 COM
+    o motivo e a URL tentada: sem isso o log do servidor mostrava so
+    '502 Bad Gateway' e nao havia como saber se a URL estava errada, se o
+    agente estava fora do ar ou se era a rede."""
+    url = f"{device.controller_url}{path}"
     try:
-        r = http.post(f"{controller_url}{path}", json=body, timeout=5)
+        r = http.post(url, json=body, timeout=timeout)
         return r.json()
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
+        print(f"[ptz] '{device.nome}': falha em POST {url} "
+              f"({type(e).__name__}: {e}); origem da URL: "
+              f"{device.origem_controller_url}")
+
+        # Rede de seguranca para o caso mais comum de PTZ "travado": a URL
+        # cadastrada envelheceu (o Pi trocou de IP, mudou de rede) enquanto a
+        # telemetria dele continua chegando normalmente de outro endereco.
+        # Tenta UMA vez o endereco de onde ele esta realmente falando.
+        alternativa = device.url_alternativa_do_ip()
+        if alternativa:
+            try:
+                r = http.post(f"{alternativa}{path}", json=body, timeout=timeout)
+                print(f"[ptz] '{device.nome}': funcionou em {alternativa} -- a URL "
+                      f"cadastrada esta desatualizada; corrija em Dispositivos.")
+                return r.json()
+            except Exception:
+                pass
+
+        return JSONResponse({
+            "error": str(e),
+            "tipo": type(e).__name__,
+            "url": url,
+            "origem_url": device.origem_controller_url,
+            "dica": _dica_controlador(device),
+        }, status_code=502)
+
+
+def _dica_controlador(device):
+    """O que o operador deve conferir, na ordem em que costuma resolver."""
+    if device.origem_controller_url == "padrao_do_env":
+        return ("Este dispositivo nao tem 'URL do controlador' cadastrada e o "
+                "servidor ainda nao viu de qual IP ele fala (nenhuma telemetria "
+                "chegou). Confira se o agente esta rodando no Raspberry e se o "
+                "DEVICE_TOKEN dele confere, ou preencha a URL em Dispositivos.")
+    if device.origem_controller_url == "ip_observado":
+        return (f"A telemetria deste dispositivo chega de {device.ip_observado}, "
+                f"mas a porta {registro.CONTROLLER_PORTA_PADRAO} nao responde ai. "
+                "Confira se o agente de borda subiu a API (ss -lptn 'sport = :8090') "
+                "e se ha firewall entre o servidor e o Raspberry.")
+    return ("A 'URL do controlador' cadastrada para este dispositivo nao "
+            "respondeu. Confira o endereco em Dispositivos -> Editar.")
 
 
 @app.post("/api/command")
@@ -718,7 +823,7 @@ def send_command(cmd: CommandPayload):
     device = registro.por_id(cmd.device_id)
     if device is None:
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
-    return _proxy(device.controller_url, "/command", cmd.model_dump(exclude={"device_id"}))
+    return _proxy(device, "/command", cmd.model_dump(exclude={"device_id"}))
 
 
 @app.post("/api/ptz/continuous")
@@ -726,8 +831,8 @@ def ptz_continuous(cmd: ContinuousPayload):
     device = registro.por_id(cmd.device_id)
     if device is None:
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
-    return _proxy(device.controller_url, "/command/continuous",
-                 cmd.model_dump(exclude={"device_id"}))
+    return _proxy(device, "/command/continuous",
+                  cmd.model_dump(exclude={"device_id"}))
 
 
 @app.post("/api/ptz/stop")
@@ -735,7 +840,7 @@ def ptz_stop(device_id: str):
     device = registro.por_id(device_id)
     if device is None:
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
-    return _proxy(device.controller_url, "/command/stop", {})
+    return _proxy(device, "/command/stop", {})
 
 
 @app.post("/api/command/home")
@@ -743,7 +848,44 @@ def send_home(device_id: str):
     device = registro.por_id(device_id)
     if device is None:
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
-    return _proxy(device.controller_url, "/command/home", {})
+    return _proxy(device, "/command/home", {}, timeout=8)
+
+
+@app.post("/api/command/zero")
+def send_zero(device_id: str):
+    """Origem das coordenadas ONVIF -- onde o base_forward da calibracao
+    esta ancorado. NAO e o mesmo que o home da camera (ver README)."""
+    device = registro.por_id(device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    return _proxy(device, "/command/zero", {}, timeout=8)
+
+
+@app.get("/api/ptz/diagnostico")
+def ptz_diagnostico(device_id: str):
+    """Por que o PTZ nao responde. Bate no /status da API do Pi e devolve a
+    URL usada, de onde ela saiu e o erro exato -- a mesma informacao que
+    antes so existia como um '502 Bad Gateway' no log do servidor."""
+    device = registro.por_id(device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    base = {
+        "device_id": device.id,
+        "nome": device.nome,
+        "url": device.controller_url,
+        "url_publica": device.controller_url_publica,
+        "origem_url": device.origem_controller_url,
+        "ip_observado": device.ip_observado,
+        "visto_ha_s": (round(time.time() - device.ip_observado_em, 1)
+                       if device.ip_observado_em else None),
+    }
+    try:
+        r = http.get(f"{device.controller_url}/status", timeout=TIMEOUT_PTZ_S)
+        return {**base, "ok": r.ok, "http_status": r.status_code,
+                "status": r.json() if r.ok else None}
+    except Exception as e:
+        return {**base, "ok": False, "erro": str(e), "tipo": type(e).__name__,
+                "dica": _dica_controlador(device)}
 
 
 # ----------------------------------------------------------------------------

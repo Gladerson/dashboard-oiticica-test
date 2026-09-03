@@ -138,7 +138,22 @@ def _dispositivo_publico(d):
         "topico_telemetria": d["topico_telemetria"], "topico_atributos": d["topico_atributos"],
         "topico_frame": d["topico_frame"], "criado_em": d["criado_em"].isoformat(),
         "motivo_sem_3d": motivo_sem_3d(d),
+        # A URL que o servidor VAI USAR de fato para o PTZ. Quando o campo
+        # acima esta vazio, ela sai do IP de onde o equipamento fala com o
+        # servidor -- e sem mostrar isso aqui nao havia como o operador
+        # saber para onde os comandos estavam indo.
+        **_controlador_efetivo(str(d["id"])),
     }
+
+
+def _controlador_efetivo(device_id):
+    rt = registro.ja_resolvido(device_id)
+    if rt is None:
+        return {"controller_url_efetiva": None, "controller_origem": "desconhecida",
+                "ip_observado": None}
+    return {"controller_url_efetiva": rt.controller_url,
+            "controller_origem": rt.origem_controller_url,
+            "ip_observado": rt.ip_observado}
 
 
 # ============================================================================

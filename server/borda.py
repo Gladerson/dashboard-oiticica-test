@@ -293,7 +293,13 @@ def _resolver_dispositivo(req: Request):
     token = cabecalho[7:].strip()
     if not token:
         return None
-    return rd.por_token(token)
+    device = rd.por_token(token)
+    if device is not None:
+        # De onde este equipamento fala com o servidor e a unica pista
+        # confiavel de como alcanca-lo de volta para o PTZ quando ninguem
+        # cadastrou a URL do controlador. Ver registrar_origem().
+        device.registrar_origem(req.client.host if req.client else None)
+    return device
 
 
 def _nao_autenticado():
