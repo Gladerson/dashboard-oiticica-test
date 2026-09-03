@@ -30,7 +30,7 @@ import numpy as np
 import requests
 
 import db
-from glb_geo import GeoModel, _normalize as _normalizar
+from glb_geo import GeoModel
 
 # --- Falam com a API do Pi (porta 8090). Usados quando o dispositivo nao
 # tem controller_url/controller_url_publica proprios (dispositivos.py) --
@@ -38,17 +38,6 @@ from glb_geo import GeoModel, _normalize as _normalizar
 # isso. ------------------------------------------------------------------
 CONTROLLER_URL_PADRAO = os.getenv("CONTROLLER_URL", "http://127.0.0.1:8090")
 CONTROLLER_URL_PUBLICA_PADRAO = os.getenv("CONTROLLER_PUBLIC_URL", CONTROLLER_URL_PADRAO)
-
-# Porta da API do agente de borda (edge/agente_borda.py) / do controller.
-# Usada para MONTAR a URL a partir do IP de onde o Pi fala com o servidor,
-# quando o dispositivo nao tem controller_url cadastrada.
-CONTROLLER_PORTA_PADRAO = int(os.getenv("CONTROLLER_PORTA", "8090"))
-
-# IPs que nunca servem para alcancar o Pi de volta: se a requisicao do
-# dispositivo chegou por um desses, ou o Pi esta no proprio servidor (e a
-# URL cadastrada ja resolve), ou tem um proxy reverso no meio e o IP
-# observado e o do proxy, nao o do equipamento.
-_IPS_INUTEIS = {"127.0.0.1", "::1", "localhost", ""}
 
 # --- Estado desejado / stream -----------------------------------------------
 STREAM_JANELA_S = float(os.getenv("STREAM_JANELA_S", "60"))
@@ -164,16 +153,11 @@ class EstadoDesejado:
             self.pedidos_imagem = []
 
 
-def empurrador_http(obter_url):
+def empurrador_http(controller_url):
     """So um acelerador de latencia -- o caminho garantido continua sendo a
     carona na resposta do proximo POST de telemetria (funciona mesmo atras
-    de NAT). Se isto falhar ou nao existir controller_url, tanto faz.
-
-    Recebe uma FUNCAO, nao a URL: quando o dispositivo nao tem URL
-    cadastrada ela so aparece depois da primeira subida do Pi, bem depois
-    de este empurrador ter sido criado."""
+    de NAT). Se isto falhar ou nao existir controller_url, tanto faz."""
     def _empurrar(snap):
-        controller_url = obter_url()
         if not controller_url:
             return
 
@@ -255,16 +239,9 @@ class DispositivoRuntime:
         self.nome = linha["nome"]
         self.entity_id = linha["entity_id"]
         self.transporte_cadastrado = linha["transporte"]
-        # A URL CADASTRADA e opcional. Quando ela falta, a URL efetiva sai do
-        # IP de onde este dispositivo fala com o servidor (registrar_origem,
-        # abaixo) -- e nao mais de um 127.0.0.1 herdado do tempo em que havia
-        # um unico equipamento rodando na mesma maquina do servidor. Aquele
-        # padrao fazia todo /api/ptz/* responder 502 sem dizer por que.
-        self.controller_url_cadastrada = (linha.get("controller_url") or "").strip() or None
-        self.controller_url_publica_cadastrada = (
-            linha.get("controller_url_publica") or "").strip() or None
-        self.ip_observado = None
-        self.ip_observado_em = 0.0
+        self.controller_url = linha.get("controller_url") or CONTROLLER_URL_PADRAO
+        self.controller_url_publica = (linha.get("controller_url_publica")
+                                       or self.controller_url or CONTROLLER_URL_PUBLICA_PADRAO)
         self.lat = linha.get("lat")
         self.lon = linha.get("lon")
         self.alt_acima_solo = linha.get("alt_acima_solo")
@@ -272,7 +249,7 @@ class DispositivoRuntime:
         self.localidade_nome = linha.get("localidade_nome")
         self.localidade_modelo_3d_path = linha.get("localidade_modelo_3d_path")
 
-        self.estado = EstadoDesejado(empurrar_para=empurrador_http(lambda: self.controller_url))
+        self.estado = EstadoDesejado(empurrar_para=empurrador_http(self.controller_url))
         self.quadro = Quadro()
         self.mapa_det = {}   # det_id da borda -> id no historico do servidor
         self._view_cache = {"key": None, "value": None}
@@ -280,76 +257,7 @@ class DispositivoRuntime:
         self.geo = None
         self.camera_local_pos = None
         self.base_forward = None
-        # Escalas do curso mecanico do PTZ: 1.0 = os graus reportados pela
-        # camera valem como vem. So mudam se a calibracao resolver isso.
-        self.escala_pan = 1.0
-        self.escala_tilt = 1.0
-        self.calibrado = False
         self._preparar_geometria(linha)
-
-    # ------------------------------------------------------------------
-    # Onde fica a API do Pi (PTZ). Ordem: o que o operador cadastrou; senao
-    # o IP de onde o proprio equipamento fala com o servidor; so entao o
-    # padrao do .env.
-    # ------------------------------------------------------------------
-    def _url_do_ip_observado(self):
-        if not self.ip_observado:
-            return None
-        ip = self.ip_observado
-        host = f"[{ip}]" if ":" in ip else ip
-        return f"http://{host}:{CONTROLLER_PORTA_PADRAO}"
-
-    @property
-    def controller_url(self):
-        return (self.controller_url_cadastrada
-                or self._url_do_ip_observado()
-                or CONTROLLER_URL_PADRAO)
-
-    @property
-    def controller_url_publica(self):
-        """A URL que o NAVEGADOR tenta antes de cair no proxy do servidor."""
-        return (self.controller_url_publica_cadastrada
-                or self.controller_url_cadastrada
-                or self._url_do_ip_observado()
-                or CONTROLLER_URL_PUBLICA_PADRAO)
-
-    @property
-    def origem_controller_url(self):
-        """De onde saiu a URL em uso -- e o que a tela de diagnostico mostra
-        quando o PTZ nao responde."""
-        if self.controller_url_cadastrada:
-            return "cadastrada"
-        if self._url_do_ip_observado():
-            return "ip_observado"
-        return "padrao_do_env"
-
-    def url_alternativa_do_ip(self):
-        """A URL do IP observado QUANDO ela e diferente da que esta em uso --
-        None nos outros casos. Serve de segunda tentativa para o PTZ quando a
-        URL cadastrada envelheceu (o equipamento trocou de IP mas continua
-        mandando telemetria de outro endereco)."""
-        alternativa = self._url_do_ip_observado()
-        if alternativa and alternativa != self.controller_url:
-            return alternativa
-        return None
-
-    def registrar_origem(self, ip):
-        """Chamada em toda subida do Pi (/api/edge/*): guarda de onde ele
-        falou. E a unica informacao confiavel sobre como alcanca-lo de
-        volta quando ninguem cadastrou a URL."""
-        if not ip:
-            return
-        ip = ip.strip()
-        if ip.startswith("::ffff:"):     # IPv4 mapeado em IPv6
-            ip = ip[7:]
-        if ip in _IPS_INUTEIS:
-            return
-        if ip != self.ip_observado:
-            print(f"[registro] '{self.nome}': dispositivo visto em {ip}"
-                  + ("" if self.controller_url_cadastrada
-                     else f"; PTZ vai usar http://{ip}:{CONTROLLER_PORTA_PADRAO}"))
-            self.ip_observado = ip
-        self.ip_observado_em = time.time()
 
     def pronto(self):
         return self.geo is not None
@@ -370,25 +278,6 @@ class DispositivoRuntime:
         except Exception as e:
             print(f"[registro] '{self.nome}': falha ao carregar o modelo 3D da "
                   f"localidade '{self.localidade_nome}': {e}")
-            return
-
-        # Pose CALIBRADA (server/calibracao.py) vence a estimativa: ela foi
-        # medida a partir de pontos casados pelo operador, enquanto o resto
-        # deste metodo e uma cadeia de chutes (altura de terreno estimada e
-        # orientacao pelo ponto de malha mais proximo).
-        if linha.get("calib_pos_x") is not None and linha.get("calib_fwd_x") is not None:
-            self.geo = geo
-            self.camera_local_pos = np.array(
-                [linha["calib_pos_x"], linha["calib_pos_y"], linha["calib_pos_z"]], dtype=float)
-            self.base_forward = _normalizar(np.array(
-                [linha["calib_fwd_x"], linha["calib_fwd_y"], linha["calib_fwd_z"]], dtype=float))
-            self.escala_pan = float(linha.get("calib_escala_pan") or 1.0)
-            self.escala_tilt = float(linha.get("calib_escala_tilt") or 1.0)
-            self.calibrado = True
-            print(f"[registro] '{self.nome}' CALIBRADO ({linha.get('calib_modo')}, "
-                  f"{linha.get('calib_n_pontos')} pontos, "
-                  f"RMS {linha.get('calib_rms_graus')} graus): camera em (local) "
-                  f"{self.camera_local_pos}, direcao base {self.base_forward}")
             return
 
         local_x, local_y = geo.latlon_to_local_xy(self.lat, self.lon)
@@ -420,19 +309,6 @@ class DispositivoRuntime:
         print(f"[registro] '{self.nome}' pronto: camera em (local) {camera_local_pos}, "
               f"direcao base {self.base_forward}")
 
-    def pan_tilt_para_ponto(self, ponto):
-        """Inverso do compute_view: que pan/tilt DE TELEMETRIA a camera
-        precisa ter para o eixo optico cair neste ponto local. As escalas
-        sao desfeitas aqui para que passar o resultado de volta pelo
-        compute_view devolva exatamente esta direcao."""
-        if not self.pronto():
-            return None
-        direcao = np.asarray(ponto, dtype=float) - self.camera_local_pos
-        if np.linalg.norm(direcao) < 1e-9:
-            return None
-        pan, tilt = self.geo.direction_to_pan_tilt(self.base_forward, direcao)
-        return (pan / (self.escala_pan or 1.0), tilt / (self.escala_tilt or 1.0))
-
     def compute_view(self, pan_deg, tilt_deg, zoom_pct):
         """Ponto de impacto + contorno real do cone contra a malha (ou
         hit_point=None/cone=None se a localidade ainda nao tem modelo
@@ -442,11 +318,6 @@ class DispositivoRuntime:
         key = (round(pan_deg, 2), round(tilt_deg, 2), round(zoom_pct, 1))
         if self._view_cache["key"] == key:
             return self._view_cache["value"]
-        # Correcao do curso mecanico (so != 1.0 quando a calibracao resolveu
-        # as escalas): a camera reporta -1..1 e o agente converte assumindo
-        # +-180/+-90 graus; se essa suposicao estiver errada, os angulos vem
-        # esticados ou comprimidos.
-        pan_deg, tilt_deg = pan_deg * self.escala_pan, tilt_deg * self.escala_tilt
         half = half_angle_for_zoom(zoom_pct)
         cone = self.geo.cone_footprint(
             self.camera_local_pos, self.base_forward, pan_deg, tilt_deg,
@@ -491,14 +362,6 @@ def por_token(token):
     return _construir(linha)
 
 
-def ja_resolvido(device_id):
-    """O runtime SE ele ja existe em memoria -- nunca constroi um. A lista de
-    dispositivos usa isto para mostrar a URL efetiva do controlador sem
-    disparar a carga do .glb de cada localidade so para desenhar a tela."""
-    with _lock:
-        return _por_id.get(str(device_id))
-
-
 def todos():
     """Todo dispositivo ja resolvido (por token ou por id) desde que o
     processo subiu -- usado pela vigia de stream (borda.py), que precisa
@@ -541,17 +404,8 @@ def esquecer(device_id):
 def recarregar(device_id):
     """Forca reconstrucao do runtime (ex.: depois de editar o dispositivo
     em server/dispositivos.py)."""
-    with _lock:
-        antigo = _por_id.get(str(device_id))
-        ip = antigo.ip_observado if antigo else None
     _esquecer(device_id)
-    novo = por_id(device_id)
-    # Sem isto o PTZ voltaria a 502 por ate um ciclo de telemetria depois de
-    # qualquer edicao do dispositivo: a URL efetiva vem do IP observado, e
-    # ele mora so na memoria do runtime que acabamos de descartar.
-    if novo is not None and ip:
-        novo.registrar_origem(ip)
-    return novo
+    return por_id(device_id)
 
 
 def invalidar_localidade(localidade_id):

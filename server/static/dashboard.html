@@ -54,19 +54,6 @@
   #ptz-controls button:hover, #zoom-row button:hover { background:#1a2740; border-color:var(--accent); }
   #ptz-controls button.active, #zoom-row button.active { background:#1e3a5f; border-color:var(--accent); }
   #zoom-row { display:flex; gap:8px; justify-content:center; margin-top:8px; }
-  #ptz-aviso {
-    margin-top:10px; padding:8px 10px; border-radius:8px; font-size:11px;
-    line-height:1.5; background:rgba(214,84,84,.12); border:1px solid rgba(214,84,84,.45);
-    color:var(--text);
-  }
-  #ptz-aviso[hidden] { display:none; }
-  #ptz-aviso .mono { font-family:ui-monospace, Menlo, Consolas, monospace; color:var(--muted); }
-  #ptz-aviso button {
-    margin-top:6px; padding:4px 9px; font-size:11px; cursor:pointer;
-    background:transparent; color:var(--text); border:1px solid var(--border);
-    border-radius:6px;
-  }
-  #ptz-aviso button:hover { border-color:var(--accent); }
   #zoom-row button { padding:10px 14px; font-size:13px; }
   #telemetry { margin-top:12px; font-size:12px; color:var(--muted); line-height:1.6; }
   #telemetry b { color:var(--text); }
@@ -214,68 +201,6 @@
      ainda por cima engole os cliques, deixando o modelo impossivel de
      girar com o mouse. */
   #viewport-sem-3d[hidden] { display: none; }
-
-  /* ---- Calibração do gêmeo digital ---- */
-  /* Mira no centro da telinha: é o eixo óptico da câmera, o que dá sentido
-     a "aponte a câmera para o ponto de referência". */
-  #mira { position:absolute; inset:0; pointer-events:none; display:none; }
-  #video-wrap.calibrando #mira { display:block; }
-  #mira::before, #mira::after {
-    content:""; position:absolute; background:#ffd24d; box-shadow:0 0 0 1px rgba(0,0,0,.5);
-  }
-  #mira::before { left:50%; top:calc(50% - 11px); width:1px; height:22px; transform:translateX(-50%); }
-  #mira::after  { top:50%; left:calc(50% - 11px); height:1px; width:22px; transform:translateY(-50%); }
-  #mira i {
-    position:absolute; left:50%; top:50%; width:26px; height:26px; margin:-13px 0 0 -13px;
-    border:1px solid #ffd24d; border-radius:50%; opacity:.85;
-  }
-  #video-wrap.calibrando { outline:2px solid #ffd24d; outline-offset:-2px; }
-
-  #calib-painel {
-    margin-top:10px; border:1px solid var(--warn); border-radius:8px;
-    padding:10px 12px; font-size:12px; background:rgba(168,135,31,.10);
-  }
-  #calib-painel[hidden] { display:none; }
-  #calib-painel h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase;
-                     letter-spacing:.06em; color:var(--warn); }
-  #calib-passo { color:var(--muted); line-height:1.5; }
-  #calib-passo b { color:var(--text); }
-  .calib-recado {
-    margin-top:7px; padding-top:7px; border-top:1px dashed var(--border);
-    font-size:11px; line-height:1.55;
-  }
-  .calib-recado ol { margin:4px 0 6px; padding-left:18px; }
-  .calib-recado li { margin-bottom:3px; }
-  #calib-lista { margin:8px 0 0; padding:0; list-style:none; max-height:132px; overflow:auto; }
-  #calib-lista li {
-    display:flex; align-items:center; gap:6px; padding:3px 0;
-    border-top:1px solid var(--border); font-size:11px; color:var(--muted);
-  }
-  #calib-lista li b { color:var(--text); font-weight:600; }
-  /* Mesmo destaque do marcador azul que fica aceso no modelo 3D. */
-  #calib-lista li.foco { background:rgba(255,210,77,.13); border-radius:6px; }
-  #calib-lista button {
-    margin-left:auto; background:transparent; border:1px solid var(--border);
-    color:var(--muted); border-radius:5px; padding:1px 6px; cursor:pointer; font-size:11px;
-  }
-  #calib-lista button:hover { border-color:var(--danger); color:var(--danger); }
-  #calib-acoes { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
-  #calib-acoes button {
-    background:var(--panel); border:1px solid var(--border); color:var(--text);
-    border-radius:6px; padding:5px 10px; cursor:pointer; font-size:11.5px;
-  }
-  #calib-acoes button:hover { border-color:var(--accent); }
-  #calib-acoes button.primario { background:var(--accent); border-color:var(--accent); color:#fff; }
-  #calib-acoes button:disabled { opacity:.45; cursor:default; }
-  #calib-resultado { margin-top:8px; font-size:11px; line-height:1.55; }
-  #calib-resultado[hidden] { display:none; }
-  #calib-resultado .ok { color:var(--ok); }
-  #calib-resultado .ruim { color:var(--danger); }
-  #calib-selo {
-    font-size:10px; padding:1px 6px; border-radius:999px;
-    border:1px solid var(--ok); color:var(--ok); margin-left:6px;
-  }
-  #calib-selo[hidden] { display:none; }
   body.tema-claro #viewport-sem-3d { background: rgba(255, 255, 255, 0.55); }
   .dispositivo-tag {
     display: inline-block; background: var(--panel); border: 1px solid var(--border);
@@ -362,7 +287,6 @@
       </div>
       <div id="video-badge"><span class="ponto">&#9679;</span> AO VIVO
         <span id="video-restante">60</span>s</div>
-      <div id="mira"><i></i></div>
     </div>
     <div id="borda-linha">
       <span class="pill" id="pill-online">borda: --</span>
@@ -389,27 +313,11 @@
       <button data-axis="zoom" data-dir="-1">Zoom −</button>
       <button data-axis="zoom" data-dir="1">Zoom +</button>
     </div>
-    <!-- So aparece quando um comando de PTZ falha, com o motivo. -->
-    <div id="ptz-aviso" hidden></div>
     <div id="telemetry">
       Pan: <b id="tel-pan">--</b>° &nbsp;
       Tilt: <b id="tel-tilt">--</b>° &nbsp;
       Zoom: <b id="tel-zoom">--</b>%
     </div>
-    <div id="calib-painel" hidden>
-      <h3>Calibração do gêmeo digital <span id="calib-selo" hidden>ativa</span></h3>
-      <div id="calib-passo"></div>
-      <ul id="calib-lista"></ul>
-      <div id="calib-acoes">
-        <button id="calib-calcular" type="button">Calcular</button>
-        <button id="calib-verificar" type="button" title="A calibração em vigor ainda bate com os pontos guardados?">Verificar</button>
-        <button id="calib-aplicar" type="button" class="primario">Aplicar</button>
-        <button id="calib-limpar" type="button">Descalibrar</button>
-        <button id="calib-sair" type="button">Sair</button>
-      </div>
-      <div id="calib-resultado" hidden></div>
-    </div>
-
     <div id="hint">
       <b>Segure</b> os botões (ou as <kbd>setas</kbd> / <kbd>+</kbd> <kbd>−</kbd>)
       para mover continuamente.<br/>
@@ -472,18 +380,7 @@
   semDispositivo.id = "sem-dispositivo";
   semDispositivo.hidden = true;
   semDispositivo.textContent = "Nenhum dispositivo cadastrado";
-
-  const btnCal = document.createElement("button");
-  btnCal.id = "btn-calibrar";
-  btnCal.type = "button";
-  btnCal.className = "botao-menu";
-  btnCal.style.width = "auto";
-  btnCal.style.padding = "0 10px";
-  btnCal.style.fontSize = "12px";
-  btnCal.textContent = "Calibrar";
-  btnCal.title = "Ajustar a pose da câmera dentro do modelo 3D";
-
-  acoes.append(semDispositivo, sel, btnCal);
+  acoes.append(semDispositivo, sel);
 })();
 </script>
 
@@ -579,14 +476,7 @@ const SERVER_BASE = window.location.origin;
 const SPEED = { pan: 0.55, tilt: 0.45, zoom: 0.5 };
 
 let CONTROLLER_BASE = null;   // preenchido pelo /api/camera_info
-// O caminho direto navegador -> Pi e o mais rapido, mas so funciona quando o
-// operador esta na mesma rede do equipamento. Uma falha NAO pode desliga-lo
-// para sempre (era o que acontecia): ela apenas o suspende por um tempo, e
-// depois o dashboard tenta de novo. Sem isso, quem abriu o dashboard fora da
-// LAN uma vez ficava presa no proxy do servidor ate recarregar a pagina.
-const PROXY_SUSPENSAO_MS = 60000;
-let usarProxyAte = 0;         // enquanto Date.now() < isto, so o proxy
-let ptzUltimoErro = 0;        // para nao repetir o mesmo toast a cada 300ms
+let usarProxy = false;        // vira true se falar direto com o controller falhar
 
 // ---------------------------------------------------------------------
 // Dispositivo selecionado -- multi-dispositivo: cada camera cadastrada tem
@@ -953,108 +843,6 @@ function animarMarcadoresFixos() {
 }
 
 // ---------------------------------------------------------------------
-// Marcacoes da CALIBRACAO: azuis, numeradas, e so existem enquanto a
-// calibracao esta aberta.
-//
-// Sem elas o operador marcava um ponto e nada acontecia na tela -- nao
-// dava para saber onde os pontos anteriores caíram, nem se dois deles
-// ficaram na mesma direcao (o que arruina a geometria da resseccao).
-// ---------------------------------------------------------------------
-const COR_CALIB = 0x3fa9ff;
-const COR_CALIB_ATIVO = 0xffd24d;     // o ultimo marcado / o que esta em foco
-const marcadoresCalib = new Map();    // id do ponto -> { grupo, esfera, anel, etiqueta }
-let calibEmFoco = null;
-
-function rotuloSprite(texto) {
-  const c = document.createElement("canvas");
-  c.width = c.height = 64;
-  const g = c.getContext("2d");
-  g.fillStyle = "rgba(10,18,32,.85)";
-  g.beginPath(); g.arc(32, 32, 30, 0, 6.2832); g.fill();
-  g.strokeStyle = "#9ad4ff"; g.lineWidth = 3; g.stroke();
-  g.fillStyle = "#eaf3ff";
-  g.font = "bold 34px system-ui, sans-serif";
-  g.textAlign = "center"; g.textBaseline = "middle";
-  g.fillText(texto, 32, 34);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: tex, depthTest: false, transparent: true,
-  }));
-  sp.renderOrder = 9;
-  return sp;
-}
-
-function criarMarcadorCalib(id, ponto, numero) {
-  removerMarcadorCalib(id);
-  const esfera = new THREE.Mesh(
-    new THREE.SphereGeometry(0.35, 18, 18),
-    new THREE.MeshBasicMaterial({ color: COR_CALIB, depthTest: false })
-  );
-  esfera.renderOrder = 7;
-  const anel = new THREE.Mesh(
-    new THREE.RingGeometry(0.7, 1.0, 42),
-    new THREE.MeshBasicMaterial({
-      color: COR_CALIB, transparent: true, opacity: 0.8,
-      side: THREE.DoubleSide, depthWrite: false, depthTest: false,
-    })
-  );
-  anel.renderOrder = 8;
-  const etiqueta = rotuloSprite(String(numero));
-  etiqueta.scale.setScalar(1.6);
-  etiqueta.position.y = 1.6;          // acima da esfera, no eixo do modelo
-
-  const grupo = new THREE.Group();
-  grupo.position.set(...ponto);
-  grupo.add(esfera, anel, etiqueta);
-  worldGroup.add(grupo);
-  marcadoresCalib.set(id, { grupo, esfera, anel, etiqueta });
-}
-
-function removerMarcadorCalib(id) {
-  const m = marcadoresCalib.get(id);
-  if (!m) return;
-  worldGroup.remove(m.grupo);
-  m.esfera.geometry.dispose(); m.esfera.material.dispose();
-  m.anel.geometry.dispose();   m.anel.material.dispose();
-  m.etiqueta.material.map.dispose(); m.etiqueta.material.dispose();
-  marcadoresCalib.delete(id);
-}
-
-function limparMarcadoresCalib() {
-  for (const id of [...marcadoresCalib.keys()]) removerMarcadorCalib(id);
-  calibEmFoco = null;
-}
-
-/** Redesenha a partir da lista atual -- os numeros seguem a ordem do painel. */
-function sincronizarMarcadoresCalib() {
-  if (!calibrando || !modelRoot) { limparMarcadoresCalib(); return; }
-  const vivos = new Set();
-  calibPontos.forEach((p, i) => {
-    vivos.add(p.id);
-    criarMarcadorCalib(p.id, p.ponto, i + 1);
-  });
-  for (const id of [...marcadoresCalib.keys()]) {
-    if (!vivos.has(id)) removerMarcadorCalib(id);
-  }
-  destacarMarcadorCalib(calibEmFoco);
-}
-
-function destacarMarcadorCalib(id) {
-  calibEmFoco = id;
-  for (const [k, m] of marcadoresCalib) {
-    const cor = k === id ? COR_CALIB_ATIVO : COR_CALIB;
-    m.esfera.material.color.setHex(cor);
-    m.anel.material.color.setHex(cor);
-  }
-}
-
-function animarMarcadoresCalib() {
-  if (!marcadoresCalib.size) return;
-  for (const m of marcadoresCalib.values()) m.anel.lookAt(camera3d.position);
-}
-
-// ---------------------------------------------------------------------
 // Carregamento do modelo
 // ---------------------------------------------------------------------
 function frameOn(box) {
@@ -1165,7 +953,6 @@ function animate() {
   applyConeFrame();
   pulsarMarcador();
   animarMarcadoresFixos();
-  animarMarcadoresCalib();
   renderer.render(scene, camera3d);
 }
 
@@ -1194,12 +981,8 @@ ws.onmessage = (ev) => {
   // um deviceId de verdade, mesmo se nenhum dispositivo estiver selecionado.
   const mesmoDispositivo = deviceId !== null && msg.device_id === deviceId;
   if ((msg.type === "telemetry" || msg.type === "detection") && mesmoDispositivo) {
-    // Durante a calibração a leitura de pan/tilt continua viva (é ela que
-    // é gravada junto com o ponto), mas o cone PARA de seguir a câmera: ele
-    // ainda está desenhado com a pose errada, e vê-lo pular a cada
-    // movimento só atrapalharia quem está mirando.
     atualizarTelemetria(msg.coord_p, msg.coord_t, msg.coord_z);
-    if (msg.cone && !calibrando) setConeTarget(msg.cone);
+    if (msg.cone) setConeTarget(msg.cone);
   }
   if (msg.type === "detection") {
     prependHistory(msg);
@@ -1236,12 +1019,7 @@ ws.onmessage = (ev) => {
   }
 };
 
-// Última pose reportada pela câmera. A calibração grava exatamente estes
-// valores no momento em que o operador marca o ponto no modelo 3D.
-let poseAtual = { pan: 0, tilt: 0, zoom: 0, recebida: false };
-
 function atualizarTelemetria(p, t, z) {
-  poseAtual = { pan: p, tilt: t, zoom: z, recebida: true };
   document.getElementById("tel-pan").textContent = p.toFixed(1);
   document.getElementById("tel-tilt").textContent = t.toFixed(1);
   document.getElementById("tel-zoom").textContent = z.toFixed(1);
@@ -1263,7 +1041,7 @@ async function ptzPost(pathDireto, pathProxy, body) {
   // Quem esta dirigindo a camera obviamente esta olhando: a janela de 60s
   // reinicia. Sem isso o video morreria no meio do enquadramento.
   renovarStreamSeAtivo();
-  if (Date.now() >= usarProxyAte && CONTROLLER_BASE) {
+  if (!usarProxy && CONTROLLER_BASE) {
     try {
       const r = await fetch(`${CONTROLLER_BASE}${pathDireto}`, {
         method: "POST",
@@ -1271,11 +1049,10 @@ async function ptzPost(pathDireto, pathProxy, body) {
         body: JSON.stringify(body || {}),
         keepalive: true,
       });
-      if (r.ok) { marcarPtzOk(); return r.json(); }
+      if (r.ok) return r.json();
     } catch (e) {
-      console.warn("Falha ao falar direto com o controller; usando o proxy do "
-                 + `server pelos proximos ${PROXY_SUSPENSAO_MS / 1000}s.`, e);
-      usarProxyAte = Date.now() + PROXY_SUSPENSAO_MS;
+      console.warn("Falha ao falar direto com o controller; usando o proxy do server.", e);
+      usarProxy = true;
     }
   }
   // Proxy do server: /api/ptz/continuous e /api/command levam device_id no
@@ -1285,73 +1062,13 @@ async function ptzPost(pathDireto, pathProxy, body) {
   const url = new URL(`${SERVER_BASE}${pathProxy}`);
   url.searchParams.set("device_id", deviceId);
   const corpo = { ...(body || {}), device_id: deviceId };
-  let r, j;
-  try {
-    r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(corpo),
-      keepalive: true,
-    });
-    j = await r.json();
-  } catch (e) {
-    relatarFalhaPtz({ error: "sem resposta do servidor" });
-    throw e;
-  }
-  // Ate aqui um 502 virava um console.error silencioso: o operador via o
-  // PTZ "travado" sem nenhuma pista do motivo. Agora o motivo aparece na
-  // tela, com o que conferir.
-  if (!r.ok) relatarFalhaPtz(j); else marcarPtzOk();
-  return j;
-}
-
-const ptzAviso = () => document.getElementById("ptz-aviso");
-
-function marcarPtzOk() {
-  const el = ptzAviso();
-  if (el && !el.hidden) el.hidden = true;
-}
-
-function relatarFalhaPtz(j) {
-  const el = ptzAviso();
-  if (el) {
-    el.hidden = false;
-    el.innerHTML = `<b>PTZ sem resposta.</b> ${escapar(j.dica || j.error || "")}`
-                 + (j.url ? `<br/><span class="mono">${escapar(j.url)}</span>` : "")
-                 + ` <button type="button" id="ptz-diag">Testar controlador</button>`;
-    const b = document.getElementById("ptz-diag");
-    if (b) b.addEventListener("click", ptzDiagnosticar);
-  }
-  if (Date.now() - ptzUltimoErro > 8000) {
-    ptzUltimoErro = Date.now();
-    toast("PTZ sem resposta: " + (j.dica || j.error || "erro desconhecido"), 7000);
-  }
-}
-
-async function ptzDiagnosticar() {
-  try {
-    const j = await fetch(
-      `${SERVER_BASE}/api/ptz/diagnostico?device_id=${encodeURIComponent(deviceId)}`
-    ).then(r => r.json());
-    console.log("diagnostico do controlador:", j);
-    const el = ptzAviso();
-    if (!el) return;
-    if (j.ok) {
-      el.innerHTML = `<b>O controlador respondeu.</b> `
-        + `${escapar(j.url)} esta no ar; tente o PTZ de novo.`;
-      usarProxyAte = 0;
-      return;
-    }
-    el.innerHTML = `<b>PTZ sem resposta.</b> ${escapar(j.dica || j.erro || "")}`
-      + `<br/><span class="mono">${escapar(j.url)}</span>`
-      + ` — origem da URL: ${escapar(j.origem_url)}`
-      + (j.ip_observado ? `; equipamento visto em ${escapar(j.ip_observado)}`
-                        + (j.visto_ha_s != null ? ` há ${j.visto_ha_s}s` : "")
-                        : "; nenhuma telemetria recebida ainda")
-      + `. <a href="/dispositivos">Editar dispositivo</a>`;
-  } catch (e) {
-    toast("Não consegui rodar o diagnóstico.");
-  }
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(corpo),
+    keepalive: true,
+  });
+  return r.json();
 }
 
 let eixoAtivo = null;
@@ -1443,355 +1160,6 @@ function pontoLocalEm(clientX, clientY) {
   if (!hits.length) return null;
   return worldGroup.worldToLocal(hits[0].point.clone()).toArray();
 }
-
-// ---------------------------------------------------------------------
-// Calibração do gêmeo digital
-//
-// A pose da câmera dentro do modelo é estimada (lat/lon + altura de terreno
-// + uma direção chutada). Calibrar é MEDI-LA: o operador aponta a câmera
-// real para um ponto de referência — a mira do centro da telinha é o eixo
-// óptico — e marca o MESMO ponto no modelo 3D com Ctrl + botão direito.
-// Cada par (pan/tilt reportados, ponto 3D) é uma equação; o servidor
-// resolve a posição e a orientação por mínimos quadrados
-// (server/calibracao.py).
-// ---------------------------------------------------------------------
-let calibrando = false;
-let calibPontos = [];
-let calibMinimos = { min_orientacao: 2, min_posicao: 4, min_escalas: 8 };
-let calibAtiva = null;         // calibração já gravada neste dispositivo
-
-const calibPainel = () => document.getElementById("calib-painel");
-
-async function calibCarregar() {
-  if (!deviceId) return;
-  try {
-    const j = await fetch(`${SERVER_BASE}/api/dispositivos/${deviceId}/calibracao`)
-      .then(r => r.json());
-    if (j.error) return;
-    calibPontos = j.pontos || [];
-    calibAtiva = j.calibracao || null;
-    calibMinimos = {
-      min_orientacao: j.min_orientacao, min_posicao: j.min_posicao,
-      min_escalas: j.min_escalas,
-    };
-    calibRender();
-  } catch (e) { /* offline: mantém o que já estava na tela */ }
-}
-
-function calibRender() {
-  const n = calibPontos.length;
-  const { min_orientacao: mo, min_posicao: mp, min_escalas: me } = calibMinimos;
-
-  // Guia passo a passo. A ideia é que o operador nunca precise ler o README
-  // para calibrar: o painel diz o que fazer AGORA, por que, e quanto falta.
-  const passo = document.getElementById("calib-passo");
-  const receita = `
-    <div class="calib-recado">
-      <b>Como marcar um ponto</b>
-      <ol>
-        <li>Escolha algo <b>fácil de reconhecer nos dois mundos</b>: quina de
-            bloco, canto de junta, base de um poste, marca na parede. Evite
-            superfície lisa e sem detalhe — na hora de achar no 3D você erra.</li>
-        <li>Use as setas de PTZ (e o zoom, se ajudar) até a <b>mira amarela</b>
-            no centro da telinha ficar <b>em cima</b> desse ponto.</li>
-        <li>Gire o modelo 3D até enxergar o <b>mesmo</b> ponto e marque com
-            <b>Ctrl + botão direito</b>. O pan/tilt do momento é gravado junto.</li>
-        <li>Confira: aparece uma <b>bolinha azul numerada</b> onde você marcou e
-            o <b>cone virtual salta para ela</b>. Se o cone foi parar num lugar
-            diferente do que a câmera real está vendo, é justamente esse erro
-            que a calibração vai corrigir — siga marcando.</li>
-      </ol>
-      <b>Onde marcar os próximos</b>: espalhe. Direções bem diferentes e, de
-      preferência, <b>distâncias diferentes</b> — algo perto e algo longe. É a
-      variação que permite calcular <i>onde</i> a câmera está; pontos todos
-      juntos só corrigem <i>para onde</i> ela olha. As bolinhas azuis mostram
-      o que já foi marcado — se elas estiverem todas amontoadas, espalhe mais.
-      <br/><b>Conferir um ponto</b>: clique no número dele na lista para
-      destacá-lo, ou em <b>mirar</b> para mandar a câmera real de volta ao
-      pan/tilt gravado. Se a mira não cair mais na mesma referência, foi
-      aquele ponto que saiu torto — remova e marque de novo.
-    </div>`;
-
-  let texto;
-  if (!poseAtual.recebida) {
-    texto = "<b>Aguardando telemetria da câmera.</b> Sem pan/tilt não há como "
-          + "casar os pontos — confira se o dispositivo está online (pastilha "
-          + "“borda” acima) antes de continuar.";
-  } else if (n === 0) {
-    texto = `<b>Passo 1 de 3 — marcar os pontos.</b> Ainda não há nenhum.`
-          + receita;
-  } else if (n < mo) {
-    texto = `<b>Passo 1 de 3 — marcar os pontos.</b> ${n} de ${mo} (mínimo `
-          + `para calcular qualquer coisa).` + receita;
-  } else if (n < mp) {
-    texto = `<b>Passo 1 de 3 — marcar os pontos.</b> ${n} marcados: já dá para `
-          + `corrigir <b>a direção</b> da câmera. Chegando a <b>${mp}</b>, o `
-          + `cálculo passa a corrigir também <b>a posição</b> dela — que é o `
-          + `que costuma faltar. Continue.` + receita;
-  } else if (n < me) {
-    texto = `<b>Passo 2 de 3 — melhorar.</b> ${n} pontos: posição e direção já `
-          + `saem. Com <b>${me}</b> ou mais o cálculo também consegue corrigir `
-          + `o <b>curso mecânico do PTZ</b>, se ele estiver errado. Você já `
-          + `pode clicar em <b>Calcular</b> para ver como está.` + receita;
-  } else {
-    texto = `<b>Passo 2 de 3 — melhorar.</b> ${n} pontos, bom número. Clique em `
-          + `<b>Calcular</b>: se o resultado vier como confiável, use `
-          + `<b>Aplicar</b>. Se vier com aviso, some mais pontos em direções e `
-          + `distâncias que ainda faltam, ou remova algum que você suspeite ter `
-          + `marcado torto.` + receita;
-  }
-  passo.innerHTML = texto;
-
-  const lista = document.getElementById("calib-lista");
-  lista.innerHTML = "";
-  calibPontos.forEach((p, i) => {
-    const li = document.createElement("li");
-    if (p.id === calibEmFoco) li.classList.add("foco");
-    const rot = document.createElement("span");
-    rot.innerHTML = `<b>${i + 1}.</b> pan ${p.pan.toFixed(1)}° · tilt ${p.tilt.toFixed(1)}°`;
-    rot.title = "Destacar este ponto e apontar o cone virtual para ele";
-    rot.style.cursor = "pointer";
-    rot.addEventListener("click", () => calibFocar(p));
-    const mirar = document.createElement("button");
-    mirar.textContent = "mirar";
-    mirar.title = "Levar a CÂMERA REAL de volta ao pan/tilt gravado neste ponto "
-                + "(para conferir se ela ainda cai no mesmo lugar)";
-    mirar.addEventListener("click", () => calibMirarCamera(p));
-    const btn = document.createElement("button");
-    btn.textContent = "remover";
-    btn.title = "Remover este ponto";
-    btn.addEventListener("click", () => calibRemover(p.id));
-    li.append(rot, mirar, btn);
-    lista.appendChild(li);
-  });
-
-  // Os marcadores azuis no modelo 3D acompanham exatamente esta lista --
-  // mesmo numero, mesma ordem.
-  sincronizarMarcadoresCalib();
-
-  document.getElementById("calib-calcular").disabled = n < mo;
-  document.getElementById("calib-aplicar").disabled = n < mo;
-  document.getElementById("calib-limpar").disabled = !calibAtiva;
-  document.getElementById("calib-verificar").disabled = !calibAtiva || n === 0;
-  const selo = document.getElementById("calib-selo");
-  selo.hidden = !calibAtiva;
-  if (calibAtiva) {
-    selo.textContent = `ativa · ${calibAtiva.n_pontos} pts · RMS `
-                     + `${Number(calibAtiva.rms_graus).toFixed(2)}°`;
-  }
-}
-
-function calibModo(ligar) {
-  calibrando = ligar;
-  calibPainel().hidden = !ligar;
-  videoWrap.classList.toggle("calibrando", ligar);
-  const btn = document.getElementById("btn-calibrar");
-  if (btn) btn.textContent = ligar ? "Sair da calibração" : "Calibrar";
-  if (ligar) {
-    calibCarregar();
-    // A coluna da direita rola: sem isto o painel de calibração pode nascer
-    // abaixo da dobra e o operador nem percebe que ele apareceu.
-    calibPainel().scrollIntoView({ behavior: "smooth", block: "nearest" });
-    toast("Calibração: aponte a câmera e marque o mesmo ponto no modelo 3D "
-        + "com Ctrl + botão direito.", 6000);
-  } else {
-    document.getElementById("calib-resultado").hidden = true;
-    limparMarcadoresCalib();
-  }
-}
-
-async function calibMarcar(clientX, clientY) {
-  if (!poseAtual.recebida) {
-    toast("Ainda não recebi pan/tilt da câmera — sem isso o ponto não serve.", 4000);
-    return;
-  }
-  const ponto = pontoLocalEm(clientX, clientY);
-  if (!ponto) { toast("Clique em cima do modelo 3D."); return; }
-  try {
-    const r = await fetch(`${SERVER_BASE}/api/dispositivos/${deviceId}/calibracao/pontos`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        pan: poseAtual.pan, tilt: poseAtual.tilt, zoom: poseAtual.zoom, ponto,
-      }),
-    });
-    const j = await r.json();
-    if (!r.ok) { toast(j.error || "Não consegui gravar o ponto.", 4000); return; }
-    calibPontos.push(j);
-    destacarMarcadorCalib(j.id);
-    calibRender();
-    calibApontarCone(ponto);
-    toast(`Ponto ${calibPontos.length} marcado (pan ${poseAtual.pan.toFixed(1)}° · `
-        + `tilt ${poseAtual.tilt.toFixed(1)}°).`);
-  } catch (e) {
-    toast("Não consegui falar com o servidor.");
-  }
-}
-
-/** Aponta o CONE VIRTUAL para um ponto do modelo (a câmera real não se mexe).
- *  É a confirmação visual de que o par (pan/tilt real, ponto 3D) foi aceito:
- *  durante a calibração o cone para de seguir a telemetria, então sem isto
- *  marcar um ponto não mudava nada na tela. */
-async function calibApontarCone(ponto, moverCamera = false) {
-  try {
-    const r = await fetch(`${SERVER_BASE}/api/mirar`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        device_id: deviceId, ponto,
-        zoom: poseAtual.recebida ? poseAtual.zoom : 0,
-        mover_camera: !!moverCamera,
-      }),
-    });
-    const j = await r.json();
-    if (!r.ok) { toast(j.error || "Não consegui apontar o cone.", 4000); return null; }
-    if (j.cone) setConeTarget(j.cone);
-    if (j.erro_camera) relatarFalhaPtz(j.erro_camera);
-    return j;
-  } catch (e) {
-    toast("Não consegui falar com o servidor.");
-    return null;
-  }
-}
-
-function calibFocar(p) {
-  destacarMarcadorCalib(p.id);
-  calibRender();
-  calibApontarCone(p.ponto);
-}
-
-/** Leva a CÂMERA REAL ao pan/tilt gravado no ponto. Serve para conferir um
- *  ponto suspeito: se a mira não cair mais na mesma referência do mundo
- *  real, foi aquele ponto que saiu torto. */
-async function calibMirarCamera(p) {
-  destacarMarcadorCalib(p.id);
-  calibRender();
-  const j = await calibApontarCone(p.ponto, true);
-  if (j && j.moved) toast(`Câmera indo para o ponto (pan ${p.pan.toFixed(1)}° · `
-                        + `tilt ${p.tilt.toFixed(1)}°).`);
-}
-
-async function calibRemover(id) {
-  try {
-    await fetch(`${SERVER_BASE}/api/dispositivos/${deviceId}/calibracao/pontos/${id}`,
-                { method: "DELETE" });
-    calibPontos = calibPontos.filter(p => p.id !== id);
-    if (calibEmFoco === id) calibEmFoco = null;
-    calibRender();
-  } catch (e) { toast("Não consegui remover o ponto."); }
-}
-
-function calibMostrarResultado(r) {
-  const el = document.getElementById("calib-resultado");
-  const bom = r.confiavel;
-  const avisos = (r.geometria && r.geometria.avisos) || [];
-  // Cada número vem com o que ele quer dizer: "0,3°" não diz nada sozinho
-  // para quem não acompanhou a matemática.
-  el.innerHTML =
-    `<b>Passo 3 de 3 — conferir e aplicar.</b><br/>`
-    + `<span class="${bom ? "ok" : "ruim"}">${bom ? "✔ resultado confiável" : "⚠ resultado pouco confiável"}</span><br/>`
-    + `<b>${r.rms_graus.toFixed(2)}°</b> de erro médio de apontamento `
-    + `(pior ponto ${r.erro_max_graus.toFixed(2)}°) — o quanto os seus pontos `
-    + `discordam entre si.<br/>`
-    + `<b>${r.incerteza_pos_m === null ? "—" : "±" + r.incerteza_pos_m + " m"}</b> `
-    + `de incerteza na posição da câmera — é este o número que diz se dá para `
-    + `confiar, não o erro acima. A pose ficou ${r.deslocamento_m} m longe da `
-    + `cadastrada.<br/>`
-    + (r.modo === "completo"
-        ? `Corrigiu também o curso do PTZ: pan ×${r.escala_pan}, tilt ×${r.escala_tilt}.<br/>`
-        : "")
-    + (avisos.length
-        ? `<span class="ruim">${avisos.map(escapar).join("<br/>")}</span><br/>`
-        : "")
-    + (bom ? `Clique em <b>Aplicar</b> para usar esta pose.`
-           : `Some pontos onde ainda falta variação, ou remova algum marcado torto, `
-             + `e calcule de novo. Aplicar assim mesmo é possível, mas o cone vai `
-             + `continuar errado.`);
-  el.hidden = false;
-}
-
-function calibMostrarVerificacao(r) {
-  const el = document.getElementById("calib-resultado");
-  const ok = r.dentro_do_esperado;
-  const antes = r.rms_na_calibracao_graus;
-  // Deriva = o erro de HOJE bem maior que o do dia da calibração. Sem essa
-  // comparação, um RMS alto poderia ser só uma calibração malfeita.
-  const piorou = antes != null && r.rms_graus > Math.max(2 * antes, antes + 0.5);
-  el.innerHTML =
-    `<b>Verificação da calibração em vigor</b><br/>`
-    + `<span class="${ok ? "ok" : "ruim"}">${ok ? "✔ ainda batendo" : "⚠ fora do esperado"}</span> — `
-    + `erro de <b>${r.rms_graus.toFixed(2)}°</b> nos ${r.n_pontos} pontos guardados`
-    + (antes != null ? `, contra ${Number(antes).toFixed(2)}° no dia da calibração.` : ".")
-    + (piorou
-        ? `<br/><span class="ruim">O erro cresceu bastante: a referência da câmera `
-          + `provavelmente se moveu (reinício que perdeu o encoder, troca de ótica, `
-          + `ou alguém remontou o equipamento). Recalibre.</span>`
-        : ok ? `<br/>Nada a fazer.` : `<br/>Verifique se algum ponto foi marcado torto.`);
-  el.hidden = false;
-}
-
-async function calibVerificar() {
-  try {
-    const r = await fetch(`${SERVER_BASE}/api/dispositivos/${deviceId}/calibracao/verificar`,
-                          { method: "POST" });
-    const j = await r.json();
-    if (!r.ok) { toast(j.error || "Não consegui verificar.", 5000); return; }
-    calibMostrarVerificacao(j);
-  } catch (e) { toast("Não consegui falar com o servidor."); }
-}
-
-async function calibResolver(aplicar) {
-  const rota = aplicar ? "aplicar" : "resolver";
-  try {
-    const r = await fetch(`${SERVER_BASE}/api/dispositivos/${deviceId}/calibracao/${rota}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    const j = await r.json();
-    if (!r.ok) { toast(j.error || "Não consegui calcular.", 5000); return; }
-    const resultado = aplicar ? j.resultado : j;
-    calibMostrarResultado(resultado);
-    if (aplicar) {
-      toast("Calibração aplicada. Recarregando a cena com a pose nova...", 3500);
-      await calibCarregar();
-      // A pose mudou no servidor: a cena precisa ser remontada com ela.
-      setTimeout(() => location.reload(), 1200);
-    }
-  } catch (e) {
-    toast("Não consegui falar com o servidor.");
-  }
-}
-
-async function calibLimpar() {
-  if (!confirm("Descartar a calibração e voltar para a pose estimada?\n\n"
-             + "Os pontos marcados são preservados.")) return;
-  try {
-    await fetch(`${SERVER_BASE}/api/dispositivos/${deviceId}/calibracao`,
-                { method: "DELETE" });
-    toast("Calibração removida. Recarregando...", 2500);
-    setTimeout(() => location.reload(), 1000);
-  } catch (e) { toast("Não consegui remover a calibração."); }
-}
-
-document.getElementById("calib-calcular")
-  .addEventListener("click", () => calibResolver(false));
-document.getElementById("calib-aplicar")
-  .addEventListener("click", () => calibResolver(true));
-document.getElementById("calib-verificar").addEventListener("click", calibVerificar);
-document.getElementById("calib-limpar").addEventListener("click", calibLimpar);
-document.getElementById("calib-sair").addEventListener("click", () => calibModo(false));
-
-// Ctrl + botão direito marca o ponto. O contextmenu é bloqueado só nesse
-// caso para não atrapalhar o menu do navegador no resto da tela.
-renderer.domElement.addEventListener("contextmenu", (e) => {
-  if (calibrando && e.ctrlKey) e.preventDefault();
-});
-renderer.domElement.addEventListener("pointerdown", (e) => {
-  if (!calibrando || e.button !== 2 || !e.ctrlKey) return;
-  e.preventDefault();
-  calibMarcar(e.clientX, e.clientY);
-});
 
 renderer.domElement.addEventListener("pointerdown", (e) => {
   if (!e.shiftKey || e.button !== 0) return;
@@ -2625,11 +1993,6 @@ function mostrarAvisoSem3D(titulo, detalheHtml) {
   }
   init();
   loadHistory();
-
-  // O botao "Calibrar" mora na barra de titulo (criada por layout.js).
-  const btnCal = document.getElementById("btn-calibrar");
-  if (btnCal) btnCal.addEventListener("click", () => calibModo(!calibrando));
-  calibCarregar();   // ja mostra o selo "ativa" se este dispositivo tem calibracao
 })();
 </script>
 </body>

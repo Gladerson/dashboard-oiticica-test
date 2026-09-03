@@ -646,27 +646,11 @@ def cmd_absolute(c: AbsoluteCommand):
 
 @app.post("/command/home")
 def cmd_home():
-    """Vai para o HOME guardado na camera -- a mesma referencia que os outros
-    sistemas que compartilham a camera usam. Se a camera nao implementar
-    GotoHomePosition, cai para o ponto zero das coordenadas ONVIF."""
     motion.parar()
     time.sleep(cfg.PTZ_MOTION_TICK_S * 2)
     est.marcar_movimento()
-    if not ptz_cmd.ir_para_home():
-        ptz_cmd.ir_para_zero()
-        return {"status": "ok", "alvo": "zero", "detalhe": "camera sem home ONVIF"}
-    return {"status": "ok", "alvo": "home"}
-
-
-@app.post("/command/zero")
-def cmd_zero():
-    """Origem das coordenadas ONVIF (pan=0, tilt=0). Util para conferir a
-    geometria: e o ponto onde o base_forward da calibracao esta ancorado."""
-    motion.parar()
-    time.sleep(cfg.PTZ_MOTION_TICK_S * 2)
-    est.marcar_movimento()
-    ptz_cmd.ir_para_zero()
-    return {"status": "ok", "alvo": "zero"}
+    ptz_cmd.go_home()
+    return {"status": "ok"}
 
 
 @app.post("/borda/estado")
@@ -717,17 +701,11 @@ def video_feed():
 
 # ============================================================================
 if __name__ == "__main__":
-    # Por padrao NAO mexemos na camera ao subir: ela pode estar sendo usada
-    # por outro sistema (Defense IA), e a geometria nao precisa disso -- a
-    # telemetria le a posicao absoluta (GetStatus) a cada ciclo.
+    print(">> Indo para o ponto zero (home)...")
+    ptz_cmd.go_home()
+    time.sleep(3)
     p, t, z = ptz_cmd.get_status()
-    if cfg.PTZ_ZERO_AO_INICIAR:
-        print(">> PTZ_ZERO_AO_INICIAR: indo para o ponto zero das coordenadas ONVIF...")
-        ptz_cmd.ir_para_zero()
-        time.sleep(3)
-        p, t, z = ptz_cmd.get_status()
-    print(f">> Posicao da camera: pan={p:.2f} tilt={t:.2f} zoom={z:.2f} "
-          f"(absoluta; nao e preciso zerar)")
+    print(f">> Apos o home: pan={p:.2f} tilt={t:.2f} zoom={z:.2f}")
 
     for alvo in (motion.loop, video_loop, telemetria_loop, stream_loop,
                  gerente_transporte_loop, atender_pedidos_imagem,

@@ -141,24 +141,14 @@ motion = PTZMotion(ptz_cmd)
 if not ptz_cmd.has_continuous:
     print("   AVISO: câmera sem ContinuousMove; usando passos repetidos como fallback.")
 
-# NAO mexemos na camera ao subir, por padrao. Duas razoes:
-#
-#   1. A camera pode ser COMPARTILHADA (o Defense IA da Intelbras usa a
-#      mesma). Puxa-la para o ponto zero a cada restart roubaria a cena de
-#      quem estiver usando.
-#   2. E desnecessario: a telemetria le a posicao ABSOLUTA da camera
-#      (GetStatus) a cada ciclo, entao a geometria nao depende de onde ela
-#      esta ao ligar. Nada aqui "zera" nada.
-#
-# Quem quiser o comportamento antigo liga PTZ_ZERO_AO_INICIAR=true.
+print(">> Movendo para o ponto zero (home) das coordenadas ONVIF...")
+ptz_cmd.go_home()
+time.sleep(3)
+
 _p, _t, _z = ptz_cmd.get_status()
-if config.PTZ_ZERO_AO_INICIAR:
-    print(">> PTZ_ZERO_AO_INICIAR: movendo para o ponto zero das coordenadas ONVIF...")
-    ptz_cmd.ir_para_zero()
-    time.sleep(3)
-    _p, _t, _z = ptz_cmd.get_status()
-print(f">> Posição atual da câmera: pan={_p:.2f}° tilt={_t:.2f}° zoom={_z:.2f}% "
-      f"(a geometria usa estes valores absolutos; não é preciso zerar)")
+print(f">> Status após o home: pan={_p:.2f}° tilt={_t:.2f}° zoom={_z:.2f}%")
+if abs(_p) > 1.0 or abs(_t) > 1.0:
+    print("   AVISO: a câmera não reportou pan/tilt ~0 após o home.")
 
 
 # ----------------------------------------------------------------------------
@@ -356,24 +346,11 @@ def command_absolute(cmd: AbsoluteCommand):
 
 @app.post("/command/home")
 def command_home():
-    """Home guardado na camera; cai para o ponto zero se ela nao tiver."""
     motion.parar()
     time.sleep(config.PTZ_MOTION_TICK_SECONDS * 2)
     marcar_movimento()
-    if not ptz_cmd.ir_para_home():
-        ptz_cmd.ir_para_zero()
-        return {"status": "ok", "alvo": "zero", "detalhe": "camera sem home ONVIF"}
-    return {"status": "ok", "alvo": "home"}
-
-
-@app.post("/command/zero")
-def command_zero():
-    """Origem das coordenadas ONVIF (pan=0, tilt=0)."""
-    motion.parar()
-    time.sleep(config.PTZ_MOTION_TICK_SECONDS * 2)
-    marcar_movimento()
-    ptz_cmd.ir_para_zero()
-    return {"status": "ok", "alvo": "zero"}
+    ptz_cmd.go_home()
+    return {"status": "ok"}
 
 
 def mjpeg_generator():
