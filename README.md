@@ -675,7 +675,38 @@ parar, e garante parada automática (~800 ms) se o navegador travar, a aba fecha
 ou a rede cair. O dashboard renova a intenção a cada 300 ms.
 
 O dashboard fala **direto** com o agente na 8090 (CORS liberado), com fallback
-automático pelo proxy do server se isso falhar.
+automático pelo proxy do server se isso falhar. Esse fallback é **temporário**
+(60 s): quem abre o dashboard fora da LAN uma vez não fica preso ao proxy pelo
+resto da sessão.
+
+#### Para onde vão os comandos (e por que o PTZ dava 502)
+
+O servidor precisa saber em que endereço a API do agente responde. A ordem é:
+
+1. **URL do controlador** cadastrada no dispositivo (Dispositivos → Editar);
+2. senão, o **IP de onde aquele dispositivo fala com o servidor** — cada POST
+   autenticado em `/api/edge/*` registra a origem, e daí sai
+   `http://<ip>:8090` (`CONTROLLER_PORTA`);
+3. só então `CONTROLLER_URL` do `server/.env`.
+
+O passo 2 é novo. Antes, um dispositivo sem URL cadastrada caía direto no
+padrão `http://127.0.0.1:8090` — herdado de quando havia um único equipamento
+rodando na mesma máquina do servidor — e **todo** comando de PTZ respondia
+`502 Bad Gateway`, sem nada no log além disso. O sintoma era o PTZ
+simplesmente travado.
+
+Duas redes de segurança acompanham:
+
+- se a URL **cadastrada** falhar e a telemetria estiver chegando de outro
+  endereço, o comando é repetido uma vez nesse endereço (o Pi trocou de IP) e
+  o log avisa para corrigir o cadastro;
+- o 502 agora traz `url`, `origem_url` e uma `dica` do que conferir; o
+  dashboard mostra isso abaixo dos botões, com um botão **Testar controlador**
+  (`GET /api/ptz/diagnostico`). A lista em **Dispositivos** exibe a URL
+  efetiva e de onde ela saiu.
+
+O `⌂` continua indo ao **home** da câmera e `/api/command/zero` ao **ponto
+zero** das coordenadas ONVIF (§9-ter).
 
 ### Cone de visão
 
@@ -982,8 +1013,18 @@ elevação = el0 + TILT_SIGN · escala_tilt · tilt_reportado
    identificável (quina, canto de bloco, marca na parede).
 3. Ache o **mesmo** ponto no modelo 3D e marque com **Ctrl + botão direito**.
    O pan/tilt do momento é gravado junto.
-4. Repita em **direções e distâncias variadas** (ver abaixo).
-5. **Calcular** mostra o resultado sem gravar nada. **Aplicar** grava e
+4. Confira: aparece uma **bolinha azul numerada** no ponto marcado e o **cone
+   virtual salta para ela**. Essa é a confirmação visual de que o par
+   (pan/tilt real, ponto 3D) entrou. Se o cone foi parar longe do que a
+   câmera real está vendo, é exatamente esse erro que a calibração corrige —
+   siga marcando. Os marcadores só existem enquanto a calibração está aberta.
+5. Repita em **direções e distâncias variadas** (ver abaixo). As bolinhas
+   mostram o que já foi marcado: se estiverem amontoadas, espalhe mais.
+6. Para conferir um ponto suspeito: clique no número dele na lista (destaca e
+   aponta o cone) ou em **mirar**, que leva a **câmera real** de volta ao
+   pan/tilt gravado. Se a mira não cair mais na mesma referência do mundo
+   real, foi aquele ponto que saiu torto — remova e marque de novo.
+7. **Calcular** mostra o resultado sem gravar nada. **Aplicar** grava e
    recarrega a cena com a pose nova. **Descalibrar** volta para a estimada
    (preservando os pontos).
 
@@ -1083,6 +1124,9 @@ Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
 | `/api/inferencia` | POST | sessão | ajusta limiares em runtime -- exige `device_id` |
 | `/api/borda` | GET | sessão | painel de estado da borda -- exige `?device_id=` |
 | `/api/aim` | POST | sessão | close por seleção -- exige `device_id` |
+| `/api/mirar` | POST | sessão | cone (e, com `mover_camera`, a câmera real) apontados para um ponto do modelo -- usado pela calibração |
+| `/api/ptz/diagnostico` | GET | sessão | por que o PTZ não responde: URL usada, de onde ela saiu, IP visto e o erro exato |
+| `/api/command/zero` | POST | sessão | leva a câmera à origem das coordenadas ONVIF |
 | `/api/locate` | POST | sessão | revisitar detecção -- dispositivo vem da PRÓPRIA detecção salva, não do cliente |
 | `/api/detection/{id}/pedir_imagem` | POST | sessão | pede a foto completa ao Pi ("Abrir") -- dispositivo idem `/api/locate` |
 | `/login`, `/api/login` | GET/POST | não | tela e endpoint de entrada |
@@ -1247,8 +1291,10 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
 | `DATABASE_URL` | ver `.env.example` | conexão PostgreSQL (usuários/sessões, §5.1a) |
 | `SESSION_COOKIE_SECURE` | `false` | `true` só atrás de HTTPS de verdade (reverse proxy) |
 | `SESSAO_DURACAO_H` | 168 (7 dias) | validade do cookie de sessão |
-| `CONTROLLER_URL` | `http://127.0.0.1:8090` | *fallback* servidor → Pi, só para dispositivos sem `controller_url` próprio cadastrado |
-| `CONTROLLER_PUBLIC_URL` | = acima | *fallback* navegador → Pi (PTZ direto), idem acima |
+| `CONTROLLER_URL` | `http://127.0.0.1:8090` | último *fallback* servidor → Pi, usado só quando o dispositivo não tem `controller_url` cadastrada **e** nunca mandou telemetria (§8, "Para onde vão os comandos") |
+| `CONTROLLER_PUBLIC_URL` | = acima | idem, para o caminho navegador → Pi (PTZ direto) |
+| `CONTROLLER_PORTA` | 8090 | porta usada ao montar a URL a partir do IP visto na telemetria |
+| `TIMEOUT_PTZ_S` | 2.5 | espera máxima do servidor por um comando de PTZ; curto de propósito, para falhar rápido em vez de empilhar requisições |
 | `STREAM_JANELA_S` | 60 | duração do pedido de vídeo |
 | `STREAM_FPS` / `STREAM_LARGURA` / `STREAM_QUALIDADE` | 4 / 640 / 60 | parâmetros pedidos ao Pi |
 | `PAN_SIGN` / `TILT_SIGN` | -1 / 1 | sentido de rotação (global -- é fiação de câmera, não propriedade da localidade) |
@@ -1290,6 +1336,30 @@ Bearer agora).
 ## 13. Resolução de problemas
 
 Casos reais da implantação, com a causa e não apenas a solução.
+
+**PTZ travado e `502 Bad Gateway` em `/api/ptz/*` no log do servidor** — o
+servidor não consegue alcançar a API do agente. Clique em **Testar
+controlador** no aviso que aparece abaixo dos botões de PTZ (ou chame
+`GET /api/ptz/diagnostico?device_id=...`): a resposta diz a URL tentada, de
+onde ela saiu e o erro exato. Os três casos:
+
+- *origem `padrao_do_env`* — o dispositivo não tem URL cadastrada e nenhuma
+  telemetria chegou dele, então o servidor caiu em `http://127.0.0.1:8090`,
+  onde não há ninguém. Confira se o agente está rodando no Raspberry e se o
+  `DEVICE_TOKEN` do `.env` dele confere com o do cadastro; assim que a
+  primeira telemetria chegar, a URL se resolve sozinha.
+- *origem `ip_observado`, mas a porta não responde* — o Pi fala com o
+  servidor, mas a API dele não subiu. No Raspberry:
+  `sudo ss -lptn 'sport = :8090'` e `journalctl -u agente-borda -n 50`.
+  Também vale checar firewall entre servidor e Pi.
+- *origem `cadastrada` e a URL falhou* — o endereço cadastrado envelheceu. O
+  servidor tenta uma vez o IP de onde a telemetria chega e loga o aviso;
+  corrija em **Dispositivos → Editar** (ou apague o campo e deixe o servidor
+  descobrir).
+
+Note que **um PTZ travado não é o mesmo que uma calibração errada**: se o
+cone anda mas cai no lugar errado, o problema é pose (§9-ter); se a câmera
+não se mexe, é este.
 
 **A câmera e as detecções caem em pontos diferentes do modelo** — quase
 sempre é offset UTM trocado: o `.glb` foi substituído por outro recorte da
