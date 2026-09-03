@@ -51,6 +51,7 @@ load_dotenv(_Path(__file__).parent / ".env")
 from glb_geo import PAN_SIGN, TILT_SIGN  # noqa: E402
 
 import auth  # noqa: E402
+import calibracao  # noqa: E402
 import db  # noqa: E402
 import dispositivos  # noqa: E402
 import registro_dispositivos as registro  # noqa: E402
@@ -198,6 +199,7 @@ app.mount("/history_files", StaticFiles(directory=HISTORY_DIR), name="history_fi
 db.iniciar()
 auth.instalar(app)
 dispositivos.instalar(app)
+calibracao.instalar(app)
 
 
 # ----------------------------------------------------------------------------
@@ -305,6 +307,10 @@ def camera_info(device_id: str):
         "pan_sign": PAN_SIGN,
         "tilt_sign": TILT_SIGN,
         "pronto_3d": pronto,
+        # Calibracao (server/calibracao.py): None enquanto a pose for a
+        # estimada a partir de lat/lon + altura de terreno.
+        "calibracao": calibracao.estado_publico(
+            db.dispositivo_por_id_com_localidade(device_id)),
     }
 
 

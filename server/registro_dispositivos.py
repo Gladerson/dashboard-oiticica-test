@@ -30,7 +30,7 @@ import numpy as np
 import requests
 
 import db
-from glb_geo import GeoModel
+from glb_geo import GeoModel, _normalize as _normalizar
 
 # --- Falam com a API do Pi (porta 8090). Usados quando o dispositivo nao
 # tem controller_url/controller_url_publica proprios (dispositivos.py) --
@@ -257,6 +257,11 @@ class DispositivoRuntime:
         self.geo = None
         self.camera_local_pos = None
         self.base_forward = None
+        # Escalas do curso mecanico do PTZ: 1.0 = os graus reportados pela
+        # camera valem como vem. So mudam se a calibracao resolver isso.
+        self.escala_pan = 1.0
+        self.escala_tilt = 1.0
+        self.calibrado = False
         self._preparar_geometria(linha)
 
     def pronto(self):
@@ -278,6 +283,25 @@ class DispositivoRuntime:
         except Exception as e:
             print(f"[registro] '{self.nome}': falha ao carregar o modelo 3D da "
                   f"localidade '{self.localidade_nome}': {e}")
+            return
+
+        # Pose CALIBRADA (server/calibracao.py) vence a estimativa: ela foi
+        # medida a partir de pontos casados pelo operador, enquanto o resto
+        # deste metodo e uma cadeia de chutes (altura de terreno estimada e
+        # orientacao pelo ponto de malha mais proximo).
+        if linha.get("calib_pos_x") is not None and linha.get("calib_fwd_x") is not None:
+            self.geo = geo
+            self.camera_local_pos = np.array(
+                [linha["calib_pos_x"], linha["calib_pos_y"], linha["calib_pos_z"]], dtype=float)
+            self.base_forward = _normalizar(np.array(
+                [linha["calib_fwd_x"], linha["calib_fwd_y"], linha["calib_fwd_z"]], dtype=float))
+            self.escala_pan = float(linha.get("calib_escala_pan") or 1.0)
+            self.escala_tilt = float(linha.get("calib_escala_tilt") or 1.0)
+            self.calibrado = True
+            print(f"[registro] '{self.nome}' CALIBRADO ({linha.get('calib_modo')}, "
+                  f"{linha.get('calib_n_pontos')} pontos, "
+                  f"RMS {linha.get('calib_rms_graus')} graus): camera em (local) "
+                  f"{self.camera_local_pos}, direcao base {self.base_forward}")
             return
 
         local_x, local_y = geo.latlon_to_local_xy(self.lat, self.lon)
@@ -318,6 +342,11 @@ class DispositivoRuntime:
         key = (round(pan_deg, 2), round(tilt_deg, 2), round(zoom_pct, 1))
         if self._view_cache["key"] == key:
             return self._view_cache["value"]
+        # Correcao do curso mecanico (so != 1.0 quando a calibracao resolveu
+        # as escalas): a camera reporta -1..1 e o agente converte assumindo
+        # +-180/+-90 graus; se essa suposicao estiver errada, os angulos vem
+        # esticados ou comprimidos.
+        pan_deg, tilt_deg = pan_deg * self.escala_pan, tilt_deg * self.escala_tilt
         half = half_angle_for_zoom(zoom_pct)
         cone = self.geo.cone_footprint(
             self.camera_local_pos, self.base_forward, pan_deg, tilt_deg,

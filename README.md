@@ -101,6 +101,7 @@ dashboard_oiticica_test/
 │   ├── db.py                       # PostgreSQL: usuarios/sessoes/localidades/dispositivos/dashboards
 │   ├── auth.py                     # login por sessão, middleware de autenticação, admin de usuários
 │   ├── dispositivos.py             # cadastro de localidades (modelo 3D) e dispositivos CV-SHM
+│   ├── calibracao.py               # resseccão angular: mede a pose real da câmera no modelo (§9-ter)
 │   ├── migrar_dispositivo_legado.py  # cadastra o dispositivo/localidade que antes eram hardcoded (§9-bis)
 │   ├── prepare_model.sh            # remove compressão Draco do .glb (rodar uma vez, uso manual)
 │   ├── static/layout.css           # casca visual comum: menu lateral, barra de título, cartões, tabelas
@@ -150,6 +151,7 @@ dashboard_oiticica_test/
 | menu lateral, barra de título, tema | `server/static/layout.css` + `layout.js` |
 | login, sessão, usuários | `server/auth.py` + `server/db.py` |
 | localidades, modelos 3D, dispositivos | `server/dispositivos.py` |
+| calibração da pose da câmera | `server/calibracao.py` |
 | compilação do modelo | `notebook/` na ordem numérica da §6 |
 
 Duas invariantes que atravessam o código e não são óbvias na leitura local:
@@ -896,6 +898,100 @@ tenta carregar modelo 3D nem vídeo.
 
 ---
 
+## 9-ter. Calibrar o gêmeo digital
+
+Sem calibração, a pose da câmera dentro do modelo é **estimada**, e por dois
+caminhos frágeis: a posição vem de lat/lon (com erro de GPS) mais uma altura
+de terreno estimada, e a orientação — para onde a câmera olha em
+`pan=0/tilt=0` — é um **chute**: a direção até o ponto de malha mais
+próximo. Não há razão para o norte mecânico da câmera coincidir com isso. O
+resultado é o cone e as detecções caindo perto, mas não em cima.
+
+Calibrar é **medir** essa pose em vez de estimá-la.
+
+### Como funciona
+
+A mira no centro da telinha **é o eixo óptico** da câmera. Então, ao apontar
+a câmera para um ponto de referência e marcar o mesmo ponto no modelo 3D,
+você cria um par:
+
+```
+direção prevista(pan, tilt)  ==  normalizar(ponto_3D − posição_da_câmera)
+```
+
+Cada par dá 2 equações (azimute e elevação). O servidor
+(`server/calibracao.py`) resolve por mínimos quadrados. O modelo direto é
+**exatamente separável** em coordenadas esféricas — conferido numericamente
+contra `glb_geo.direction_from_pan_tilt`, desvio < 10⁻¹³ grau:
+
+```
+azimute  = az0 + PAN_SIGN  · escala_pan  · pan_reportado
+elevação = el0 + TILT_SIGN · escala_tilt · tilt_reportado
+```
+
+### O passo a passo
+
+1. Selecione o dispositivo e clique em **Calibrar** (barra de título). A
+   mira aparece e **o cone congela** — ele ainda está desenhado com a pose
+   errada, e vê-lo pular a cada movimento só atrapalharia a mira.
+2. Mova o PTZ até a mira cair sobre um ponto de referência bem
+   identificável (quina, canto de bloco, marca na parede).
+3. Ache o **mesmo** ponto no modelo 3D e marque com **Ctrl + botão direito**.
+   O pan/tilt do momento é gravado junto.
+4. Repita em **direções e distâncias variadas** (ver abaixo).
+5. **Calcular** mostra o resultado sem gravar nada. **Aplicar** grava e
+   recarrega a cena com a pose nova. **Descalibrar** volta para a estimada
+   (preservando os pontos).
+
+### Quantos pontos
+
+| Pontos | O que passa a ser resolvido |
+|---|---|
+| 2 | só a orientação (`az0`, `el0`) — 2 incógnitas. Já corrige o erro dominante |
+| 4 | orientação **+ posição** — 5 incógnitas. Mínimo útil |
+| 8+ | permite também as escalas de pan/tilt (curso mecânico) — 7 incógnitas |
+
+Erro mediano da posição em simulação, com 0,3° de erro de marcação:
+
+| Pontos | 4 | 8 | 12 | 16 |
+|---|---|---|---|---|
+| Erro | ~1,1 m | ~0,6 m | ~0,4 m | ~0,4 m |
+
+O joelho da curva fica entre **8 e 12 pontos** — é o que a interface
+recomenda.
+
+As escalas **não** entram só por haver pontos suficientes. Se o curso
+mecânico já estiver certo, os dois parâmetros a mais só absorvem ruído e a
+posição *piora* (0,45 m → 1,10 m, medido). Por isso o modo automático ajusta
+os dois modelos e fica com o maior **apenas quando ele explica os ângulos
+sensivelmente melhor**. Quando o curso está mesmo errado (testado com
+pan ×1,15 e tilt ×0,90), não resolver a escala custa ~9 m de erro; resolvendo,
+volta a ~1 m e as escalas são recuperadas com 3 casas.
+
+### Por que “direções e distâncias variadas”
+
+A posição só é observável por **paralaxe**. Pontos alinhados, ou todos na
+mesma parede à mesma distância, deixam a posição mal determinada — e o
+perigo é que **o RMS continua baixo** nesse caso. Medido: 0,17° de RMS com
+**54 m** de erro de posição. RMS mede o quanto o ajuste fecha, não o quanto
+os dados restringem cada incógnita.
+
+Por isso o critério de confiança **não é o RMS**, e sim a incerteza
+estatística da posição, tirada da covariância `σ²·(JᵀJ)⁻¹`. Ela acompanha o
+erro real de perto (medido: ±1,9 m estimados contra 2,1 m reais) e explode
+quando a geometria é degenerada (±182 m) — que é exatamente o caso a
+reprovar. O painel mostra esse número e avisa o que fazer.
+
+### Onde fica guardado
+
+Os pontos ficam na tabela `calibracao_pontos` (dá para revisar, remover um
+ponto ruim e recalcular sem refazer tudo); a pose resolvida vai para as
+colunas `calib_*` de `dispositivos`. Enquanto elas forem `NULL`, vale a pose
+estimada — calibrar não é obrigatório, e “Descalibrar” volta ao
+comportamento anterior a qualquer momento.
+
+---
+
 ## 10. Referência de API
 
 ### Agente, no Raspberry (porta 8090)
@@ -928,6 +1024,12 @@ Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
 | `/api/dispositivos` | GET/POST | sessão | listar (próprios; todos se admin) / criar dispositivo |
 | `/api/dispositivos/{id}` | PATCH | sessão | editar o cadastro (localidade, lat/lon, altura, transporte, controller); **não** troca o token |
 | `/api/dispositivos/{id}` | DELETE | sessão | excluir (só o dono ou admin); o token para de valer na hora |
+| `/api/dispositivos/{id}/calibracao` | GET | sessão | pontos casados + calibração em vigor (§9-ter) |
+| `/api/dispositivos/{id}/calibracao` | DELETE | sessão | volta para a pose estimada (`?apagar_pontos=true` também limpa os pontos) |
+| `/api/dispositivos/{id}/calibracao/pontos` | POST | sessão | grava um par (pan/tilt ↔ ponto 3D) |
+| `/api/dispositivos/{id}/calibracao/pontos/{pid}` | DELETE | sessão | remove um ponto |
+| `/api/dispositivos/{id}/calibracao/resolver` | POST | sessão | calcula e devolve **sem gravar** (prévia) |
+| `/api/dispositivos/{id}/calibracao/aplicar` | POST | sessão | calcula, grava a pose e remonta o runtime |
 | `/api/camera_info` \| `/api/view` | GET | sessão | pose/geometria e cone sob demanda -- exige `?device_id=` |
 | `/api/stream/start` \| `renovar` \| `stop` | POST | sessão | janela de vídeo de 60 s -- exige `device_id` |
 | `/api/stream/atual.jpg` | GET | sessão | último quadro recebido -- exige `device_id` |
@@ -1413,7 +1515,10 @@ indesejável, mova para variável de ambiente.
 - **Curso mecânico do PTZ não calibrado.** A câmera reporta pan/tilt
   normalizados (−1..1) e assume-se ±180°/±90°. É propriedade da câmera, não do
   local, e pode ser medida em bancada com `controller/calibrar_curso.py` (com o
-  agente parado).
+  agente parado). ✅ **Também dá para resolver pelo dashboard**: a calibração
+  do gêmeo digital (§9-ter) estima as escalas de pan/tilt junto com a pose,
+  a partir de 8 pontos ou mais — e só as aplica quando os dados mostram que
+  o curso está mesmo errado.
 - **Altura da câmera estimada.** O server cai na estimativa por percentil dos
   vértices vizinhos, porque a câmera fica ~36 m além da borda norte do modelo. A
   estimativa (87,07) praticamente coincide com o ponto de malha mais próximo
@@ -1424,7 +1529,14 @@ indesejável, mova para variável de ambiente.
   `CAMERA_ABS_ALT`, que existia antes da etapa multi-dispositivo para
   sobrescrever com uma elevação absoluta, não existe mais -- cada
   dispositivo cadastrado só tem `alt_acima_solo`, relativo ao terreno.)
+  ✅ **Contornável pela calibração** (§9-ter): com 4 pontos ou mais, a
+  posição da câmera passa a ser medida, e a altura estimada deixa de
+  importar.
 - **Sentido do pan** corrigido com `PAN_SIGN=-1`, ainda por confirmar em campo.
+  A calibração absorve um erro de *orientação*, mas não um sinal trocado:
+  `PAN_SIGN`/`TILT_SIGN` continuam globais (é convenção de fiação da câmera,
+  não propriedade do local). Se o sinal estiver errado, a calibração não
+  converge para um RMS baixo — o que, na prática, serve de teste.
 - **O limiar de confiança existe em dois lugares** (`edge/.env` e
   `server/borda.py`) e o do servidor vence silenciosamente. O correto seria o
   servidor herdar o valor que o Pi reporta na primeira telemetria.
