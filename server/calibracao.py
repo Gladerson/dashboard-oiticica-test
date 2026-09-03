@@ -357,6 +357,41 @@ def resolver(geo, pontos, pos_inicial, base_forward_inicial=None, modo=None):
 # experimentar (tirar um ponto ruim, recalcular) sem estragar a pose que ja
 # esta valendo.
 # ============================================================================
+def verificar(geo, pontos, camera_local_pos, base_forward, esc_pan=1.0, esc_tilt=1.0):
+    """Reavalia os pontos guardados contra uma calibracao JA EM VIGOR, sem
+    resolver nada.
+
+    Para que serve: a geometria e ancorada na origem das coordenadas ONVIF
+    da camera (ver README, "home nao e ponto zero"). Isso e estavel -- e
+    propriedade mecanica da camera, nao uma preferencia editavel -- mas nao
+    e imune: se a camera perder/refazer a referencia dos encoders num
+    reinicio, ou se alguem trocar a otica, os mesmos pontos passam a apontar
+    para outro lugar. Como os pontos ficam guardados, da para medir isso a
+    qualquer momento: se o erro subiu, a referencia andou."""
+    modelo = ModeloAngular(geo)
+    n = len(pontos)
+    if n == 0:
+        raise ValueError("não há pontos guardados para verificar.")
+
+    pans = np.array([float(p["pan"]) for p in pontos])
+    tilts = np.array([float(p["tilt"]) for p in pontos])
+    xyz = np.array([[float(c) for c in p["ponto"]] for p in pontos], dtype=float)
+    az0, el0 = geo._az_el(np.asarray(base_forward, dtype=float))
+
+    r = modelo.residuos(np.asarray(camera_local_pos, dtype=float), az0, el0,
+                        esc_pan, esc_tilt, pans, tilts, xyz)
+    por_ponto = np.hypot(r[:n], r[n:])
+    rms = float(np.sqrt(np.mean(por_ponto ** 2)))
+    return {
+        "n_pontos": n,
+        "rms_graus": round(rms, 3),
+        "erro_max_graus": round(float(por_ponto.max()), 3),
+        "residuos_por_ponto": [round(float(x), 3) for x in por_ponto],
+        "dentro_do_esperado": bool(rms <= RMS_ALERTA_GRAUS),
+        "rms_alerta_graus": RMS_ALERTA_GRAUS,
+    }
+
+
 def _ponto_publico(p):
     return {
         "id": str(p["id"]),
@@ -494,6 +529,38 @@ def instalar(app):
         # O runtime foi montado com a pose antiga: remonta com a calibrada.
         registro.recarregar(dispositivo_id)
         return {"status": "ok", "resultado": resultado}
+
+    @app.post("/api/dispositivos/{dispositivo_id}/calibracao/verificar")
+    def conferir(dispositivo_id: str, usuario=Depends(auth.usuario_atual)):
+        """"A calibração ainda vale?" -- mede os pontos guardados contra a
+        pose em vigor, sem alterar nada. Erro alto aqui quer dizer que a
+        referência da câmera andou (reinício que perdeu o encoder, troca de
+        ótica) ou que algum ponto foi marcado errado."""
+        linha, erro = _dispositivo_ou_erro(dispositivo_id, usuario)
+        if erro:
+            return erro
+        if linha.get("calib_pos_x") is None:
+            return JSONResponse(
+                {"error": "este dispositivo ainda não foi calibrado"}, status_code=400)
+        geo, _pos, erro = _geo_e_pos(linha)
+        if erro:
+            return erro
+        pontos = [_ponto_publico(p) for p in db.listar_pontos_calibracao(dispositivo_id)]
+        try:
+            r = verificar(
+                geo, pontos,
+                [linha["calib_pos_x"], linha["calib_pos_y"], linha["calib_pos_z"]],
+                [linha["calib_fwd_x"], linha["calib_fwd_y"], linha["calib_fwd_z"]],
+                linha.get("calib_escala_pan") or 1.0,
+                linha.get("calib_escala_tilt") or 1.0,
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        # Comparar com o RMS do dia da calibracao e o que revela DERIVA: o
+        # erro de hoje bem maior que o de entao significa que algo mudou
+        # depois, nao que a calibracao foi mal feita.
+        r["rms_na_calibracao_graus"] = linha.get("calib_rms_graus")
+        return r
 
     @app.delete("/api/dispositivos/{dispositivo_id}/calibracao")
     def limpar(dispositivo_id: str, apagar_pontos: bool = False,
