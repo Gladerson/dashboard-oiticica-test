@@ -227,6 +227,12 @@
                      letter-spacing:.06em; color:var(--warn); }
   #calib-passo { color:var(--muted); line-height:1.5; }
   #calib-passo b { color:var(--text); }
+  .calib-recado {
+    margin-top:7px; padding-top:7px; border-top:1px dashed var(--border);
+    font-size:11px; line-height:1.55;
+  }
+  .calib-recado ol { margin:4px 0 6px; padding-left:18px; }
+  .calib-recado li { margin-bottom:3px; }
   #calib-lista { margin:8px 0 0; padding:0; list-style:none; max-height:132px; overflow:auto; }
   #calib-lista li {
     display:flex; align-items:center; gap:6px; padding:3px 0;
@@ -379,6 +385,7 @@
       <ul id="calib-lista"></ul>
       <div id="calib-acoes">
         <button id="calib-calcular" type="button">Calcular</button>
+        <button id="calib-verificar" type="button" title="A calibração em vigor ainda bate com os pontos guardados?">Verificar</button>
         <button id="calib-aplicar" type="button" class="primario">Aplicar</button>
         <button id="calib-limpar" type="button">Descalibrar</button>
         <button id="calib-sair" type="button">Sair</button>
@@ -1287,27 +1294,54 @@ function calibRender() {
   const n = calibPontos.length;
   const { min_orientacao: mo, min_posicao: mp, min_escalas: me } = calibMinimos;
 
+  // Guia passo a passo. A ideia é que o operador nunca precise ler o README
+  // para calibrar: o painel diz o que fazer AGORA, por que, e quanto falta.
   const passo = document.getElementById("calib-passo");
+  const receita = `
+    <div class="calib-recado">
+      <b>Como marcar um ponto</b>
+      <ol>
+        <li>Escolha algo <b>fácil de reconhecer nos dois mundos</b>: quina de
+            bloco, canto de junta, base de um poste, marca na parede. Evite
+            superfície lisa e sem detalhe — na hora de achar no 3D você erra.</li>
+        <li>Use as setas de PTZ (e o zoom, se ajudar) até a <b>mira amarela</b>
+            no centro da telinha ficar <b>em cima</b> desse ponto.</li>
+        <li>Gire o modelo 3D até enxergar o <b>mesmo</b> ponto e marque com
+            <b>Ctrl + botão direito</b>. O pan/tilt do momento é gravado junto.</li>
+      </ol>
+      <b>Onde marcar os próximos</b>: espalhe. Direções bem diferentes e, de
+      preferência, <b>distâncias diferentes</b> — algo perto e algo longe. É a
+      variação que permite calcular <i>onde</i> a câmera está; pontos todos
+      juntos só corrigem <i>para onde</i> ela olha.
+    </div>`;
+
   let texto;
   if (!poseAtual.recebida) {
-    texto = "Aguardando telemetria da câmera — sem pan/tilt não dá para "
-          + "casar os pontos. Confira se o dispositivo está online.";
+    texto = "<b>Aguardando telemetria da câmera.</b> Sem pan/tilt não há como "
+          + "casar os pontos — confira se o dispositivo está online (pastilha "
+          + "“borda” acima) antes de continuar.";
   } else if (n === 0) {
-    texto = "<b>1.</b> Mova o PTZ até a mira (centro da telinha) cair sobre um "
-          + "ponto de referência bem identificável no mundo real.<br/>"
-          + "<b>2.</b> Ache o mesmo ponto no modelo 3D e marque com "
-          + "<b>Ctrl + botão direito</b>.";
+    texto = `<b>Passo 1 de 3 — marcar os pontos.</b> Ainda não há nenhum.`
+          + receita;
+  } else if (n < mo) {
+    texto = `<b>Passo 1 de 3 — marcar os pontos.</b> ${n} de ${mo} (mínimo `
+          + `para calcular qualquer coisa).` + receita;
   } else if (n < mp) {
-    texto = `<b>${n}</b> ponto(s). Com <b>${mo}</b> dá para corrigir só a `
-          + `direção; com <b>${mp}</b>, também a posição. Repita em outra `
-          + `direção — e, se puder, a outra distância.`;
+    texto = `<b>Passo 1 de 3 — marcar os pontos.</b> ${n} marcados: já dá para `
+          + `corrigir <b>a direção</b> da câmera. Chegando a <b>${mp}</b>, o `
+          + `cálculo passa a corrigir também <b>a posição</b> dela — que é o `
+          + `que costuma faltar. Continue.` + receita;
   } else if (n < me) {
-    texto = `<b>${n}</b> pontos: já dá para resolver posição e direção. `
-          + `Com <b>${me}</b> ou mais, o cálculo também consegue corrigir o `
-          + `curso mecânico do PTZ (se ele estiver errado).`;
+    texto = `<b>Passo 2 de 3 — melhorar.</b> ${n} pontos: posição e direção já `
+          + `saem. Com <b>${me}</b> ou mais o cálculo também consegue corrigir `
+          + `o <b>curso mecânico do PTZ</b>, se ele estiver errado. Você já `
+          + `pode clicar em <b>Calcular</b> para ver como está.` + receita;
   } else {
-    texto = `<b>${n}</b> pontos — bom. Quanto mais variadas as direções e as `
-          + `distâncias, melhor a posição fica determinada.`;
+    texto = `<b>Passo 2 de 3 — melhorar.</b> ${n} pontos, bom número. Clique em `
+          + `<b>Calcular</b>: se o resultado vier como confiável, use `
+          + `<b>Aplicar</b>. Se vier com aviso, some mais pontos em direções e `
+          + `distâncias que ainda faltam, ou remova algum que você suspeite ter `
+          + `marcado torto.` + receita;
   }
   passo.innerHTML = texto;
 
@@ -1328,6 +1362,7 @@ function calibRender() {
   document.getElementById("calib-calcular").disabled = n < mo;
   document.getElementById("calib-aplicar").disabled = n < mo;
   document.getElementById("calib-limpar").disabled = !calibAtiva;
+  document.getElementById("calib-verificar").disabled = !calibAtiva || n === 0;
   const selo = document.getElementById("calib-selo");
   selo.hidden = !calibAtiva;
   if (calibAtiva) {
@@ -1393,17 +1428,59 @@ function calibMostrarResultado(r) {
   const el = document.getElementById("calib-resultado");
   const bom = r.confiavel;
   const avisos = (r.geometria && r.geometria.avisos) || [];
+  // Cada número vem com o que ele quer dizer: "0,3°" não diz nada sozinho
+  // para quem não acompanhou a matemática.
   el.innerHTML =
-    `<span class="${bom ? "ok" : "ruim"}">${bom ? "✔ resultado confiável" : "⚠ resultado pouco confiável"}</span><br/>`
-    + `erro médio de apontamento: <b>${r.rms_graus.toFixed(2)}°</b> `
-    + `(pior ponto ${r.erro_max_graus.toFixed(2)}°)<br/>`
-    + `incerteza da posição: <b>${r.incerteza_pos_m === null ? "—" : "±" + r.incerteza_pos_m + " m"}</b>`
-    + ` · deslocou ${r.deslocamento_m} m do cadastro<br/>`
-    + `modo: ${r.modo}`
+    `<b>Passo 3 de 3 — conferir e aplicar.</b><br/>`
+    + `<span class="${bom ? "ok" : "ruim"}">${bom ? "✔ resultado confiável" : "⚠ resultado pouco confiável"}</span><br/>`
+    + `<b>${r.rms_graus.toFixed(2)}°</b> de erro médio de apontamento `
+    + `(pior ponto ${r.erro_max_graus.toFixed(2)}°) — o quanto os seus pontos `
+    + `discordam entre si.<br/>`
+    + `<b>${r.incerteza_pos_m === null ? "—" : "±" + r.incerteza_pos_m + " m"}</b> `
+    + `de incerteza na posição da câmera — é este o número que diz se dá para `
+    + `confiar, não o erro acima. A pose ficou ${r.deslocamento_m} m longe da `
+    + `cadastrada.<br/>`
     + (r.modo === "completo"
-        ? ` · curso do PTZ corrigido em pan ×${r.escala_pan}, tilt ×${r.escala_tilt}` : "")
-    + (avisos.length ? `<br/><span class="ruim">${avisos.map(escapar).join("<br/>")}</span>` : "");
+        ? `Corrigiu também o curso do PTZ: pan ×${r.escala_pan}, tilt ×${r.escala_tilt}.<br/>`
+        : "")
+    + (avisos.length
+        ? `<span class="ruim">${avisos.map(escapar).join("<br/>")}</span><br/>`
+        : "")
+    + (bom ? `Clique em <b>Aplicar</b> para usar esta pose.`
+           : `Some pontos onde ainda falta variação, ou remova algum marcado torto, `
+             + `e calcule de novo. Aplicar assim mesmo é possível, mas o cone vai `
+             + `continuar errado.`);
   el.hidden = false;
+}
+
+function calibMostrarVerificacao(r) {
+  const el = document.getElementById("calib-resultado");
+  const ok = r.dentro_do_esperado;
+  const antes = r.rms_na_calibracao_graus;
+  // Deriva = o erro de HOJE bem maior que o do dia da calibração. Sem essa
+  // comparação, um RMS alto poderia ser só uma calibração malfeita.
+  const piorou = antes != null && r.rms_graus > Math.max(2 * antes, antes + 0.5);
+  el.innerHTML =
+    `<b>Verificação da calibração em vigor</b><br/>`
+    + `<span class="${ok ? "ok" : "ruim"}">${ok ? "✔ ainda batendo" : "⚠ fora do esperado"}</span> — `
+    + `erro de <b>${r.rms_graus.toFixed(2)}°</b> nos ${r.n_pontos} pontos guardados`
+    + (antes != null ? `, contra ${Number(antes).toFixed(2)}° no dia da calibração.` : ".")
+    + (piorou
+        ? `<br/><span class="ruim">O erro cresceu bastante: a referência da câmera `
+          + `provavelmente se moveu (reinício que perdeu o encoder, troca de ótica, `
+          + `ou alguém remontou o equipamento). Recalibre.</span>`
+        : ok ? `<br/>Nada a fazer.` : `<br/>Verifique se algum ponto foi marcado torto.`);
+  el.hidden = false;
+}
+
+async function calibVerificar() {
+  try {
+    const r = await fetch(`${SERVER_BASE}/api/dispositivos/${deviceId}/calibracao/verificar`,
+                          { method: "POST" });
+    const j = await r.json();
+    if (!r.ok) { toast(j.error || "Não consegui verificar.", 5000); return; }
+    calibMostrarVerificacao(j);
+  } catch (e) { toast("Não consegui falar com o servidor."); }
 }
 
 async function calibResolver(aplicar) {
@@ -1444,6 +1521,7 @@ document.getElementById("calib-calcular")
   .addEventListener("click", () => calibResolver(false));
 document.getElementById("calib-aplicar")
   .addEventListener("click", () => calibResolver(true));
+document.getElementById("calib-verificar").addEventListener("click", calibVerificar);
 document.getElementById("calib-limpar").addEventListener("click", calibLimpar);
 document.getElementById("calib-sair").addEventListener("click", () => calibModo(false));
 

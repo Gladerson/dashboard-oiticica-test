@@ -272,6 +272,65 @@ class PTZController:
         self._cache_time = time.time()
         return self._cache
 
-    def go_home(self):
-        """Ponto zero das coordenadas ONVIF (pan=0, tilt=0, zoom mínimo)."""
+    # -------------------------------------------------------------------
+    # "Home" e "ponto zero" sao COISAS DIFERENTES
+    #
+    #   ponto zero -> pan=0, tilt=0 nas coordenadas ONVIF. E a origem do
+    #                 sistema de coordenadas da camera, uma propriedade
+    #                 mecanica dela (encoder/fim de curso).
+    #   home       -> uma POSICAO GUARDADA na camera (GotoHomePosition), que
+    #                 o instalador define e qualquer software pode redefinir.
+    #                 E para onde a camera volta sozinha ao reiniciar, e o
+    #                 que outros sistemas (ex.: Defense IA da Intelbras)
+    #                 costumam usar como referencia.
+    #
+    # A GEOMETRIA do gemeo digital continua ancorada no ponto zero, de
+    # proposito: a telemetria reporta posicao ABSOLUTA (GetStatus) a cada
+    # ciclo, entao nao importa onde a camera esta ao ligar. Ancorar no home
+    # seria pior -- ele e uma preferencia editavel: alguem redefinir o home
+    # invalidaria a calibracao em silencio. Ver README, secao 9-ter.
+    # -------------------------------------------------------------------
+    def ir_para_zero(self):
+        """Vai para a origem das coordenadas ONVIF (pan=0, tilt=0, zoom 0)."""
         return self.move_absolute(0.0, 0.0, 0.0)
+
+    def ir_para_home(self):
+        """Vai para o home GUARDADO NA CAMERA (ONVIF GotoHomePosition).
+
+        E o que o operador espera do botao "home", e a mesma referencia que
+        outros sistemas usam. Nem toda camera implementa: quando nao houver,
+        devolve False em vez de estourar -- quem chama decide se cai para o
+        ponto zero."""
+        try:
+            with self._lock:
+                req = self.ptz.create_type('GotoHomePosition')
+                req.ProfileToken = self.profile_token
+                self.ptz.GotoHomePosition(req)
+            # A posicao real vem do proximo GetStatus: o home pode ser
+            # qualquer lugar, entao invalidar o cache e o certo aqui.
+            self._cache_time = 0.0
+            return True
+        except Exception as e:
+            print(f"[ptz:{self.label}] GotoHomePosition indisponivel: {e}")
+            return False
+
+    def definir_home_aqui(self):
+        """Grava a posicao atual como home da camera (SetHomePosition).
+
+        Cuidado: isto muda uma configuracao da CAMERA, que outros sistemas
+        podem estar usando. Nao e chamado por nenhuma rota -- existe para
+        uso deliberado em bancada."""
+        try:
+            with self._lock:
+                req = self.ptz.create_type('SetHomePosition')
+                req.ProfileToken = self.profile_token
+                self.ptz.SetHomePosition(req)
+            return True
+        except Exception as e:
+            print(f"[ptz:{self.label}] SetHomePosition indisponivel: {e}")
+            return False
+
+    def go_home(self):
+        """Compatibilidade: era "home" no nome mas sempre foi o ponto zero.
+        Mantido para nao quebrar chamadas antigas."""
+        return self.ir_para_zero()

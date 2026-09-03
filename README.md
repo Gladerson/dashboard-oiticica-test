@@ -909,6 +909,50 @@ resultado é o cone e as detecções caindo perto, mas não em cima.
 
 Calibrar é **medir** essa pose em vez de estimá-la.
 
+### “Home” e “ponto zero” são coisas diferentes
+
+Vale fixar isto antes, porque a confusão entre os dois é fácil e as
+consequências não são óbvias:
+
+| | O que é | Quem pode mudar |
+|---|---|---|
+| **Ponto zero** | a origem das coordenadas ONVIF (`pan=0, tilt=0`) — propriedade **mecânica** da câmera (encoder/fim de curso) | ninguém, por software |
+| **Home** | uma **posição guardada** na câmera (`GotoHomePosition`), para onde ela volta ao reiniciar; é o que outros sistemas (ex.: **Defense IA** da Intelbras) usam como referência | qualquer software ou técnico, a qualquer momento |
+
+**A geometria do gêmeo digital fica ancorada no ponto zero** — e isso é
+deliberado, por dois motivos:
+
+1. **A telemetria é absoluta.** O agente lê a posição da câmera com
+   `GetStatus` a cada ciclo; ele nunca acumula deslocamentos a partir de um
+   zero assumido na partida. Então **não importa onde a câmera está ao
+   ligar**: se ela reiniciou e foi para o home, reporta a posição do home e
+   a conta fecha igual. Não há nada a “re-zerar”.
+2. **Ancorar no home seria mais frágil, não menos.** O home é uma
+   preferência editável: se o Defense IA — ou um técnico no dia seguinte —
+   redefinir o home, uma calibração ancorada nele passaria a estar errada
+   **em silêncio**. O ponto zero não muda por software.
+
+O que **mudou** nesta etapa, aí sim por causa da câmera compartilhada:
+
+- **O botão “⌂” agora vai para o home de verdade** (`GotoHomePosition`), que
+  é o que o operador espera e a mesma referência dos outros sistemas. Antes
+  ele fazia `AbsoluteMove(0,0,0)` apesar de se chamar “home”. Quem quiser a
+  origem das coordenadas tem `/command/zero`.
+- **O agente não mexe mais na câmera ao subir.** Antes, agente e
+  `controller.py` mandavam a câmera para o ponto zero a cada inicialização —
+  o que, com a câmera compartilhada, **rouba a cena de quem estiver
+  usando**, e nunca foi necessário (ver o motivo 1 acima). Para voltar ao
+  comportamento antigo: `PTZ_ZERO_AO_INICIAR=true`.
+
+**E se a referência da câmera se mover mesmo assim?** Pode acontecer: um
+reinício que perca a referência do encoder, uma troca de ótica, uma
+remontagem. Como os pontos da calibração ficam guardados, dá para medir isso
+a qualquer momento — botão **Verificar** (`.../calibracao/verificar`): ele
+reavalia os pontos contra a pose em vigor, sem recalcular nada, e compara com
+o erro do dia da calibração. Em teste, um deslocamento artificial de 2° na
+referência aparece como 2,03° de erro; 5° aparece como 4,97°. Erro que
+cresceu muito = a referência andou, hora de recalibrar.
+
 ### Como funciona
 
 A mira no centro da telinha **é o eixo óptico** da câmera. Então, ao apontar
@@ -1002,7 +1046,8 @@ comportamento anterior a qualquer momento.
 | `/command/continuous` | POST | movimento contínuo com prazo de validade |
 | `/command/stop` | POST | interrompe o movimento |
 | `/command/absolute` | POST | move para pan/tilt/zoom absolutos |
-| `/command/home` | POST | retorna ao ponto zero |
+| `/command/home` | POST | vai para o **home guardado na câmera** (cai para o ponto zero se ela não tiver) |
+| `/command/zero` | POST | vai para a **origem das coordenadas ONVIF** (pan=0, tilt=0) |
 | `/borda/estado` | POST | atalho de baixa latência para o estado desejado |
 | `/borda/preview.jpg` | GET | quadro único, para diagnóstico local |
 | `/video_feed` | GET | MJPEG, apenas para diagnóstico na LAN |
@@ -1030,6 +1075,7 @@ Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
 | `/api/dispositivos/{id}/calibracao/pontos/{pid}` | DELETE | sessão | remove um ponto |
 | `/api/dispositivos/{id}/calibracao/resolver` | POST | sessão | calcula e devolve **sem gravar** (prévia) |
 | `/api/dispositivos/{id}/calibracao/aplicar` | POST | sessão | calcula, grava a pose e remonta o runtime |
+| `/api/dispositivos/{id}/calibracao/verificar` | POST | sessão | a calibração em vigor ainda bate com os pontos guardados? (detecta deriva) |
 | `/api/camera_info` \| `/api/view` | GET | sessão | pose/geometria e cone sob demanda -- exige `?device_id=` |
 | `/api/stream/start` \| `renovar` \| `stop` | POST | sessão | janela de vídeo de 60 s -- exige `device_id` |
 | `/api/stream/atual.jpg` | GET | sessão | último quadro recebido -- exige `device_id` |
@@ -1190,6 +1236,7 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
 | `STREAM_FPS` / `STREAM_LARGURA` | 4 / 640 | vídeo sob demanda |
 | `STREAM_TTL_S` | 75 | teto absoluto do stream, do lado do Pi |
 | `PAN_DEG_RANGE` / `TILT_DEG_RANGE` | 180 / 90 | curso mecânico real, em graus |
+| `PTZ_ZERO_AO_INICIAR` | false | mover a câmera para o ponto zero ao subir o agente (ver §9-ter: desligado para não roubar a câmera de outro sistema) |
 | `API_PORT` | 8090 | porta da API local do agente |
 | `OPENCV_FFMPEG_CAPTURE_OPTIONS` | — | força TCP no RTSP (ver §4.3) |
 

@@ -60,6 +60,9 @@ PTZ_FAST_WINDOW_SECONDS = float(os.getenv("PTZ_FAST_WINDOW_SECONDS", "4.0"))
 # é o que impede a telemetria de "segurar" o comando do botão. Se a sua câmera
 # reclamar de sessões simultâneas, coloque false no .env.
 PTZ_SEPARATE_CONNECTIONS = _bool("PTZ_SEPARATE_CONNECTIONS", "true")
+# Ver o comentario em edge/config_borda.py: desligado por padrao para nao
+# roubar a camera de outro sistema a cada restart.
+PTZ_ZERO_AO_INICIAR = os.getenv("PTZ_ZERO_AO_INICIAR", "false").strip().lower() in ("1", "true", "sim")
 
 # Frequência da thread que aplica o movimento na câmera.
 # 0.05s = a câmera para em até ~50ms depois de você soltar o botão.
