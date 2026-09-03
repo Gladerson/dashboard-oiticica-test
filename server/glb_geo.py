@@ -199,6 +199,16 @@ class GeoModel:
             return np.arctan2(v[1], v[0]), np.arcsin(np.clip(v[2], -1.0, 1.0))
         return np.arctan2(-v[2], v[0]), np.arcsin(np.clip(v[1], -1.0, 1.0))
 
+    def direcao_de_az_el(self, az, el):
+        """Inverso de _az_el: (azimute, elevacao) em radianos -> vetor
+        unitario. Usado pela calibracao (server/calibracao.py), que resolve
+        a orientacao da camera em az/el e precisa reconstruir o
+        base_forward correspondente."""
+        ca, sa, ce, se = np.cos(az), np.sin(az), np.cos(el), np.sin(el)
+        if self.model_up_axis == "Z":
+            return np.array([ce * ca, ce * sa, se], dtype=float)
+        return np.array([ce * ca, se, -ce * sa], dtype=float)
+
     def direction_to_pan_tilt(self, base_forward, direction):
         """Inverso exato de direction_from_pan_tilt: dada uma direção 3D,
         devolve (pan_deg, tilt_deg) que a câmera precisa assumir.
