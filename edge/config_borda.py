@@ -113,10 +113,6 @@ JANELA_RAPIDA_S = float(os.getenv("JANELA_RAPIDA_S", "4.0"))
 PAN_DEG_RANGE = float(os.getenv("PAN_DEG_RANGE", "180.0"))
 TILT_DEG_RANGE = float(os.getenv("TILT_DEG_RANGE", "90.0"))
 PTZ_SEPARATE_CONNECTIONS = _bool("PTZ_SEPARATE_CONNECTIONS", "true")
-# Mover a camera para o ponto zero ao subir o agente. Desligado por
-# padrao: a camera pode ser compartilhada com outro sistema, e a
-# geometria nao depende disso (a telemetria e absoluta).
-PTZ_ZERO_AO_INICIAR = _bool("PTZ_ZERO_AO_INICIAR", "false")
 PTZ_MOTION_TICK_S = float(os.getenv("PTZ_MOTION_TICK_S", "0.05"))
 PAN_STEP_DEG = float(os.getenv("PAN_STEP_DEG", "5.0"))
 TILT_STEP_DEG = float(os.getenv("TILT_STEP_DEG", "5.0"))

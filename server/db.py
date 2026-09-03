@@ -123,40 +123,6 @@ ALTER TABLE localidades ADD COLUMN IF NOT EXISTS modelo_erro TEXT;
 -- quem tem so um dispositivo e nunca preencheu isto).
 ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS controller_url TEXT;
 ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS controller_url_publica TEXT;
-
--- Calibracao do gemeo digital (server/calibracao.py). Enquanto forem NULL,
--- a pose continua sendo a ESTIMADA a partir de lat/lon + altura de terreno.
--- Preenchidas, substituem a estimativa por completo.
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_pos_x DOUBLE PRECISION;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_pos_y DOUBLE PRECISION;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_pos_z DOUBLE PRECISION;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_fwd_x DOUBLE PRECISION;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_fwd_y DOUBLE PRECISION;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_fwd_z DOUBLE PRECISION;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_escala_pan DOUBLE PRECISION;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_escala_tilt DOUBLE PRECISION;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_rms_graus DOUBLE PRECISION;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_n_pontos INTEGER;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_modo TEXT;
-ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS calib_em TIMESTAMPTZ;
-
--- Pontos casados (mira da camera real <-> ponto no modelo 3D). Ficam
--- guardados para o operador poder revisar, remover um ponto ruim e
--- recalcular sem refazer tudo.
-CREATE TABLE IF NOT EXISTS calibracao_pontos (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    dispositivo_id  UUID NOT NULL REFERENCES dispositivos(id) ON DELETE CASCADE,
-    pan             DOUBLE PRECISION NOT NULL,
-    tilt            DOUBLE PRECISION NOT NULL,
-    zoom            DOUBLE PRECISION,
-    ponto_x         DOUBLE PRECISION NOT NULL,
-    ponto_y         DOUBLE PRECISION NOT NULL,
-    ponto_z         DOUBLE PRECISION NOT NULL,
-    rotulo          TEXT,
-    criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS ix_calib_pontos_dispositivo
-    ON calibracao_pontos(dispositivo_id);
 """
 
 
@@ -491,73 +457,6 @@ def atualizar_dispositivo(dispositivo_id, campos):
             f"UPDATE dispositivos SET {atribuicoes} WHERE id = %s", valores
         )
     return dispositivo_por_id_com_localidade(dispositivo_id)
-
-
-# ============================================================================
-# Calibracao (server/calibracao.py)
-# ============================================================================
-def listar_pontos_calibracao(dispositivo_id):
-    with pool.connection() as conn:
-        return conn.execute(
-            "SELECT * FROM calibracao_pontos WHERE dispositivo_id = %s "
-            "ORDER BY criado_em", (dispositivo_id,)
-        ).fetchall()
-
-
-def criar_ponto_calibracao(dispositivo_id, pan, tilt, zoom, ponto, rotulo=None):
-    with pool.connection() as conn:
-        return conn.execute(
-            "INSERT INTO calibracao_pontos (dispositivo_id, pan, tilt, zoom, "
-            "ponto_x, ponto_y, ponto_z, rotulo) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
-            (dispositivo_id, pan, tilt, zoom,
-             ponto[0], ponto[1], ponto[2], rotulo),
-        ).fetchone()
-
-
-def excluir_ponto_calibracao(ponto_id, dispositivo_id):
-    """Restringe pelo dispositivo tambem: impede apagar ponto de outro
-    dispositivo mandando so um id adivinhado."""
-    with pool.connection() as conn:
-        return conn.execute(
-            "DELETE FROM calibracao_pontos WHERE id = %s AND dispositivo_id = %s "
-            "RETURNING id", (ponto_id, dispositivo_id)
-        ).fetchone()
-
-
-def excluir_pontos_calibracao(dispositivo_id):
-    with pool.connection() as conn:
-        conn.execute("DELETE FROM calibracao_pontos WHERE dispositivo_id = %s",
-                     (dispositivo_id,))
-
-
-def salvar_calibracao(dispositivo_id, resultado):
-    """Grava a pose calibrada no dispositivo. resultado e o dict devolvido
-    por calibracao.resolver()."""
-    pos, fwd = resultado["camera_local_pos"], resultado["base_forward"]
-    with pool.connection() as conn:
-        conn.execute(
-            "UPDATE dispositivos SET calib_pos_x=%s, calib_pos_y=%s, calib_pos_z=%s, "
-            "calib_fwd_x=%s, calib_fwd_y=%s, calib_fwd_z=%s, "
-            "calib_escala_pan=%s, calib_escala_tilt=%s, calib_rms_graus=%s, "
-            "calib_n_pontos=%s, calib_modo=%s, calib_em=now() WHERE id=%s",
-            (pos[0], pos[1], pos[2], fwd[0], fwd[1], fwd[2],
-             resultado["escala_pan"], resultado["escala_tilt"],
-             resultado["rms_graus"], resultado["n_pontos"], resultado["modo"],
-             dispositivo_id),
-        )
-    return dispositivo_por_id_com_localidade(dispositivo_id)
-
-
-def limpar_calibracao(dispositivo_id):
-    """Volta para a pose estimada (nao apaga os pontos)."""
-    with pool.connection() as conn:
-        conn.execute(
-            "UPDATE dispositivos SET calib_pos_x=NULL, calib_pos_y=NULL, "
-            "calib_pos_z=NULL, calib_fwd_x=NULL, calib_fwd_y=NULL, "
-            "calib_fwd_z=NULL, calib_escala_pan=NULL, calib_escala_tilt=NULL, "
-            "calib_rms_graus=NULL, calib_n_pontos=NULL, calib_modo=NULL, "
-            "calib_em=NULL WHERE id=%s", (dispositivo_id,))
 
 
 def excluir_dispositivo(dispositivo_id):

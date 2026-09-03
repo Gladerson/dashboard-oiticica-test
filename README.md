@@ -101,7 +101,6 @@ dashboard_oiticica_test/
 │   ├── db.py                       # PostgreSQL: usuarios/sessoes/localidades/dispositivos/dashboards
 │   ├── auth.py                     # login por sessão, middleware de autenticação, admin de usuários
 │   ├── dispositivos.py             # cadastro de localidades (modelo 3D) e dispositivos CV-SHM
-│   ├── calibracao.py               # resseccão angular: mede a pose real da câmera no modelo (§9-ter)
 │   ├── migrar_dispositivo_legado.py  # cadastra o dispositivo/localidade que antes eram hardcoded (§9-bis)
 │   ├── prepare_model.sh            # remove compressão Draco do .glb (rodar uma vez, uso manual)
 │   ├── static/layout.css           # casca visual comum: menu lateral, barra de título, cartões, tabelas
@@ -151,7 +150,6 @@ dashboard_oiticica_test/
 | menu lateral, barra de título, tema | `server/static/layout.css` + `layout.js` |
 | login, sessão, usuários | `server/auth.py` + `server/db.py` |
 | localidades, modelos 3D, dispositivos | `server/dispositivos.py` |
-| calibração da pose da câmera | `server/calibracao.py` |
 | compilação do modelo | `notebook/` na ordem numérica da §6 |
 
 Duas invariantes que atravessam o código e não são óbvias na leitura local:
@@ -675,38 +673,7 @@ parar, e garante parada automática (~800 ms) se o navegador travar, a aba fecha
 ou a rede cair. O dashboard renova a intenção a cada 300 ms.
 
 O dashboard fala **direto** com o agente na 8090 (CORS liberado), com fallback
-automático pelo proxy do server se isso falhar. Esse fallback é **temporário**
-(60 s): quem abre o dashboard fora da LAN uma vez não fica preso ao proxy pelo
-resto da sessão.
-
-#### Para onde vão os comandos (e por que o PTZ dava 502)
-
-O servidor precisa saber em que endereço a API do agente responde. A ordem é:
-
-1. **URL do controlador** cadastrada no dispositivo (Dispositivos → Editar);
-2. senão, o **IP de onde aquele dispositivo fala com o servidor** — cada POST
-   autenticado em `/api/edge/*` registra a origem, e daí sai
-   `http://<ip>:8090` (`CONTROLLER_PORTA`);
-3. só então `CONTROLLER_URL` do `server/.env`.
-
-O passo 2 é novo. Antes, um dispositivo sem URL cadastrada caía direto no
-padrão `http://127.0.0.1:8090` — herdado de quando havia um único equipamento
-rodando na mesma máquina do servidor — e **todo** comando de PTZ respondia
-`502 Bad Gateway`, sem nada no log além disso. O sintoma era o PTZ
-simplesmente travado.
-
-Duas redes de segurança acompanham:
-
-- se a URL **cadastrada** falhar e a telemetria estiver chegando de outro
-  endereço, o comando é repetido uma vez nesse endereço (o Pi trocou de IP) e
-  o log avisa para corrigir o cadastro;
-- o 502 agora traz `url`, `origem_url` e uma `dica` do que conferir; o
-  dashboard mostra isso abaixo dos botões, com um botão **Testar controlador**
-  (`GET /api/ptz/diagnostico`). A lista em **Dispositivos** exibe a URL
-  efetiva e de onde ela saiu.
-
-O `⌂` continua indo ao **home** da câmera e `/api/command/zero` ao **ponto
-zero** das coordenadas ONVIF (§9-ter).
+automático pelo proxy do server se isso falhar.
 
 ### Cone de visão
 
@@ -929,154 +896,6 @@ tenta carregar modelo 3D nem vídeo.
 
 ---
 
-## 9-ter. Calibrar o gêmeo digital
-
-Sem calibração, a pose da câmera dentro do modelo é **estimada**, e por dois
-caminhos frágeis: a posição vem de lat/lon (com erro de GPS) mais uma altura
-de terreno estimada, e a orientação — para onde a câmera olha em
-`pan=0/tilt=0` — é um **chute**: a direção até o ponto de malha mais
-próximo. Não há razão para o norte mecânico da câmera coincidir com isso. O
-resultado é o cone e as detecções caindo perto, mas não em cima.
-
-Calibrar é **medir** essa pose em vez de estimá-la.
-
-### “Home” e “ponto zero” são coisas diferentes
-
-Vale fixar isto antes, porque a confusão entre os dois é fácil e as
-consequências não são óbvias:
-
-| | O que é | Quem pode mudar |
-|---|---|---|
-| **Ponto zero** | a origem das coordenadas ONVIF (`pan=0, tilt=0`) — propriedade **mecânica** da câmera (encoder/fim de curso) | ninguém, por software |
-| **Home** | uma **posição guardada** na câmera (`GotoHomePosition`), para onde ela volta ao reiniciar; é o que outros sistemas (ex.: **Defense IA** da Intelbras) usam como referência | qualquer software ou técnico, a qualquer momento |
-
-**A geometria do gêmeo digital fica ancorada no ponto zero** — e isso é
-deliberado, por dois motivos:
-
-1. **A telemetria é absoluta.** O agente lê a posição da câmera com
-   `GetStatus` a cada ciclo; ele nunca acumula deslocamentos a partir de um
-   zero assumido na partida. Então **não importa onde a câmera está ao
-   ligar**: se ela reiniciou e foi para o home, reporta a posição do home e
-   a conta fecha igual. Não há nada a “re-zerar”.
-2. **Ancorar no home seria mais frágil, não menos.** O home é uma
-   preferência editável: se o Defense IA — ou um técnico no dia seguinte —
-   redefinir o home, uma calibração ancorada nele passaria a estar errada
-   **em silêncio**. O ponto zero não muda por software.
-
-O que **mudou** nesta etapa, aí sim por causa da câmera compartilhada:
-
-- **O botão “⌂” agora vai para o home de verdade** (`GotoHomePosition`), que
-  é o que o operador espera e a mesma referência dos outros sistemas. Antes
-  ele fazia `AbsoluteMove(0,0,0)` apesar de se chamar “home”. Quem quiser a
-  origem das coordenadas tem `/command/zero`.
-- **O agente não mexe mais na câmera ao subir.** Antes, agente e
-  `controller.py` mandavam a câmera para o ponto zero a cada inicialização —
-  o que, com a câmera compartilhada, **rouba a cena de quem estiver
-  usando**, e nunca foi necessário (ver o motivo 1 acima). Para voltar ao
-  comportamento antigo: `PTZ_ZERO_AO_INICIAR=true`.
-
-**E se a referência da câmera se mover mesmo assim?** Pode acontecer: um
-reinício que perca a referência do encoder, uma troca de ótica, uma
-remontagem. Como os pontos da calibração ficam guardados, dá para medir isso
-a qualquer momento — botão **Verificar** (`.../calibracao/verificar`): ele
-reavalia os pontos contra a pose em vigor, sem recalcular nada, e compara com
-o erro do dia da calibração. Em teste, um deslocamento artificial de 2° na
-referência aparece como 2,03° de erro; 5° aparece como 4,97°. Erro que
-cresceu muito = a referência andou, hora de recalibrar.
-
-### Como funciona
-
-A mira no centro da telinha **é o eixo óptico** da câmera. Então, ao apontar
-a câmera para um ponto de referência e marcar o mesmo ponto no modelo 3D,
-você cria um par:
-
-```
-direção prevista(pan, tilt)  ==  normalizar(ponto_3D − posição_da_câmera)
-```
-
-Cada par dá 2 equações (azimute e elevação). O servidor
-(`server/calibracao.py`) resolve por mínimos quadrados. O modelo direto é
-**exatamente separável** em coordenadas esféricas — conferido numericamente
-contra `glb_geo.direction_from_pan_tilt`, desvio < 10⁻¹³ grau:
-
-```
-azimute  = az0 + PAN_SIGN  · escala_pan  · pan_reportado
-elevação = el0 + TILT_SIGN · escala_tilt · tilt_reportado
-```
-
-### O passo a passo
-
-1. Selecione o dispositivo e clique em **Calibrar** (barra de título). A
-   mira aparece e **o cone congela** — ele ainda está desenhado com a pose
-   errada, e vê-lo pular a cada movimento só atrapalharia a mira.
-2. Mova o PTZ até a mira cair sobre um ponto de referência bem
-   identificável (quina, canto de bloco, marca na parede).
-3. Ache o **mesmo** ponto no modelo 3D e marque com **Ctrl + botão direito**.
-   O pan/tilt do momento é gravado junto.
-4. Confira: aparece uma **bolinha azul numerada** no ponto marcado e o **cone
-   virtual salta para ela**. Essa é a confirmação visual de que o par
-   (pan/tilt real, ponto 3D) entrou. Se o cone foi parar longe do que a
-   câmera real está vendo, é exatamente esse erro que a calibração corrige —
-   siga marcando. Os marcadores só existem enquanto a calibração está aberta.
-5. Repita em **direções e distâncias variadas** (ver abaixo). As bolinhas
-   mostram o que já foi marcado: se estiverem amontoadas, espalhe mais.
-6. Para conferir um ponto suspeito: clique no número dele na lista (destaca e
-   aponta o cone) ou em **mirar**, que leva a **câmera real** de volta ao
-   pan/tilt gravado. Se a mira não cair mais na mesma referência do mundo
-   real, foi aquele ponto que saiu torto — remova e marque de novo.
-7. **Calcular** mostra o resultado sem gravar nada. **Aplicar** grava e
-   recarrega a cena com a pose nova. **Descalibrar** volta para a estimada
-   (preservando os pontos).
-
-### Quantos pontos
-
-| Pontos | O que passa a ser resolvido |
-|---|---|
-| 2 | só a orientação (`az0`, `el0`) — 2 incógnitas. Já corrige o erro dominante |
-| 4 | orientação **+ posição** — 5 incógnitas. Mínimo útil |
-| 8+ | permite também as escalas de pan/tilt (curso mecânico) — 7 incógnitas |
-
-Erro mediano da posição em simulação, com 0,3° de erro de marcação:
-
-| Pontos | 4 | 8 | 12 | 16 |
-|---|---|---|---|---|
-| Erro | ~1,1 m | ~0,6 m | ~0,4 m | ~0,4 m |
-
-O joelho da curva fica entre **8 e 12 pontos** — é o que a interface
-recomenda.
-
-As escalas **não** entram só por haver pontos suficientes. Se o curso
-mecânico já estiver certo, os dois parâmetros a mais só absorvem ruído e a
-posição *piora* (0,45 m → 1,10 m, medido). Por isso o modo automático ajusta
-os dois modelos e fica com o maior **apenas quando ele explica os ângulos
-sensivelmente melhor**. Quando o curso está mesmo errado (testado com
-pan ×1,15 e tilt ×0,90), não resolver a escala custa ~9 m de erro; resolvendo,
-volta a ~1 m e as escalas são recuperadas com 3 casas.
-
-### Por que “direções e distâncias variadas”
-
-A posição só é observável por **paralaxe**. Pontos alinhados, ou todos na
-mesma parede à mesma distância, deixam a posição mal determinada — e o
-perigo é que **o RMS continua baixo** nesse caso. Medido: 0,17° de RMS com
-**54 m** de erro de posição. RMS mede o quanto o ajuste fecha, não o quanto
-os dados restringem cada incógnita.
-
-Por isso o critério de confiança **não é o RMS**, e sim a incerteza
-estatística da posição, tirada da covariância `σ²·(JᵀJ)⁻¹`. Ela acompanha o
-erro real de perto (medido: ±1,9 m estimados contra 2,1 m reais) e explode
-quando a geometria é degenerada (±182 m) — que é exatamente o caso a
-reprovar. O painel mostra esse número e avisa o que fazer.
-
-### Onde fica guardado
-
-Os pontos ficam na tabela `calibracao_pontos` (dá para revisar, remover um
-ponto ruim e recalcular sem refazer tudo); a pose resolvida vai para as
-colunas `calib_*` de `dispositivos`. Enquanto elas forem `NULL`, vale a pose
-estimada — calibrar não é obrigatório, e “Descalibrar” volta ao
-comportamento anterior a qualquer momento.
-
----
-
 ## 10. Referência de API
 
 ### Agente, no Raspberry (porta 8090)
@@ -1087,8 +906,7 @@ comportamento anterior a qualquer momento.
 | `/command/continuous` | POST | movimento contínuo com prazo de validade |
 | `/command/stop` | POST | interrompe o movimento |
 | `/command/absolute` | POST | move para pan/tilt/zoom absolutos |
-| `/command/home` | POST | vai para o **home guardado na câmera** (cai para o ponto zero se ela não tiver) |
-| `/command/zero` | POST | vai para a **origem das coordenadas ONVIF** (pan=0, tilt=0) |
+| `/command/home` | POST | retorna ao ponto zero |
 | `/borda/estado` | POST | atalho de baixa latência para o estado desejado |
 | `/borda/preview.jpg` | GET | quadro único, para diagnóstico local |
 | `/video_feed` | GET | MJPEG, apenas para diagnóstico na LAN |
@@ -1110,13 +928,6 @@ Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
 | `/api/dispositivos` | GET/POST | sessão | listar (próprios; todos se admin) / criar dispositivo |
 | `/api/dispositivos/{id}` | PATCH | sessão | editar o cadastro (localidade, lat/lon, altura, transporte, controller); **não** troca o token |
 | `/api/dispositivos/{id}` | DELETE | sessão | excluir (só o dono ou admin); o token para de valer na hora |
-| `/api/dispositivos/{id}/calibracao` | GET | sessão | pontos casados + calibração em vigor (§9-ter) |
-| `/api/dispositivos/{id}/calibracao` | DELETE | sessão | volta para a pose estimada (`?apagar_pontos=true` também limpa os pontos) |
-| `/api/dispositivos/{id}/calibracao/pontos` | POST | sessão | grava um par (pan/tilt ↔ ponto 3D) |
-| `/api/dispositivos/{id}/calibracao/pontos/{pid}` | DELETE | sessão | remove um ponto |
-| `/api/dispositivos/{id}/calibracao/resolver` | POST | sessão | calcula e devolve **sem gravar** (prévia) |
-| `/api/dispositivos/{id}/calibracao/aplicar` | POST | sessão | calcula, grava a pose e remonta o runtime |
-| `/api/dispositivos/{id}/calibracao/verificar` | POST | sessão | a calibração em vigor ainda bate com os pontos guardados? (detecta deriva) |
 | `/api/camera_info` \| `/api/view` | GET | sessão | pose/geometria e cone sob demanda -- exige `?device_id=` |
 | `/api/stream/start` \| `renovar` \| `stop` | POST | sessão | janela de vídeo de 60 s -- exige `device_id` |
 | `/api/stream/atual.jpg` | GET | sessão | último quadro recebido -- exige `device_id` |
@@ -1124,9 +935,6 @@ Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
 | `/api/inferencia` | POST | sessão | ajusta limiares em runtime -- exige `device_id` |
 | `/api/borda` | GET | sessão | painel de estado da borda -- exige `?device_id=` |
 | `/api/aim` | POST | sessão | close por seleção -- exige `device_id` |
-| `/api/mirar` | POST | sessão | cone (e, com `mover_camera`, a câmera real) apontados para um ponto do modelo -- usado pela calibração |
-| `/api/ptz/diagnostico` | GET | sessão | por que o PTZ não responde: URL usada, de onde ela saiu, IP visto e o erro exato |
-| `/api/command/zero` | POST | sessão | leva a câmera à origem das coordenadas ONVIF |
 | `/api/locate` | POST | sessão | revisitar detecção -- dispositivo vem da PRÓPRIA detecção salva, não do cliente |
 | `/api/detection/{id}/pedir_imagem` | POST | sessão | pede a foto completa ao Pi ("Abrir") -- dispositivo idem `/api/locate` |
 | `/login`, `/api/login` | GET/POST | não | tela e endpoint de entrada |
@@ -1280,7 +1088,6 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
 | `STREAM_FPS` / `STREAM_LARGURA` | 4 / 640 | vídeo sob demanda |
 | `STREAM_TTL_S` | 75 | teto absoluto do stream, do lado do Pi |
 | `PAN_DEG_RANGE` / `TILT_DEG_RANGE` | 180 / 90 | curso mecânico real, em graus |
-| `PTZ_ZERO_AO_INICIAR` | false | mover a câmera para o ponto zero ao subir o agente (ver §9-ter: desligado para não roubar a câmera de outro sistema) |
 | `API_PORT` | 8090 | porta da API local do agente |
 | `OPENCV_FFMPEG_CAPTURE_OPTIONS` | — | força TCP no RTSP (ver §4.3) |
 
@@ -1291,10 +1098,8 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
 | `DATABASE_URL` | ver `.env.example` | conexão PostgreSQL (usuários/sessões, §5.1a) |
 | `SESSION_COOKIE_SECURE` | `false` | `true` só atrás de HTTPS de verdade (reverse proxy) |
 | `SESSAO_DURACAO_H` | 168 (7 dias) | validade do cookie de sessão |
-| `CONTROLLER_URL` | `http://127.0.0.1:8090` | último *fallback* servidor → Pi, usado só quando o dispositivo não tem `controller_url` cadastrada **e** nunca mandou telemetria (§8, "Para onde vão os comandos") |
-| `CONTROLLER_PUBLIC_URL` | = acima | idem, para o caminho navegador → Pi (PTZ direto) |
-| `CONTROLLER_PORTA` | 8090 | porta usada ao montar a URL a partir do IP visto na telemetria |
-| `TIMEOUT_PTZ_S` | 2.5 | espera máxima do servidor por um comando de PTZ; curto de propósito, para falhar rápido em vez de empilhar requisições |
+| `CONTROLLER_URL` | `http://127.0.0.1:8090` | *fallback* servidor → Pi, só para dispositivos sem `controller_url` próprio cadastrado |
+| `CONTROLLER_PUBLIC_URL` | = acima | *fallback* navegador → Pi (PTZ direto), idem acima |
 | `STREAM_JANELA_S` | 60 | duração do pedido de vídeo |
 | `STREAM_FPS` / `STREAM_LARGURA` / `STREAM_QUALIDADE` | 4 / 640 / 60 | parâmetros pedidos ao Pi |
 | `PAN_SIGN` / `TILT_SIGN` | -1 / 1 | sentido de rotação (global -- é fiação de câmera, não propriedade da localidade) |
@@ -1336,30 +1141,6 @@ Bearer agora).
 ## 13. Resolução de problemas
 
 Casos reais da implantação, com a causa e não apenas a solução.
-
-**PTZ travado e `502 Bad Gateway` em `/api/ptz/*` no log do servidor** — o
-servidor não consegue alcançar a API do agente. Clique em **Testar
-controlador** no aviso que aparece abaixo dos botões de PTZ (ou chame
-`GET /api/ptz/diagnostico?device_id=...`): a resposta diz a URL tentada, de
-onde ela saiu e o erro exato. Os três casos:
-
-- *origem `padrao_do_env`* — o dispositivo não tem URL cadastrada e nenhuma
-  telemetria chegou dele, então o servidor caiu em `http://127.0.0.1:8090`,
-  onde não há ninguém. Confira se o agente está rodando no Raspberry e se o
-  `DEVICE_TOKEN` do `.env` dele confere com o do cadastro; assim que a
-  primeira telemetria chegar, a URL se resolve sozinha.
-- *origem `ip_observado`, mas a porta não responde* — o Pi fala com o
-  servidor, mas a API dele não subiu. No Raspberry:
-  `sudo ss -lptn 'sport = :8090'` e `journalctl -u agente-borda -n 50`.
-  Também vale checar firewall entre servidor e Pi.
-- *origem `cadastrada` e a URL falhou* — o endereço cadastrado envelheceu. O
-  servidor tenta uma vez o IP de onde a telemetria chega e loga o aviso;
-  corrija em **Dispositivos → Editar** (ou apague o campo e deixe o servidor
-  descobrir).
-
-Note que **um PTZ travado não é o mesmo que uma calibração errada**: se o
-cone anda mas cai no lugar errado, o problema é pose (§9-ter); se a câmera
-não se mexe, é este.
 
 **A câmera e as detecções caem em pontos diferentes do modelo** — quase
 sempre é offset UTM trocado: o `.glb` foi substituído por outro recorte da
@@ -1632,10 +1413,7 @@ indesejável, mova para variável de ambiente.
 - **Curso mecânico do PTZ não calibrado.** A câmera reporta pan/tilt
   normalizados (−1..1) e assume-se ±180°/±90°. É propriedade da câmera, não do
   local, e pode ser medida em bancada com `controller/calibrar_curso.py` (com o
-  agente parado). ✅ **Também dá para resolver pelo dashboard**: a calibração
-  do gêmeo digital (§9-ter) estima as escalas de pan/tilt junto com a pose,
-  a partir de 8 pontos ou mais — e só as aplica quando os dados mostram que
-  o curso está mesmo errado.
+  agente parado).
 - **Altura da câmera estimada.** O server cai na estimativa por percentil dos
   vértices vizinhos, porque a câmera fica ~36 m além da borda norte do modelo. A
   estimativa (87,07) praticamente coincide com o ponto de malha mais próximo
@@ -1646,14 +1424,7 @@ indesejável, mova para variável de ambiente.
   `CAMERA_ABS_ALT`, que existia antes da etapa multi-dispositivo para
   sobrescrever com uma elevação absoluta, não existe mais -- cada
   dispositivo cadastrado só tem `alt_acima_solo`, relativo ao terreno.)
-  ✅ **Contornável pela calibração** (§9-ter): com 4 pontos ou mais, a
-  posição da câmera passa a ser medida, e a altura estimada deixa de
-  importar.
 - **Sentido do pan** corrigido com `PAN_SIGN=-1`, ainda por confirmar em campo.
-  A calibração absorve um erro de *orientação*, mas não um sinal trocado:
-  `PAN_SIGN`/`TILT_SIGN` continuam globais (é convenção de fiação da câmera,
-  não propriedade do local). Se o sinal estiver errado, a calibração não
-  converge para um RMS baixo — o que, na prática, serve de teste.
 - **O limiar de confiança existe em dois lugares** (`edge/.env` e
   `server/borda.py`) e o do servidor vence silenciosamente. O correto seria o
   servidor herdar o valor que o Pi reporta na primeira telemetria.

@@ -665,23 +665,10 @@ async function carregarDispositivos() {
     const aviso = dev.motivo_sem_3d
       ? `<span class="motivo-3d">⚠ ${escapar(dev.motivo_sem_3d)}</span>`
       : `<span class="motivo-3d ok">✔ visão 3D pronta</span>`;
-    // Para onde o servidor manda os comandos de PTZ. Quando a URL nao foi
-    // cadastrada ela sai do IP de onde o equipamento fala com o servidor;
-    // se nem isso existe ainda, o PTZ vai falhar e e melhor dizer antes.
-    const origem = {
-      cadastrada: "URL cadastrada",
-      ip_observado: "IP visto na telemetria",
-      padrao_do_env: "padrão do .env — provavelmente errado",
-      desconhecida: "ainda sem contato com o equipamento",
-    }[dev.controller_origem] || dev.controller_origem;
-    const ruim = dev.controller_origem === "padrao_do_env"
-              || dev.controller_origem === "desconhecida";
-    const ptz = `<span class="motivo-3d${ruim ? "" : " ok"}">${ruim ? "⚠" : "✔"} PTZ: `
-              + `${escapar(dev.controller_url_efetiva || "—")} (${escapar(origem)})</span>`;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapar(dev.nome)}<br/><span class="muted">${escapar(dev.entity_id)}</span></td>
-      <td>${escapar(dev.localidade_nome || "—")}${aviso}${ptz}</td>
+      <td>${escapar(dev.localidade_nome || "—")}${aviso}</td>
       <td>${dev.transporte.toUpperCase()}</td>
       <td></td>`;
     const tdAcoes = tr.lastElementChild;
