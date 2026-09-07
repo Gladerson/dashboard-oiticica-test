@@ -54,6 +54,27 @@
   #ptz-controls button:hover, #zoom-row button:hover { background:#1a2740; border-color:var(--accent); }
   #ptz-controls button.active, #zoom-row button.active { background:#1e3a5f; border-color:var(--accent); }
   #zoom-row { display:flex; gap:8px; justify-content:center; margin-top:8px; }
+  #conexao-linha { margin-top:10px; text-align:center; font-size:11px; color:var(--muted); }
+  #selo-conexao {
+    display:inline-block; padding:2px 8px; border-radius:999px; font-weight:600;
+    border:1px solid var(--border);
+  }
+  #selo-conexao.ok   { color:var(--ok); border-color:rgba(63,156,92,.5);
+                       background:rgba(63,156,92,.10); }
+  #selo-conexao.ruim { color:var(--danger); border-color:rgba(214,84,84,.5);
+                       background:rgba(214,84,84,.10); }
+  #ptz-aviso {
+    margin-top:8px; padding:8px 10px; border-radius:8px; font-size:11px;
+    line-height:1.5; background:rgba(214,84,84,.12);
+    border:1px solid rgba(214,84,84,.45); color:var(--text);
+  }
+  #ptz-aviso[hidden] { display:none; }
+  #ptz-aviso button {
+    margin-top:6px; padding:4px 9px; font-size:11px; cursor:pointer;
+    background:transparent; color:var(--text); border:1px solid var(--border);
+    border-radius:6px;
+  }
+  #ptz-aviso button:hover { border-color:var(--accent); }
   #zoom-row button { padding:10px 14px; font-size:13px; }
   #telemetry { margin-top:12px; font-size:12px; color:var(--muted); line-height:1.6; }
   #telemetry b { color:var(--text); }
@@ -313,6 +334,11 @@
       <button data-axis="zoom" data-dir="-1">Zoom −</button>
       <button data-axis="zoom" data-dir="1">Zoom +</button>
     </div>
+    <div id="conexao-linha">
+      Comandos: <span id="selo-conexao" class="ruim">verificando…</span>
+    </div>
+    <!-- So aparece quando um comando de PTZ falha, com o motivo. -->
+    <div id="ptz-aviso" hidden></div>
     <div id="telemetry">
       Pan: <b id="tel-pan">--</b>° &nbsp;
       Tilt: <b id="tel-tilt">--</b>° &nbsp;
@@ -475,8 +501,20 @@ const SERVER_BASE = window.location.origin;
 // Velocidades do ContinuousMove (-1..1). Ajuste ao gosto/curso da câmera.
 const SPEED = { pan: 0.55, tilt: 0.45, zoom: 0.5 };
 
+// --- Modo LAN -------------------------------------------------------------
+// Com o servidor na nuvem, cada comando de PTZ atravessa a internet duas
+// vezes. Quando o operador esta NO LOCAL, falar direto com o equipamento
+// corta esse caminho quase inteiro. Mas isso e uma OTIMIZACAO, nunca um
+// requisito: o dashboard sonda uma vez se alcanca o equipamento e mostra na
+// tela em que modo esta. Se a sondagem falhar, usa o servidor e tenta de
+// novo mais tarde -- antes, uma unica falha prendia a sessao inteira no
+// proxy ate recarregar a pagina.
 let CONTROLLER_BASE = null;   // preenchido pelo /api/camera_info
-let usarProxy = false;        // vira true se falar direto com o controller falhar
+let LAN_TOKEN = null;         // autoriza o navegador no agente (rotativo)
+let modoLan = false;          // true = falando direto com o equipamento
+let proximaSondagem = 0;      // quando vale a pena tentar o modo LAN de novo
+const RESONDAR_MS = 60000;
+let ptzUltimoErro = 0;        // nao repetir o mesmo aviso a cada 300ms
 
 // ---------------------------------------------------------------------
 // Dispositivo selecionado -- multi-dispositivo: cada camera cadastrada tem
@@ -871,6 +909,9 @@ async function init() {
   }
 
   CONTROLLER_BASE = (info.controller_url || "").replace(/\/$/, "");
+  LAN_TOKEN = info.lan_token || null;
+  atualizarSeloConexao(info.edge_conectado);
+  sondarModoLan();
   // A telinha NAO liga sozinha. Antes, este src abria uma conexao MJPEG
   // permanente com a camera e o video corria 24h por dia mesmo com o
   // dashboard minimizado -- exatamente o trafego que queremos eliminar.
@@ -1041,18 +1082,21 @@ async function ptzPost(pathDireto, pathProxy, body) {
   // Quem esta dirigindo a camera obviamente esta olhando: a janela de 60s
   // reinicia. Sem isso o video morreria no meio do enquadramento.
   renovarStreamSeAtivo();
-  if (!usarProxy && CONTROLLER_BASE) {
+  if (modoLan && CONTROLLER_BASE) {
     try {
       const r = await fetch(`${CONTROLLER_BASE}${pathDireto}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json",
+                   ...(LAN_TOKEN ? { "X-LAN-Token": LAN_TOKEN } : {}) },
         body: JSON.stringify(body || {}),
         keepalive: true,
       });
-      if (r.ok) return r.json();
+      if (r.ok) { marcarPtzOk(); return r.json(); }
+      // Respondeu, mas recusou (lan_token velho): sai do modo LAN e deixa o
+      // servidor resolver; a proxima sondagem pega o token novo.
+      desligarModoLan("o equipamento recusou o acesso direto");
     } catch (e) {
-      console.warn("Falha ao falar direto com o controller; usando o proxy do server.", e);
-      usarProxy = true;
+      desligarModoLan("o equipamento nao respondeu na rede local");
     }
   }
   // Proxy do server: /api/ptz/continuous e /api/command levam device_id no
@@ -1062,13 +1106,105 @@ async function ptzPost(pathDireto, pathProxy, body) {
   const url = new URL(`${SERVER_BASE}${pathProxy}`);
   url.searchParams.set("device_id", deviceId);
   const corpo = { ...(body || {}), device_id: deviceId };
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(corpo),
-    keepalive: true,
-  });
-  return r.json();
+  let r, j;
+  try {
+    r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(corpo),
+      keepalive: true,
+    });
+    j = await r.json();
+  } catch (e) {
+    relatarFalhaPtz({ error: "sem resposta do servidor" });
+    throw e;
+  }
+  // Um 502 aqui virava um console.error silencioso: o operador via o PTZ
+  // "travado" sem nenhuma pista do motivo. Agora o motivo aparece na tela.
+  if (!r.ok) relatarFalhaPtz(j); else marcarPtzOk();
+  return j;
+}
+
+// ---------------------------------------------------------------------
+// Estado da conexão com o equipamento e modo LAN
+// ---------------------------------------------------------------------
+const seloConexao = () => document.getElementById("selo-conexao");
+const ptzAviso = () => document.getElementById("ptz-aviso");
+
+function atualizarSeloConexao(conectado) {
+  const el = seloConexao();
+  if (!el) return;
+  el.classList.toggle("ok", !!conectado);
+  el.classList.toggle("ruim", !conectado);
+  el.textContent = conectado
+    ? (modoLan ? "modo LAN" : "pelo servidor")
+    : "equipamento offline";
+  el.title = conectado
+    ? (modoLan
+        ? "O navegador está falando direto com o equipamento (mesma rede) — menor latência."
+        : "Os comandos passam pelo servidor. É o caminho que sempre funciona.")
+    : "O equipamento não está com o canal de comandos aberto no servidor.";
+}
+
+function desligarModoLan(motivo) {
+  if (!modoLan) return;
+  modoLan = false;
+  proximaSondagem = Date.now() + RESONDAR_MS;
+  console.info("Modo LAN desligado:", motivo);
+  atualizarSeloConexao(true);
+}
+
+/** Sonda UMA vez se o equipamento responde na rede local. Não bloqueia nada:
+ *  enquanto não responde, o caminho pelo servidor já está funcionando. */
+async function sondarModoLan() {
+  if (!CONTROLLER_BASE || !LAN_TOKEN || Date.now() < proximaSondagem) return;
+  proximaSondagem = Date.now() + RESONDAR_MS;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 1500);
+    const r = await fetch(`${CONTROLLER_BASE}/status`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (r.ok) {
+      modoLan = true;
+      atualizarSeloConexao(true);
+      console.info("Modo LAN ligado: falando direto com", CONTROLLER_BASE);
+    }
+  } catch (e) { /* não alcança: segue pelo servidor, sem barulho */ }
+}
+
+function marcarPtzOk() {
+  const el = ptzAviso();
+  if (el && !el.hidden) el.hidden = true;
+}
+
+function relatarFalhaPtz(j) {
+  const el = ptzAviso();
+  if (el) {
+    el.hidden = false;
+    el.innerHTML = `<b>PTZ sem resposta.</b> ${escapar(j.dica || j.error || "")}`
+                 + ` <button type="button" id="ptz-diag">Testar conexão</button>`;
+    const b = document.getElementById("ptz-diag");
+    if (b) b.addEventListener("click", diagnosticarConexao);
+  }
+  if (Date.now() - ptzUltimoErro > 8000) {
+    ptzUltimoErro = Date.now();
+    toast("PTZ sem resposta: " + (j.dica || j.error || "erro desconhecido"), 7000);
+  }
+}
+
+async function diagnosticarConexao() {
+  try {
+    const j = await fetch(
+      `${SERVER_BASE}/api/edge/status_conexao?device_id=${encodeURIComponent(deviceId)}`
+    ).then(r => r.json());
+    console.log("status da conexão:", j);
+    atualizarSeloConexao(j.conectado);
+    const el = ptzAviso();
+    if (!el) return;
+    el.innerHTML = j.conectado
+      ? `<b>O equipamento está conectado</b> há ${j.desde_s}s. Tente o PTZ de novo.`
+      : `<b>Equipamento sem canal de comandos.</b> ${escapar(j.dica || "")}`;
+  } catch (e) { toast("Não consegui rodar o diagnóstico."); }
 }
 
 let eixoAtivo = null;

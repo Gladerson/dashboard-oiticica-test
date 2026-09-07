@@ -71,6 +71,10 @@ class DispositivoPayload(BaseModel):
     lon: float | None = None
     alt_acima_solo: float | None = None
     transporte: str = "http"
+    # 'camera'  = Raspberry com a PTZ (geometria 3D, stream, deteccao);
+    # 'sensor'  = ESP32 que manda as proprias telemetrias;
+    # 'gateway' = ESP32 que fala por N equipamentos remotos (LoRa).
+    tipo: str = "camera"
 
 
 class DispositivoEdicaoPayload(BaseModel):
@@ -86,6 +90,7 @@ class DispositivoEdicaoPayload(BaseModel):
     transporte: str | None = None
     controller_url: str | None = None
     controller_url_publica: str | None = None
+    tipo: str | None = None
 
 
 def _localidade_publica(l):
@@ -99,6 +104,9 @@ def _localidade_publica(l):
     }
 
 
+TIPOS_DISPOSITIVO = ("camera", "sensor", "gateway")
+
+
 def motivo_sem_3d(d):
     """Por que este dispositivo ainda nao tem visao 3D -- ou None quando
     esta tudo certo. Uma frase so, ja pronta para a tela: antes o dashboard
@@ -108,6 +116,8 @@ def motivo_sem_3d(d):
 
     Recebe uma linha vinda do SELECT com a localidade achatada
     (_SELECT_DISPOSITIVO_COM_LOCALIDADE em db.py)."""
+    if (d.get("tipo") or "camera") != "camera":
+        return None            # sensor/gateway nao tem cone nem modelo 3D
     if not d.get("localidade_id"):
         return ("sem localidade: edite o dispositivo e escolha a localidade "
                 "onde ele está instalado")
@@ -137,6 +147,7 @@ def _dispositivo_publico(d):
         "controller_url_publica": d.get("controller_url_publica"),
         "topico_telemetria": d["topico_telemetria"], "topico_atributos": d["topico_atributos"],
         "topico_frame": d["topico_frame"], "criado_em": d["criado_em"].isoformat(),
+        "tipo": d.get("tipo") or "camera",
         "motivo_sem_3d": motivo_sem_3d(d),
     }
 
@@ -309,6 +320,10 @@ def instalar(app):
         # unicos, e dois dispositivos podem legitimamente ter nomes
         # parecidos ("Camera 1", "Camera 1 (backup)" -> mesmo slug).
         slug_unico = f"{slug}-{secrets.token_hex(3)}"
+        if payload.tipo not in TIPOS_DISPOSITIVO:
+            return JSONResponse(
+                {"error": f"tipo inválido: {payload.tipo} "
+                          f"(use {', '.join(TIPOS_DISPOSITIVO)})"}, status_code=400)
         try:
             novo = db.criar_dispositivo(
                 entity_id=f"urn:ngsi-ld:CV-SHM:{slug_unico}",
@@ -323,6 +338,7 @@ def instalar(app):
                 topico_atributos="v1/devices/me/attributes",
                 topico_frame=f"oiticica/{slug_unico}/frame",
                 dono_usuario_id=usuario["id"],
+                tipo=payload.tipo,
             )
         except Exception as e:
             return JSONResponse({"error": f"não consegui criar: {e}"}, status_code=400)
@@ -346,6 +362,9 @@ def instalar(app):
 
         campos = payload.model_dump(exclude_unset=True)
 
+        if campos.get("tipo") is not None and campos["tipo"] not in TIPOS_DISPOSITIVO:
+            return JSONResponse(
+                {"error": f"tipo inválido: {campos['tipo']}"}, status_code=400)
         if "nome" in campos:
             campos["nome"] = (campos["nome"] or "").strip()
             if not campos["nome"]:

@@ -119,5 +119,19 @@ TILT_STEP_DEG = float(os.getenv("TILT_STEP_DEG", "5.0"))
 ZOOM_STEP_PCT = float(os.getenv("ZOOM_STEP_PCT", "10.0"))
 
 # --- API local do agente ----------------------------------------------------
-API_HOST = os.getenv("API_HOST", "0.0.0.0")
+# Padrao 127.0.0.1: esta API nao tem senha propria e o PTZ nao depende mais
+# dela (o comando desce pelo WebSocket que o agente abre com o servidor).
+# Antes ela escutava em 0.0.0.0 sem autenticacao nenhuma -- qualquer um na
+# rede dirigia a camera.
+#
+# Para usar o "modo LAN" do dashboard (navegador falando direto com o
+# equipamento, sem passar pela nuvem), ponha API_HOST=0.0.0.0. Nesse caso as
+# rotas de comando passam a exigir o lan_token que o servidor entrega pelo
+# WebSocket, e o CORS deixa de ser aberto.
+API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8090"))
+
+# Origens autorizadas a chamar a API local pelo navegador. Por padrao so o
+# proprio servidor do dashboard. "*" volta ao comportamento antigo (aberto).
+CORS_ORIGENS = [o.strip() for o in
+                os.getenv("CORS_ORIGENS", SERVER_URL).split(",") if o.strip()]

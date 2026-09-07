@@ -33,11 +33,14 @@
     config: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>',
     sair: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 17l5-5-5-5"/><path d="M20 12H9"/><path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3"/></svg>',
     menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>',
+    monitoramento: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3.5-4 3 3L21 6"/></svg>',
+    sino: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 6-3 7-3 7h18s-3-1-3-7"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
   };
 
   var ITENS = [
     { chave: "dashboard", href: "/", rotulo: "Painel", icone: ICONES.dashboard },
     { chave: "dispositivos", href: "/dispositivos", rotulo: "Dispositivos", icone: ICONES.dispositivos },
+    { chave: "monitoramento", href: "/monitoramento", rotulo: "Monitoramento", icone: ICONES.monitoramento },
     { chave: "config", href: "/config", rotulo: "Configuração", icone: ICONES.config },
   ];
 
@@ -116,8 +119,109 @@
       location.href = "/login";
     });
 
+    montarSino(document.getElementById("layout-acoes"));
     carregarUsuario();
     return { acoes: document.getElementById("layout-acoes") };
+  }
+
+  // ==========================================================================
+  // Sininho de alarmes
+  //
+  // Fica em TODAS as telas (esta no cabecalho compartilhado): um alarme que
+  // dispara enquanto o operador olha o video 3D precisa aparecer do mesmo
+  // jeito. A contagem vem do servidor; o WebSocket avisa na hora, e o
+  // intervalo de 60s e a rede de seguranca para quando o socket cai.
+  // ==========================================================================
+  var sinoAberto = false;
+
+  function montarSino(acoes) {
+    if (!acoes) return;
+    var caixa = document.createElement("div");
+    caixa.className = "sino-caixa";
+    caixa.innerHTML =
+      '<button type="button" id="layout-sino" title="Alarmes">' + ICONES.sino +
+      '<span class="sino-conta" id="layout-sino-conta" hidden>0</span></button>' +
+      '<div class="sino-painel" id="layout-sino-painel" hidden>' +
+        '<div class="sino-topo"><b>Alarmes</b>' +
+        '<button type="button" id="layout-sino-lidos">marcar como lidos</button></div>' +
+        '<ul id="layout-sino-lista"><li class="vazio">Nada por aqui.</li></ul>' +
+      "</div>";
+    acoes.appendChild(caixa);
+
+    document.getElementById("layout-sino").addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      sinoAberto = !sinoAberto;
+      document.getElementById("layout-sino-painel").hidden = !sinoAberto;
+      if (sinoAberto) atualizarSino();
+    });
+    document.getElementById("layout-sino-lidos").addEventListener("click", async function (ev) {
+      ev.stopPropagation();
+      try {
+        await fetch("/api/alarmes/eventos/lidos", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+      } catch (e) { /* offline: a proxima atualizacao corrige */ }
+      atualizarSino();
+    });
+    document.addEventListener("click", function () {
+      if (!sinoAberto) return;
+      sinoAberto = false;
+      var p = document.getElementById("layout-sino-painel");
+      if (p) p.hidden = true;
+    });
+    var painel = document.getElementById("layout-sino-painel");
+    if (painel) painel.addEventListener("click", function (ev) { ev.stopPropagation(); });
+
+    atualizarSino();
+    setInterval(atualizarSino, 60000);
+    ouvirWebSocket();
+  }
+
+  var ROTULO_CONDICAO = { maior: ">", menor: "<", igual: "=" };
+
+  async function atualizarSino() {
+    var conta = document.getElementById("layout-sino-conta");
+    var lista = document.getElementById("layout-sino-lista");
+    if (!conta || !lista) return;
+    try {
+      var j = await fetch("/api/alarmes/eventos?limite=20").then(function (r) { return r.json(); });
+      conta.hidden = !j.nao_lidos;
+      conta.textContent = j.nao_lidos > 99 ? "99+" : String(j.nao_lidos || 0);
+      if (!j.eventos || !j.eventos.length) {
+        lista.innerHTML = '<li class="vazio">Nenhum alarme registrado.</li>';
+        return;
+      }
+      lista.innerHTML = j.eventos.map(function (e) {
+        var onde = e.sub_id ? escapar(e.sub_id) + " · " : "";
+        var quando = new Date(e.em).toLocaleString("pt-BR");
+        var classe = e.estado === "disparado" ? "disparado" : "normal";
+        return '<li class="' + classe + (e.lido ? "" : " novo") + '">' +
+          "<b>" + escapar(e.titulo) + "</b>" +
+          '<span class="det">' + escapar(e.dispositivo_nome) + " · " + onde +
+          escapar(e.chave) + " " + (ROTULO_CONDICAO[e.condicao] || "") + " " +
+          e.limite + " (leu " + (e.valor == null ? "—" : e.valor) + ")</span>" +
+          '<span class="quando">' + quando +
+          (e.estado === "normalizado" ? " · normalizou" : "") + "</span></li>";
+      }).join("");
+    } catch (e) { /* servidor fora: nao mexe no que ja esta na tela */ }
+  }
+
+  /** Um alarme novo precisa aparecer NA HORA, nao no proximo minuto. */
+  function ouvirWebSocket() {
+    try {
+      var proto = location.protocol === "https:" ? "wss://" : "ws://";
+      var ws = new WebSocket(proto + location.host + "/ws");
+      ws.onmessage = function (ev) {
+        try {
+          var msg = JSON.parse(ev.data);
+          if (msg.type === "alarme") atualizarSino();
+        } catch (e) { /* mensagem de outro tipo */ }
+      };
+      // Se cair, o setInterval de 60s continua cobrindo. Reconecta sem
+      // pressa para nao criar tempestade de conexoes numa queda do servidor.
+      ws.onclose = function () { setTimeout(ouvirWebSocket, 15000); };
+    } catch (e) { /* sem websocket: fica so o intervalo */ }
   }
 
   async function carregarUsuario() {

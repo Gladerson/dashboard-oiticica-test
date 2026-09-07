@@ -51,9 +51,11 @@ load_dotenv(_Path(__file__).parent / ".env")
 from glb_geo import PAN_SIGN, TILT_SIGN  # noqa: E402
 
 import auth  # noqa: E402
+import comandos  # noqa: E402
 import db  # noqa: E402
 import dispositivos  # noqa: E402
 import registro_dispositivos as registro  # noqa: E402
+import telemetria  # noqa: E402
 
 HISTORY_DIR = "history"
 HISTORY_INDEX = os.path.join(HISTORY_DIR, "index.json")
@@ -297,6 +299,12 @@ def camera_info(device_id: str):
         "lon": device.lon,
         "alt": device.alt_acima_solo,
         "controller_url": device.controller_url_publica,
+        # Modo LAN: o navegador so fala direto com o equipamento se ele
+        # estiver na mesma rede E o agente tiver entregue um lan_token nesta
+        # conexao. Sem token, o dashboard usa o servidor -- que e o caminho
+        # que sempre funciona.
+        "lan_token": comandos.lan_token_de(device.id),
+        "edge_conectado": comandos.conectado(device.id),
         "modelo_3d_url": _modelo_3d_url(device.localidade_modelo_3d_path),
         "cone_ring_rays": registro.CONE_RING_RAYS,
         "half_angle_wide": registro.CONE_HALF_ANGLE_WIDE,
@@ -699,45 +707,99 @@ class ContinuousPayload(BaseModel):
     hold_ms: int = 800
 
 
-def _proxy(controller_url, path, body=None):
+# Espera maxima por um comando de PTZ. Curto de proposito: o dashboard
+# repete o comando a cada 300ms enquanto o botao esta pressionado, e esperar
+# mais que isso so empilha requisicoes no navegador (limite de conexoes por
+# origem) -- foi o que fazia o PTZ "travar".
+TIMEOUT_PTZ_S = float(os.getenv("TIMEOUT_PTZ_S", "3"))
+
+
+def _http_direto(device, path, body=None, timeout=TIMEOUT_PTZ_S):
+    """Caminho antigo: o SERVIDOR fala com o agente. So funciona quando os
+    dois estao na mesma rede -- com o servidor na nuvem nao ha rota de fora
+    para dentro. Fica como plano B para instalacao local."""
+    url = f"{device.controller_url}{path}"
+    r = http.post(url, json=body, timeout=timeout)
+    return r.json()
+
+
+async def _enviar_comando(device, path, body=None, timeout=TIMEOUT_PTZ_S):
+    """Descida em duas tentativas, nesta ordem:
+
+      1. WebSocket que o proprio equipamento abriu (server/comandos.py) --
+         atravessa NAT, e o caminho normal em producao;
+      2. POST direto no agente, para quem roda tudo na mesma rede.
+
+    Se os dois falharem, o 502 leva junto o motivo e o que conferir: antes
+    o log mostrava so 'Bad Gateway' e nao havia como saber se o agente
+    estava fora do ar, se a URL estava errada ou se era a rede."""
     try:
-        r = http.post(f"{controller_url}{path}", json=body, timeout=5)
-        return r.json()
+        return await comandos.comandar(device.id, path, body, timeout=timeout)
+    except ConnectionError as e:
+        motivo_ws = str(e)
+
+    try:
+        return await run_in_threadpool(_http_direto, device, path, body, timeout)
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
+        print(f"[ptz] '{device.nome}': WebSocket ({motivo_ws}) e HTTP direto "
+              f"({type(e).__name__}: {e}) falharam em {path}")
+        return JSONResponse({
+            "error": motivo_ws,
+            "erro_http_direto": str(e),
+            "url_tentada": f"{device.controller_url}{path}",
+            "dica": ("O agente nao esta com o WebSocket aberto no servidor. "
+                     "Confira se ele esta rodando, se SERVER_URL e DEVICE_TOKEN "
+                     "do .env dele estao certos e se ha saida para a internet "
+                     "no local."),
+        }, status_code=502)
 
 
 @app.post("/api/command")
-def send_command(cmd: CommandPayload):
+async def send_command(cmd: CommandPayload):
     device = registro.por_id(cmd.device_id)
     if device is None:
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
-    return _proxy(device.controller_url, "/command", cmd.model_dump(exclude={"device_id"}))
+    return await _enviar_comando(device, "/command",
+                                 cmd.model_dump(exclude={"device_id"}))
 
 
 @app.post("/api/ptz/continuous")
-def ptz_continuous(cmd: ContinuousPayload):
+async def ptz_continuous(cmd: ContinuousPayload):
     device = registro.por_id(cmd.device_id)
     if device is None:
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
-    return _proxy(device.controller_url, "/command/continuous",
-                 cmd.model_dump(exclude={"device_id"}))
+    return await _enviar_comando(device, "/command/continuous",
+                                 cmd.model_dump(exclude={"device_id"}))
 
 
 @app.post("/api/ptz/stop")
-def ptz_stop(device_id: str):
+async def ptz_stop(device_id: str):
     device = registro.por_id(device_id)
     if device is None:
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
-    return _proxy(device.controller_url, "/command/stop", {})
+    return await _enviar_comando(device, "/command/stop", {})
 
 
 @app.post("/api/command/home")
-def send_home(device_id: str):
+async def send_home(device_id: str):
     device = registro.por_id(device_id)
     if device is None:
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
-    return _proxy(device.controller_url, "/command/home", {})
+    return await _enviar_comando(device, "/command/home", {}, timeout=8)
+
+
+@app.get("/api/edge/status_conexao")
+def status_conexao(device_id: str):
+    """O equipamento esta com o canal de descida aberto? E o que o dashboard
+    mostra quando o PTZ nao responde, em vez de um 502 mudo."""
+    device = registro.por_id(device_id)
+    if device is None:
+        return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
+    info = comandos.info_conexao(device.id)
+    return info or {"conectado": False,
+                    "dica": ("Nenhum WebSocket aberto para este equipamento. "
+                             "Confira se o agente esta no ar e se o SERVER_URL "
+                             "dele aponta para este servidor.")}
 
 
 # ----------------------------------------------------------------------------
@@ -756,6 +818,15 @@ borda.instalar(app, borda.Contexto(
     escrever_indice=_escrever_indice,
     history_lock=_history_lock,
 ))
+
+# Canal de descida (servidor -> equipamento) por WebSocket de saida. Ao
+# conectar, o equipamento ja recebe o estado desejado atual -- sem isso um
+# agente que reinicia ficaria com o padrao ate alguem mexer no dashboard.
+comandos.instalar(app)
+
+# Sensores e gateways (ESP32): ingestao, widgets e alarmes. O manager e o
+# mesmo WebSocket que ja avisa os dashboards de frame/deteccao.
+telemetria.instalar(app, manager)
 
 
 @app.websocket("/ws")

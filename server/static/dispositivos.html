@@ -168,6 +168,14 @@
         <input id="dev-proprietario" placeholder="ex.: SEMARH" />
       </div>
       <div>
+        <label for="dev-tipo">Tipo de equipamento</label>
+        <select id="dev-tipo">
+          <option value="camera">Câmera (Raspberry + PTZ)</option>
+          <option value="sensor">Sensor (ESP32 que fala por si)</option>
+          <option value="gateway">Gateway (ESP32 que fala por N sensores)</option>
+        </select>
+      </div>
+      <div>
         <label for="dev-localidade">Localidade</label>
         <select id="dev-localidade"><option value="">(nenhuma)</option></select>
       </div>
@@ -282,6 +290,14 @@
         <select id="ed-localidade"><option value="">(nenhuma)</option></select>
       </div>
       <div>
+        <label for="ed-tipo">Tipo de equipamento</label>
+        <select id="ed-tipo">
+          <option value="camera">Câmera (Raspberry + PTZ)</option>
+          <option value="sensor">Sensor (ESP32 que fala por si)</option>
+          <option value="gateway">Gateway (ESP32 que fala por N sensores)</option>
+        </select>
+        <p class="ajuda" id="ajuda-tipo"></p>
+
         <label for="ed-transporte">Transporte</label>
         <select id="ed-transporte">
           <option value="http">HTTP</option>
@@ -662,9 +678,15 @@ async function carregarDispositivos() {
   lista.forEach(dev => {
     // Diz na propria listagem por que a visao 3D ainda nao liga -- e o
     // lugar onde a pessoa pode consertar (botao "Editar" ao lado).
-    const aviso = dev.motivo_sem_3d
-      ? `<span class="motivo-3d">⚠ ${escapar(dev.motivo_sem_3d)}</span>`
-      : `<span class="motivo-3d ok">✔ visão 3D pronta</span>`;
+    // Sensor e gateway nao tem visao 3D -- e isso nao e um defeito a
+    // reportar. Para eles o que interessa e o painel de telemetria.
+    const rotuloTipo = { camera: "Câmera", sensor: "Sensor", gateway: "Gateway" };
+    const tipo = dev.tipo || "camera";
+    const aviso = tipo !== "camera"
+      ? `<span class="motivo-3d ok">${escapar(rotuloTipo[tipo])} — sem visão 3D</span>`
+      : (dev.motivo_sem_3d
+          ? `<span class="motivo-3d">⚠ ${escapar(dev.motivo_sem_3d)}</span>`
+          : `<span class="motivo-3d ok">✔ visão 3D pronta</span>`);
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapar(dev.nome)}<br/><span class="muted">${escapar(dev.entity_id)}</span></td>
@@ -672,6 +694,16 @@ async function carregarDispositivos() {
       <td>${dev.transporte.toUpperCase()}</td>
       <td></td>`;
     const tdAcoes = tr.lastElementChild;
+
+    if (tipo !== "camera") {
+      const btnPainel = document.createElement("button");
+      btnPainel.textContent = "Painel";
+      btnPainel.title = "Widgets e alarmes deste equipamento";
+      btnPainel.addEventListener("click", () => {
+        location.href = `/monitoramento?device_id=${encodeURIComponent(dev.id)}`;
+      });
+      tdAcoes.appendChild(btnPainel);
+    }
 
     const btnEditar = document.createElement("button");
     btnEditar.textContent = "Editar";
@@ -699,6 +731,21 @@ async function carregarDispositivos() {
 // ---------------------------------------------------------------------
 let editandoId = null;
 
+const AJUDA_TIPO = {
+  camera: "Tem visão 3D, PTZ e detecção de rachaduras. Precisa de localidade "
+        + "com modelo .glb e de latitude/longitude.",
+  sensor: "Manda as próprias telemetrias (ex.: distancia, bateria_v). Os "
+        + "widgets dele são escolhidos só pela telemetria.",
+  gateway: "Fala por vários equipamentos remotos (LoRa) numa mensagem só. "
+         + "Cada widget é escolhido pelo equipamento (deviceID) E pela telemetria.",
+};
+
+function descreverTipo() {
+  const sel = document.getElementById("ed-tipo");
+  const p = document.getElementById("ajuda-tipo");
+  if (sel && p) p.textContent = AJUDA_TIPO[sel.value] || "";
+}
+
 function abrirEdicao(dev) {
   editandoId = dev.id;
   document.getElementById("editar-titulo").textContent = `Editar “${dev.nome}”`;
@@ -710,6 +757,9 @@ function abrirEdicao(dev) {
   document.getElementById("ed-alt").value =
     dev.alt_acima_solo === null ? "" : dev.alt_acima_solo;
   document.getElementById("ed-controller").value = dev.controller_url || "";
+  document.getElementById("ed-tipo").value = dev.tipo || "camera";
+  descreverTipo();
+  document.getElementById("ed-tipo").onchange = descreverTipo;
 
   const select = document.getElementById("ed-localidade");
   select.innerHTML = '<option value="">(nenhuma)</option>';
@@ -770,6 +820,7 @@ document.getElementById("form-editar").addEventListener("submit", async (ev) => 
         lat, lon,
         alt_acima_solo: numeroOuNulo("ed-alt"),
         controller_url: document.getElementById("ed-controller").value.trim() || null,
+        tipo: document.getElementById("ed-tipo").value,
       }),
     });
     const j = await r.json();
@@ -802,6 +853,7 @@ document.getElementById("form-dispositivo").addEventListener("submit", async (ev
         proprietario: document.getElementById("dev-proprietario").value.trim() || null,
         localidade_id: document.getElementById("dev-localidade").value || null,
         transporte: document.getElementById("dev-transporte").value,
+        tipo: document.getElementById("dev-tipo").value,
         alt_acima_solo: document.getElementById("dev-alt").value
           ? parseFloat(document.getElementById("dev-alt").value) : null,
         lat: devLat, lon: devLon,

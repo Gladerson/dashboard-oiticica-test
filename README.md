@@ -896,6 +896,188 @@ tenta carregar modelo 3D nem vídeo.
 
 ---
 
+## 9-quater. Comunicação: quem disca para quem
+
+> **NÃO APLICADO NO SERVIDOR AINDA.** Esta seção descreve o branch
+> `claude/comunicacao-ws-telemetria`, que ainda não foi para `main` (ver
+> §16, "Pendências"). Enquanto ele não for aplicado, vale o que está na
+> §8: o PTZ exige que o servidor alcance o Raspberry.
+
+### O problema
+
+Até aqui o PTZ era `POST http://<ip-do-Pi>:8090/command/...`, disparado
+**pelo servidor**. Isso só funciona enquanto servidor e equipamento estão na
+mesma rede. Com o servidor na nuvem e o Raspberry atrás de NAT — o cenário
+real — não existe rota de fora para dentro, e todo comando virava
+`502 Bad Gateway` sem explicação no log.
+
+### A regra
+
+**Nenhum componente precisa ser alcançável de fora.** Tudo disca para fora:
+equipamento → servidor, navegador → servidor. O servidor nunca disca para
+dentro da LAN.
+
+### Os três canais
+
+| Canal | Quem inicia | Como |
+|---|---|---|
+| Subida pesada (frames 4 fps, evidências) | equipamento | `POST /api/edge/frame`, `/api/edge/imagem` — já era assim |
+| Subida leve (telemetria 1 Hz, leituras de sensor) | equipamento | `POST /api/edge/telemetria`, `/api/edge/dados` — a resposta traz o estado desejado de carona |
+| **Descida (PTZ, estado desejado)** | **equipamento** | **WebSocket de saída para `/api/edge/ws`, mantido aberto** |
+
+O agente abre o WebSocket, manda `{"tipo":"ola"}` e fica escutando. O
+servidor empurra `{"tipo":"comando", "rota":"/command/continuous", ...}` e
+espera a `{"tipo":"resposta"}` correspondente (`TIMEOUT_PTZ_S`, 3 s por
+padrão). Se o socket cair, o agente reconecta com espera crescente (1 s → 30 s)
+e **nada trava**: o estado desejado continua descendo de carona na resposta
+da telemetria, como sempre. O WebSocket é o que dá latência de PTZ
+aceitável, não o que garante a entrega.
+
+Duas camadas separadas de propósito: a **fila de comandos** (`server/comandos.py`)
+não sabe como o comando será entregue; o **adaptador** atual é o WebSocket. Se
+um dia o transporte virar MQTT, só o adaptador muda.
+
+### Modo LAN (opcional)
+
+Com o servidor na nuvem, cada comando atravessa a internet duas vezes. Quando
+o operador está **no local**, o dashboard pode falar direto com o
+equipamento. Isso é uma otimização, nunca um requisito:
+
+* o dashboard sonda **uma vez** se alcança o equipamento e mostra o estado
+  numa pastilha abaixo dos botões de PTZ (`modo LAN` ou `pelo servidor`);
+* se falhar, volta ao servidor e tenta de novo em 60 s. (Antes, uma única
+  falha prendia a sessão inteira no proxy até recarregar a página.)
+
+### Segurança da API local do agente
+
+A API do agente na 8090 **não tinha autenticação nenhuma** e aceitava
+qualquer origem (`allow_origins=["*"]`): quem estivesse na rede dirigia a
+câmera. Agora:
+
+* `API_HOST` passa a ser `127.0.0.1` por padrão — a API sai da rede, e o
+  PTZ não depende mais dela;
+* para usar o modo LAN, exponha com `API_HOST=0.0.0.0`. Nesse caso as rotas
+  `/command/*` exigem o header `X-LAN-Token`, um segredo curto que o
+  **servidor** gera a cada conexão do agente e entrega pelo próprio
+  WebSocket. O token do dispositivo nunca chega ao navegador;
+* o CORS deixa de ser aberto: `CORS_ORIGENS` (padrão: o `SERVER_URL`).
+
+---
+
+## 9-quinquies. Telemetria de sensores e gateways (ESP32)
+
+> **NÃO APLICADO NO SERVIDOR AINDA** — mesmo branch da seção anterior.
+
+### Tipos de equipamento
+
+O cadastro em **Dispositivos** ganhou o campo **Tipo**:
+
+| Tipo | O que é | Precisa de modelo 3D? |
+|---|---|---|
+| `camera` | Raspberry + PTZ: visão 3D, stream, detecção de rachaduras | sim |
+| `sensor` | ESP32 que manda as próprias telemetrias | não |
+| `gateway` | ESP32 que recebe de N controladores (LoRa) e reenvia tudo junto | não |
+
+Sensor e gateway não cobram mais "sem visão 3D" na listagem — isso não é
+defeito neles.
+
+### Como os dados sobem
+
+Uma rota só, autenticada pelo mesmo esquema do Raspberry
+(`Authorization: Bearer <token do dispositivo>`):
+
+```
+POST /api/edge/dados
+```
+
+**Sensor** (fala por si): o corpo são as telemetrias dele.
+
+```json
+{"distancia": 12.5, "bateria_v": 3.7}
+```
+
+**Gateway**: o firmware atual (`ESP32_gateway_LoRa.ino`) achata os nomes, e o
+servidor separa. Cada equipamento remoto vira um **`sub_id`**, o resto do
+nome vira a **chave**:
+
+```json
+{"nivel-rd01": "on",
+ "nivel-rd01_distancia": 12.5,
+ "nivel-rd01_cota_atual": 114.2,
+ "nivel-rd02": "off"}
+```
+
+vira
+
+| sub_id | chave | valor |
+|---|---|---|
+| nivel-rd01 | status | on |
+| nivel-rd01 | distancia | 12.5 |
+| nivel-rd01 | cota_atual | 114.2 |
+| nivel-rd02 | status | off |
+
+O par **(sub_id, chave)** é o endereço de uma telemetria no sistema — é o que
+os widgets e os alarmes selecionam.
+
+Como o servidor descobre quais chaves são equipamentos, em ordem de
+confiança: (1) já apareceu antes naquele gateway; (2) o valor é um status
+conhecido (`on`/`off`/`erro`); (3) a chave é prefixo de outra
+(`nivel-rd01` e `nivel-rd01_distancia`). O prefixo **mais longo** vence, para
+`rd01` e `rd01b` não se embaralharem.
+
+**Formato recomendado para firmware novo** (não depende de convenção de nome):
+
+```json
+{"nivel-rd01": {"status": "on", "distancia": 12.5}}
+```
+
+Também é aceito `{"values": {...}}` (mesmo envelope do Raspberry) e uma lista
+explícita `{"dispositivos": ["nivel-rd01", "nivel-rd02"], ...}` para dispensar
+a adivinhação.
+
+Booleano é gravado como número **e** texto (`1`/`"true"`): assim o mesmo dado
+serve para um alarme numérico e para um indicador de status.
+
+### Tela de Monitoramento
+
+Menu lateral → **Monitoramento** (ou o botão **Painel** na linha do
+equipamento em Dispositivos). Widgets por equipamento:
+
+| Widget | Para quê |
+|---|---|
+| Gráfico de área | uma ou mais telemetrias ao longo do tempo |
+| Gráfico de barras | comparar telemetrias (ex.: cota atual × cota de revanche) |
+| Digital gauge / card | um número grande, com unidade e horário da leitura |
+| Medidor radial | valor com mínimo e máximo |
+| Indicador de status | bolinha colorida por telemetria (`on`/`off`/`erro`) |
+| Tabela de alarmes | regras em vigor + histórico de disparos |
+
+Num **gateway**, cada widget é escolhido pelo **equipamento (deviceID)** e
+depois pela telemetria; num **sensor**, só pela telemetria. Os seletores só
+oferecem o que aquele equipamento já enviou — o operador escolhe, não digita.
+
+Todos os gráficos são **SVG desenhado pelo próprio código**, sem CDN: o painel
+precisa abrir numa rede sem internet.
+
+### Alarmes e o sininho
+
+Uma regra é (equipamento, deviceID, telemetria, condição, valor):
+
+* **quando maior que**, **quando menor que**, **quando exatamente**
+  (com tolerância de 1e-9, porque igualdade exata de float é armadilha);
+* severidade informativo / alerta / crítico.
+
+O evento nasce **só na virada** — normal → disparado, e a volta. Sem isso um
+sensor que passa 10 minutos acima do limite geraria um evento por leitura e
+afogaria a notificação.
+
+Quando dispara, aparece no **sininho do canto superior direito**, presente em
+todas as telas (fica no cabeçalho compartilhado, então um alarme durante o uso
+do painel 3D aparece igual). A contagem atualiza pelo WebSocket na hora e por
+polling de 60 s como rede de segurança.
+
+---
+
 ## 10. Referência de API
 
 ### Agente, no Raspberry (porta 8090)
@@ -935,6 +1117,19 @@ Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
 | `/api/inferencia` | POST | sessão | ajusta limiares em runtime -- exige `device_id` |
 | `/api/borda` | GET | sessão | painel de estado da borda -- exige `?device_id=` |
 | `/api/aim` | POST | sessão | close por seleção -- exige `device_id` |
+| `/api/edge/ws` | WS | token | **canal de descida**: o equipamento abre e mantém; comandos e estado desejado descem por aqui (§9-quater) |
+| `/api/edge/status_conexao` | GET | sessão | o equipamento está com o canal aberto? há quanto tempo? |
+| `/api/edge/dados` | POST | token | telemetria de sensor ou gateway (§9-quinquies) |
+| `/api/telemetria/chaves` | GET | sessão | catálogo (sub_ids + telemetrias) que aquele equipamento já mandou |
+| `/api/telemetria/serie` | GET | sessão | série histórica de `(sub_id, chave)` -- exige `chave` |
+| `/api/telemetria/ultimos` | GET | sessão | último valor de cada telemetria |
+| `/api/widgets` | GET/POST | sessão | listar / criar widget de um equipamento |
+| `/api/widgets/{id}` | PATCH/DELETE | sessão | editar / remover widget |
+| `/api/alarmes` | GET/POST | sessão | listar / criar regra de alarme |
+| `/api/alarmes/{id}` | PATCH/DELETE | sessão | editar / remover regra |
+| `/api/alarmes/eventos` | GET | sessão | histórico + contagem de não lidos (alimenta o sininho) |
+| `/api/alarmes/eventos/lidos` | POST | sessão | marca eventos como lidos |
+| `/monitoramento` | GET | sessão | tela de widgets e alarmes |
 | `/api/locate` | POST | sessão | revisitar detecção -- dispositivo vem da PRÓPRIA detecção salva, não do cliente |
 | `/api/detection/{id}/pedir_imagem` | POST | sessão | pede a foto completa ao Pi ("Abrir") -- dispositivo idem `/api/locate` |
 | `/login`, `/api/login` | GET/POST | não | tela e endpoint de entrada |
@@ -1088,7 +1283,9 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
 | `STREAM_FPS` / `STREAM_LARGURA` | 4 / 640 | vídeo sob demanda |
 | `STREAM_TTL_S` | 75 | teto absoluto do stream, do lado do Pi |
 | `PAN_DEG_RANGE` / `TILT_DEG_RANGE` | 180 / 90 | curso mecânico real, em graus |
+| `API_HOST` | `127.0.0.1` | onde a API local escuta. Padrão localhost: ela não tem senha própria e o PTZ desce pelo WebSocket (§9-quater). `0.0.0.0` para usar o modo LAN |
 | `API_PORT` | 8090 | porta da API local do agente |
+| `CORS_ORIGENS` | `SERVER_URL` | origens que podem chamar a API local pelo navegador (lista separada por vírgula). `*` volta ao comportamento antigo, aberto |
 | `OPENCV_FFMPEG_CAPTURE_OPTIONS` | — | força TCP no RTSP (ver §4.3) |
 
 ### `server/.env` — servidor
@@ -1100,6 +1297,8 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
 | `SESSAO_DURACAO_H` | 168 (7 dias) | validade do cookie de sessão |
 | `CONTROLLER_URL` | `http://127.0.0.1:8090` | *fallback* servidor → Pi, só para dispositivos sem `controller_url` próprio cadastrado |
 | `CONTROLLER_PUBLIC_URL` | = acima | *fallback* navegador → Pi (PTZ direto), idem acima |
+| `TIMEOUT_PTZ_S` | 3 | espera máxima por um comando de PTZ (§9-quater). Curto de propósito: o dashboard repete o comando a cada 300 ms |
+| `TELEMETRIA_JANELA_MIN` | 1440 | janela padrão dos gráficos de área, em minutos |
 | `STREAM_JANELA_S` | 60 | duração do pedido de vídeo |
 | `STREAM_FPS` / `STREAM_LARGURA` / `STREAM_QUALIDADE` | 4 / 640 / 60 | parâmetros pedidos ao Pi |
 | `PAN_SIGN` / `TILT_SIGN` | -1 / 1 | sentido de rotação (global -- é fiação de câmera, não propriedade da localidade) |
@@ -1410,6 +1609,33 @@ indesejável, mova para variável de ambiente.
 
 ## 16. Pendências conhecidas
 
+### ⚠ Etapa pronta, mas ainda NÃO aplicada em produção
+
+O branch **`claude/comunicacao-ws-telemetria`** contém as seções §9-quater e
+§9-quinquies (canal de descida por WebSocket, modo LAN, API do agente em
+localhost, telemetria de sensores/gateways, widgets e alarmes). Está validado
+em bancada, **mas ainda não foi para `main`** — foi deixado assim de propósito,
+para ser aplicado quando houver como testar em campo. Como aplicar está no
+final desta seção.
+
+Pontos de atenção quando for aplicar:
+
+- **`websockets>=12` é dependência nova do Raspberry** (`edge/requirements.txt`).
+  Sem ela o agente sobe, avisa no log e o PTZ fica só pela API local.
+- **`API_HOST` mudou de padrão** (`0.0.0.0` → `127.0.0.1`). Quem depender do
+  modo LAN precisa voltar para `0.0.0.0` explicitamente no `edge/.env`.
+- **`embreex` está no `server/requirements.txt` mas pode não estar instalado.**
+  Se o log do servidor imprimir `Embree indisponível`, o raycasting do cone
+  fica 285× a 1500× mais lento (medido, §14) — uma única câmera em movimento
+  satura um núcleo. Confira com `pip install -r server/requirements.txt`.
+- **Retenção da tabela `telemetria`.** A ingestão grava para sempre;
+  `db.limpar_telemetria_antiga(dias)` existe mas ainda **não é chamada por
+  ninguém**. Falta agendar (cron ou tarefa no startup) antes de produção.
+- **O firmware ESP32 ainda fala MQTT.** O servidor já aceita o payload achatado
+  do gateway por HTTP (`POST /api/edge/dados`); falta trocar o `PubSubClient`
+  por um POST HTTP nos `.ino`, usando o `DEVICE_TOKEN` do cadastro.
+- **Sem HTTPS ainda.** Combinado para depois da migração para a VM.
+
 - **Curso mecânico do PTZ não calibrado.** A câmera reporta pan/tilt
   normalizados (−1..1) e assume-se ±180°/±90°. É propriedade da câmera, não do
   local, e pode ser medida em bancada com `controller/calibrar_curso.py` (com o
@@ -1482,3 +1708,65 @@ indesejável, mova para variável de ambiente.
     `server/static/dashboard.html` atual continua sendo a única tela de
     operação; vai virar o primeiro widget (tipo `CV-SHM`) dentro desse
     grid.
+
+
+---
+
+### Como aplicar o branch `claude/comunicacao-ws-telemetria`
+
+**1. Servidor**
+
+```bash
+cd ~/dashboard-oiticica-test
+git fetch origin
+git checkout main && git merge --no-ff origin/claude/comunicacao-ws-telemetria
+pip install -r server/requirements.txt      # confirma o embreex
+sudo systemctl restart dashboard-oiticica
+```
+
+O schema é idempotente (`CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT
+EXISTS`) e roda sozinho na subida: **não há migração manual**. Os dispositivos
+que já existem viram `tipo='camera'`, que é o comportamento de antes.
+
+No log da subida devem aparecer as duas linhas novas:
+
+```
+>> Canal de comandos instalado (WebSocket de saida em /api/edge/ws).
+>> Modulo de telemetria instalado (sensores, gateways, widgets e alarmes).
+```
+
+**2. Raspberry**
+
+```bash
+cd ~/dashboard-oiticica-test
+git pull origin main
+pip install -r edge/requirements.txt        # traz o websockets>=12
+sudo systemctl restart agente-borda
+```
+
+Confira no log do agente: `[ws] canal de comandos aberto em ws://.../api/edge/ws`.
+Se quiser o modo LAN (navegador falando direto com o Pi quando o operador
+estiver no local), acrescente ao `edge/.env`:
+
+```
+API_HOST=0.0.0.0
+```
+
+Sem isso a API local passa a escutar só em `127.0.0.1` — mais seguro, e o PTZ
+funciona igual pelo servidor.
+
+**3. Conferir**
+
+- Em **Dispositivos**, a linha da câmera continua igual; no painel, abaixo dos
+  botões de PTZ aparece a pastilha `pelo servidor` (ou `modo LAN`).
+- Mexa no PTZ. Se falhar, o aviso na tela diz o motivo e tem o botão
+  **Testar conexão**.
+
+**4. Sensores e gateways (quando os ESP32 estiverem prontos)**
+
+- Cadastre em **Dispositivos** com o tipo certo (`sensor` ou `gateway`) e
+  copie o `DEVICE_TOKEN`.
+- O firmware manda `POST /api/edge/dados` com
+  `Authorization: Bearer <token>` e o JSON das leituras (§9-quinquies).
+- Em **Monitoramento**, escolha o equipamento e monte os widgets. As
+  telemetrias só aparecem nos seletores **depois** da primeira mensagem.

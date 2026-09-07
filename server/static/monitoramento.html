@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Monitoramento - Barragem Oiticica</title>
+<link rel="stylesheet" href="/estatico/layout.css" />
+<style>
+  /* Tokens e casca vem de /estatico/layout.css. Todos os graficos aqui sao
+     SVG desenhado a mao, sem CDN: o painel precisa abrir numa rede sem
+     internet, e foi CDN bloqueado que ja derrubou uma tela inteira antes. */
+  main { max-width: 1240px; margin: 0 auto; }
+  .barra {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .barra select { font-size: 12px; }
+  /* layout.css so estiliza .acao e os botoes dentro de tabela; os
+     secundarios desta tela pegam o visual aqui. */
+  .barra button:not(.acao), .modal .acoes button:not(.acao) {
+    font-size: 12px; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+    background: transparent; color: var(--text); border: 1px solid var(--border);
+  }
+  .barra button:not(.acao):hover,
+  .modal .acoes button:not(.acao):hover { border-color: var(--accent); }
+  table.alarmes button {
+    font-size: 10px; padding: 3px 7px; border-radius: 6px; cursor: pointer;
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+  }
+  table.alarmes button:hover { color: var(--danger); border-color: var(--danger); }
+  .barra .espaco { flex: 1; }
+
+  .grade {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  }
+  .widget {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--raio); box-shadow: var(--sombra); padding: 12px 14px;
+    display: flex; flex-direction: column; min-height: 150px;
+  }
+  .widget.largo { grid-column: span 2; }
+  @media (max-width: 780px) { .widget.largo { grid-column: span 1; } }
+  .widget header {
+    display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;
+  }
+  .widget header h3 {
+    margin: 0; font-size: 12px; font-weight: 600; flex: 1;
+    text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+  }
+  .widget header .acoes button {
+    background: transparent; border: none; color: var(--muted);
+    cursor: pointer; font-size: 11px; padding: 2px 4px;
+  }
+  .widget header .acoes button:hover { color: var(--danger); }
+  .widget .corpo { flex: 1; display: flex; align-items: center; justify-content: center; }
+  .widget svg { width: 100%; height: auto; display: block; }
+
+  .cartao-valor { text-align: center; }
+  .cartao-valor .n { font-size: 34px; font-weight: 700; line-height: 1.1; }
+  .cartao-valor .u { font-size: 14px; color: var(--muted); margin-left: 4px; }
+  .cartao-valor .quando { font-size: 10px; color: var(--muted); margin-top: 6px; }
+
+  .status-linha {
+    display: flex; align-items: center; gap: 8px; font-size: 13px;
+    padding: 4px 0;
+  }
+  .ponto { width: 10px; height: 10px; border-radius: 999px; flex: none; }
+  .ponto.ok { background: var(--ok); }
+  .ponto.ruim { background: var(--danger); }
+  .ponto.aviso { background: var(--warn); }
+  .ponto.desconhecido { background: var(--muted); }
+
+  table.alarmes { width: 100%; border-collapse: collapse; font-size: 11px; }
+  table.alarmes th, table.alarmes td {
+    text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--border);
+  }
+  table.alarmes th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 10px; }
+  table.alarmes tr.disparado td:first-child { color: var(--danger); font-weight: 600; }
+  table.alarmes tr.normalizado td:first-child { color: var(--ok); }
+
+  .vazio {
+    color: var(--muted); font-size: 12px; text-align: center; padding: 26px 10px;
+    line-height: 1.6;
+  }
+  .legenda { display: flex; gap: 10px; flex-wrap: wrap; font-size: 10px; color: var(--muted); margin-top: 6px; }
+  .legenda i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+
+  /* modal (mesmo visual dos modais de dispositivos.html) */
+  .modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.8); display: none;
+    align-items: center; justify-content: center; z-index: 30; padding: 20px;
+  }
+  .modal.open { display: flex; }
+  .modal .box {
+    width: min(92vw, 560px); max-height: 90vh; overflow: auto;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px;
+  }
+  .modal h3 { margin: 0 0 4px; font-size: 14px; }
+  .modal .sub { color: var(--muted); font-size: 12px; margin: 0 0 14px; line-height: 1.5; }
+  .modal .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  .campo { margin-bottom: 10px; }
+  .campo label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+  .campo select, .campo input { width: 100%; }
+  .campo .dica { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .duas { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  select[multiple] { min-height: 96px; }
+</style>
+</head>
+<body>
+<div class="app-shell" id="shell">
+  <div class="conteudo">
+    <div class="pagina pagina--rola">
+
+<main>
+  <div class="barra">
+    <label for="sel-dispositivo" style="font-size:12px;color:var(--muted)">Equipamento</label>
+    <select id="sel-dispositivo"></select>
+    <span id="rotulo-tipo" class="badge"></span>
+    <div class="espaco"></div>
+    <button class="acao" id="btn-widget" type="button">Adicionar widget</button>
+    <button id="btn-alarme" type="button">Novo alarme</button>
+  </div>
+
+  <div class="grade" id="grade"></div>
+  <div class="vazio" id="sem-widgets" hidden>
+    Nenhum widget configurado para este equipamento.<br />
+    Clique em <b>Adicionar widget</b> — as telemetrias oferecidas são as que
+    o equipamento já enviou ao servidor.
+  </div>
+</main>
+
+<!-- ------------------------------------------------------------------ -->
+<div class="modal" id="modal-widget">
+  <div class="box">
+    <h3>Novo widget</h3>
+    <p class="sub" id="sub-widget"></p>
+    <div class="campo">
+      <label for="w-tipo">Tipo</label>
+      <select id="w-tipo">
+        <option value="area">Gráfico de área (uma ou mais telemetrias no tempo)</option>
+        <option value="barras">Gráfico de barras (compara telemetrias)</option>
+        <option value="card">Digital gauge / card (um número grande)</option>
+        <option value="radial">Medidor radial (com mínimo e máximo)</option>
+        <option value="status">Indicador de status</option>
+        <option value="alarmes">Tabela de alarmes</option>
+      </select>
+    </div>
+    <div class="campo" id="campo-sub" hidden>
+      <label for="w-sub">Equipamento (deviceID dentro do gateway)</label>
+      <select id="w-sub"></select>
+      <div class="dica">Um gateway fala por vários equipamentos; escolha de qual
+        deles é esta telemetria.</div>
+    </div>
+    <div class="campo" id="campo-chaves">
+      <label for="w-chaves">Telemetria</label>
+      <select id="w-chaves" multiple></select>
+      <div class="dica" id="dica-chaves"></div>
+    </div>
+    <div class="campo">
+      <label for="w-titulo">Título (opcional)</label>
+      <input id="w-titulo" placeholder="ex.: Nível do reservatório" />
+    </div>
+    <div class="duas" id="campos-escala">
+      <div class="campo">
+        <label for="w-min">Mínimo</label>
+        <input id="w-min" type="number" step="any" placeholder="0" />
+      </div>
+      <div class="campo">
+        <label for="w-max">Máximo</label>
+        <input id="w-max" type="number" step="any" placeholder="100" />
+      </div>
+    </div>
+    <div class="duas">
+      <div class="campo">
+        <label for="w-unidade">Unidade</label>
+        <input id="w-unidade" placeholder="m, %, m³…" />
+      </div>
+      <div class="campo">
+        <label for="w-casas">Casas decimais</label>
+        <input id="w-casas" type="number" min="0" max="4" value="2" />
+      </div>
+    </div>
+    <div class="msg" id="msg-widget"></div>
+    <div class="acoes">
+      <button type="button" id="w-cancelar">Cancelar</button>
+      <button type="button" class="acao" id="w-salvar">Adicionar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<div class="modal" id="modal-alarme">
+  <div class="box">
+    <h3>Novo alarme</h3>
+    <p class="sub">Quando a condição passa a ser verdadeira, aparece uma
+      notificação no sininho do canto superior direito. O aviso nasce só na
+      virada — não a cada leitura acima do limite.</p>
+    <div class="campo" id="campo-alarme-sub" hidden>
+      <label for="a-sub">Equipamento (deviceID)</label>
+      <select id="a-sub"></select>
+    </div>
+    <div class="campo">
+      <label for="a-chave">Telemetria</label>
+      <select id="a-chave"></select>
+    </div>
+    <div class="duas">
+      <div class="campo">
+        <label for="a-condicao">Condição</label>
+        <select id="a-condicao">
+          <option value="maior">quando maior que</option>
+          <option value="menor">quando menor que</option>
+          <option value="igual">quando exatamente</option>
+        </select>
+      </div>
+      <div class="campo">
+        <label for="a-limite">Valor</label>
+        <input id="a-limite" type="number" step="any" required />
+      </div>
+    </div>
+    <div class="duas">
+      <div class="campo">
+        <label for="a-titulo">Título</label>
+        <input id="a-titulo" placeholder="ex.: Cota de revanche atingida" />
+      </div>
+      <div class="campo">
+        <label for="a-severidade">Severidade</label>
+        <select id="a-severidade">
+          <option value="info">Informativo</option>
+          <option value="alerta" selected>Alerta</option>
+          <option value="critico">Crítico</option>
+        </select>
+      </div>
+    </div>
+    <div class="msg" id="msg-alarme"></div>
+    <div class="acoes">
+      <button type="button" id="a-cancelar">Cancelar</button>
+      <button type="button" class="acao" id="a-salvar">Criar alarme</button>
+    </div>
+  </div>
+</div>
+
+    </div>
+  </div>
+</div>
+
+<script src="/estatico/layout.js"></script>
+<script>
+Layout.montar({ ativo: "monitoramento", titulo: "Monitoramento" });
+
+const SERVER_BASE = "";
+const CORES = ["#4fa3ff", "#ffb347", "#5ad1a5", "#ff7a90", "#c39bff", "#7fd3ff"];
+
+let dispositivos = [];
+let atual = null;          // dispositivo selecionado
+let catalogo = { itens: [], sub_ids: [], e_gateway: false };
+let widgets = [];
+let ultimos = {};          // "sub|chave" -> {num, txt, visto_em}
+let alarmes = [];
+let eventos = [];
+
+const $ = (id) => document.getElementById(id);
+const chaveDe = (sub, chave) => `${sub || ""}|${chave}`;
+
+function escapar(t) {
+  const d = document.createElement("div");
+  d.textContent = t == null ? "" : String(t);
+  return d.innerHTML;
+}
+
+function fmt(v, casas, unidade) {
+  if (v == null || Number.isNaN(v)) return "—";
+  const n = Number(v).toLocaleString("pt-BR", {
+    minimumFractionDigits: casas, maximumFractionDigits: casas,
+  });
+  return unidade ? `${n} ${unidade}` : n;
+}
+
+// ---------------------------------------------------------------------
+// Carga
+// ---------------------------------------------------------------------
+async function carregarDispositivos() {
+  const lista = await fetch(`${SERVER_BASE}/api/dispositivos`).then(r => r.json());
+  // A camera tem tela propria (o painel 3D); aqui ficam os equipamentos de
+  // telemetria. Se nao houver nenhum, mostramos todos para nao deixar a
+  // tela vazia sem explicacao.
+  const sensores = lista.filter(d => (d.tipo || "camera") !== "camera");
+  dispositivos = sensores.length ? sensores : lista;
+  const sel = $("sel-dispositivo");
+  sel.innerHTML = dispositivos.map(
+    d => `<option value="${d.id}">${escapar(d.nome)}</option>`).join("");
+  const url = new URL(location.href);
+  const pedido = url.searchParams.get("device_id");
+  if (pedido && dispositivos.some(d => d.id === pedido)) sel.value = pedido;
+  atual = dispositivos.find(d => d.id === sel.value) || dispositivos[0] || null;
+  if (!atual) {
+    $("sem-widgets").hidden = false;
+    $("sem-widgets").innerHTML =
+      "Nenhum equipamento cadastrado ainda. Cadastre um sensor ou gateway em "
+      + '<a href="/dispositivos">Dispositivos</a>.';
+    return;
+  }
+  await recarregarTudo();
+}
+
+async function recarregarTudo() {
+  if (!atual) return;
+  const id = encodeURIComponent(atual.id);
+  const [cat, ult, ws, al, ev] = await Promise.all([
+    fetch(`${SERVER_BASE}/api/telemetria/chaves?device_id=${id}`).then(r => r.json()),
+    fetch(`${SERVER_BASE}/api/telemetria/ultimos?device_id=${id}`).then(r => r.json()),
+    fetch(`${SERVER_BASE}/api/widgets?device_id=${id}`).then(r => r.json()),
+    fetch(`${SERVER_BASE}/api/alarmes?device_id=${id}`).then(r => r.json()),
+    fetch(`${SERVER_BASE}/api/alarmes/eventos?limite=50`).then(r => r.json()),
+  ]);
+  catalogo = cat;
+  widgets = ws.widgets || [];
+  alarmes = al.alarmes || [];
+  eventos = (ev.eventos || []).filter(e => e.dispositivo_id === atual.id);
+  ultimos = {};
+  (ult.itens || []).forEach(i => { ultimos[chaveDe(i.sub_id, i.chave)] = i; });
+
+  const rot = { camera: "Câmera", sensor: "Sensor", gateway: "Gateway" };
+  $("rotulo-tipo").textContent = rot[catalogo.tipo] || catalogo.tipo;
+  await desenharTudo();
+}
+
+// ---------------------------------------------------------------------
+// Desenho dos widgets (SVG na mão — sem biblioteca externa)
+// ---------------------------------------------------------------------
+async function desenharTudo() {
+  const grade = $("grade");
+  grade.innerHTML = "";
+  $("sem-widgets").hidden = widgets.length > 0;
+  for (const w of widgets) {
+    const el = document.createElement("section");
+    el.className = "widget" + (["area", "barras", "alarmes"].includes(w.tipo) ? " largo" : "");
+    el.innerHTML =
+      `<header><h3>${escapar(w.titulo || tituloPadrao(w))}</h3>`
+      + `<div class="acoes"><button type="button" title="Remover">remover</button></div></header>`
+      + `<div class="corpo"></div>`;
+    el.querySelector("button").addEventListener("click", () => removerWidget(w));
+    grade.appendChild(el);
+    try {
+      await desenharWidget(w, el.querySelector(".corpo"));
+    } catch (e) {
+      el.querySelector(".corpo").innerHTML =
+        `<div class="vazio">Não consegui desenhar: ${escapar(e.message || e)}</div>`;
+    }
+  }
+}
+
+function tituloPadrao(w) {
+  if (w.tipo === "alarmes") return "Alarmes";
+  const onde = w.sub_id ? `${w.sub_id} · ` : "";
+  return onde + (w.chaves || []).join(", ");
+}
+
+async function desenharWidget(w, alvo) {
+  const cfg = w.config || {};
+  const casas = Number.isFinite(+cfg.casas) ? +cfg.casas : 2;
+  if (w.tipo === "alarmes") return desenharTabelaAlarmes(alvo);
+  if (!w.chaves || !w.chaves.length) {
+    alvo.innerHTML = '<div class="vazio">Widget sem telemetria escolhida.</div>';
+    return;
+  }
+  if (w.tipo === "card") return desenharCard(w, alvo, cfg, casas);
+  if (w.tipo === "radial") return desenharRadial(w, alvo, cfg, casas);
+  if (w.tipo === "status") return desenharStatus(w, alvo);
+  if (w.tipo === "barras") return desenharBarras(w, alvo, cfg, casas);
+  if (w.tipo === "area") return desenharArea(w, alvo, cfg, casas);
+}
+
+function valorDe(w, chave) {
+  const i = ultimos[chaveDe(w.sub_id, chave)];
+  return i || null;
+}
+
+function desenharCard(w, alvo, cfg, casas) {
+  const i = valorDe(w, w.chaves[0]);
+  const quando = i ? new Date(i.visto_em).toLocaleString("pt-BR") : "sem leitura";
+  const valor = i && i.num != null ? fmt(i.num, casas, "") : (i && i.txt) || "—";
+  alvo.innerHTML =
+    `<div class="cartao-valor"><div class="n">${escapar(valor)}`
+    + (cfg.unidade ? `<span class="u">${escapar(cfg.unidade)}</span>` : "")
+    + `</div><div class="quando">${escapar(quando)}</div></div>`;
+}
+
+function desenharRadial(w, alvo, cfg, casas) {
+  const i = valorDe(w, w.chaves[0]);
+  const min = Number.isFinite(+cfg.min) ? +cfg.min : 0;
+  const max = Number.isFinite(+cfg.max) ? +cfg.max : 100;
+  const v = i && i.num != null ? i.num : null;
+  // Arco de 240 graus (de -210 a 30): a abertura embaixo e o que faz o
+  // desenho ser lido como "medidor" e nao como "pizza".
+  const t = v == null ? 0 : Math.min(1, Math.max(0, (v - min) / (max - min || 1)));
+  const R = 52, cx = 70, cy = 68;
+  const arco = (frac) => {
+    const a0 = -210 * Math.PI / 180, a1 = (-210 + 240 * frac) * Math.PI / 180;
+    const x0 = cx + R * Math.cos(a0), y0 = cy + R * Math.sin(a0);
+    const x1 = cx + R * Math.cos(a1), y1 = cy + R * Math.sin(a1);
+    const grande = 240 * frac > 180 ? 1 : 0;
+    return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${R} ${R} 0 ${grande} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+  };
+  alvo.innerHTML = `
+    <svg viewBox="0 0 140 108" role="img" aria-label="medidor">
+      <path d="${arco(1)}" fill="none" stroke="var(--border)" stroke-width="12" stroke-linecap="round"/>
+      ${t > 0 ? `<path d="${arco(t)}" fill="none" stroke="${CORES[0]}" stroke-width="12" stroke-linecap="round"/>` : ""}
+      <text x="70" y="66" text-anchor="middle" fill="var(--text)" font-size="21" font-weight="700">
+        ${escapar(v == null ? "—" : fmt(v, casas, ""))}
+      </text>
+      <text x="70" y="82" text-anchor="middle" fill="var(--muted)" font-size="10">
+        ${escapar(cfg.unidade || "")}
+      </text>
+      <text x="14" y="100" fill="var(--muted)" font-size="9">${escapar(fmt(min, 0, ""))}</text>
+      <text x="126" y="100" text-anchor="end" fill="var(--muted)" font-size="9">${escapar(fmt(max, 0, ""))}</text>
+    </svg>`;
+}
+
+function classeStatus(i) {
+  if (!i) return ["desconhecido", "sem leitura"];
+  const t = (i.txt || "").toLowerCase();
+  if (["on", "online", "ok", "true"].includes(t)) return ["ok", i.txt];
+  if (["off", "offline", "false"].includes(t)) return ["ruim", i.txt];
+  if (["erro", "falha"].includes(t)) return ["aviso", i.txt];
+  if (i.num != null) return [i.num ? "ok" : "ruim", String(i.num)];
+  return ["desconhecido", i.txt || "—"];
+}
+
+function desenharStatus(w, alvo) {
+  alvo.style.display = "block";
+  alvo.innerHTML = w.chaves.map(c => {
+    const i = valorDe(w, c);
+    const [cls, txt] = classeStatus(i);
+    return `<div class="status-linha"><span class="ponto ${cls}"></span>`
+         + `<b>${escapar(c)}</b><span style="color:var(--muted)">${escapar(txt)}</span></div>`;
+  }).join("");
+}
+
+function desenharBarras(w, alvo, cfg, casas) {
+  const dados = w.chaves.map(c => {
+    const i = valorDe(w, c);
+    return { rotulo: c, v: i && i.num != null ? i.num : 0 };
+  });
+  const max = Math.max(...dados.map(d => d.v), Number.isFinite(+cfg.max) ? +cfg.max : 0, 1);
+  const larg = 320, alt = 26 * dados.length + 16, x0 = 108;
+  const barras = dados.map((d, k) => {
+    const y = 8 + k * 26;
+    const l = Math.max(1, (larg - x0 - 56) * (d.v / max));
+    return `<text x="${x0 - 8}" y="${y + 12}" text-anchor="end" fill="var(--muted)" font-size="10">${escapar(d.rotulo)}</text>`
+         + `<rect x="${x0}" y="${y}" width="${l.toFixed(1)}" height="16" rx="3" fill="${CORES[k % CORES.length]}"/>`
+         + `<text x="${x0 + l + 6}" y="${y + 12}" fill="var(--text)" font-size="10">${escapar(fmt(d.v, casas, cfg.unidade || ""))}</text>`;
+  }).join("");
+  alvo.innerHTML = `<svg viewBox="0 0 ${larg} ${alt}" role="img">${barras}</svg>`;
+}
+
+async function desenharArea(w, alvo, cfg, casas) {
+  const minutos = Number.isFinite(+cfg.minutos) ? +cfg.minutos : 1440;
+  const series = [];
+  for (const c of w.chaves) {
+    const j = await fetch(`${SERVER_BASE}/api/telemetria/serie?device_id=`
+      + `${encodeURIComponent(atual.id)}&sub_id=${encodeURIComponent(w.sub_id || "")}`
+      + `&chave=${encodeURIComponent(c)}&minutos=${minutos}`).then(r => r.json());
+    series.push({ chave: c, pontos: (j.pontos || []).filter(p => p.v != null) });
+  }
+  const todos = series.flatMap(s => s.pontos);
+  if (!todos.length) {
+    alvo.innerHTML = '<div class="vazio">Ainda não há leituras para o período.</div>';
+    return;
+  }
+  const t0 = Math.min(...todos.map(p => Date.parse(p.em)));
+  const t1 = Math.max(...todos.map(p => Date.parse(p.em)));
+  let vmin = Math.min(...todos.map(p => p.v));
+  let vmax = Math.max(...todos.map(p => p.v));
+  if (Number.isFinite(+cfg.min)) vmin = +cfg.min;
+  if (Number.isFinite(+cfg.max)) vmax = +cfg.max;
+  if (vmax === vmin) { vmax = vmin + 1; vmin -= 1; }   // serie constante
+
+  const L = 560, A = 200, m = { e: 46, d: 10, c: 10, b: 24 };
+  const px = (t) => m.e + (L - m.e - m.d) * ((t - t0) / (t1 - t0 || 1));
+  const py = (v) => m.c + (A - m.c - m.b) * (1 - (v - vmin) / (vmax - vmin));
+
+  const traco = (s) => s.pontos.map((p, i) =>
+    `${i ? "L" : "M"} ${px(Date.parse(p.em)).toFixed(1)} ${py(p.v).toFixed(1)}`).join(" ");
+
+  // As areas vao TODAS antes das linhas: desenhando por série, a área de uma
+  // cobria a linha da outra quando as escalas eram muito diferentes (uma
+  // telemetria perto de 100 e outra perto de 12, por exemplo).
+  const areas = series.filter(s => s.pontos.length).map((s, k) => {
+    const d = traco(s);
+    const base = `L ${px(Date.parse(s.pontos[s.pontos.length - 1].em)).toFixed(1)} ${py(vmin).toFixed(1)} `
+               + `L ${px(Date.parse(s.pontos[0].em)).toFixed(1)} ${py(vmin).toFixed(1)} Z`;
+    return `<path d="${d} ${base}" fill="${CORES[k % CORES.length]}" opacity=".12"/>`;
+  }).join("");
+  const linhasSerie = series.filter(s => s.pontos.length).map((s, k) =>
+    `<path d="${traco(s)}" fill="none" stroke="${CORES[k % CORES.length]}" `
+    + `stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>`).join("");
+  const camadas = areas + linhasSerie;
+
+  const linhas = [0, 0.5, 1].map(f => {
+    const v = vmin + (vmax - vmin) * f, y = py(v);
+    return `<line x1="${m.e}" y1="${y.toFixed(1)}" x2="${L - m.d}" y2="${y.toFixed(1)}" `
+         + `stroke="var(--border)" stroke-width="1"/>`
+         + `<text x="${m.e - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" `
+         + `fill="var(--muted)" font-size="9">${escapar(fmt(v, casas, ""))}</text>`;
+  }).join("");
+
+  const hora = (t) => new Date(t).toLocaleString("pt-BR",
+    { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+  alvo.style.display = "block";
+  alvo.innerHTML = `<svg viewBox="0 0 ${L} ${A}" role="img">${linhas}${camadas}
+      <text x="${m.e}" y="${A - 6}" fill="var(--muted)" font-size="9">${escapar(hora(t0))}</text>
+      <text x="${L - m.d}" y="${A - 6}" text-anchor="end" fill="var(--muted)" font-size="9">${escapar(hora(t1))}</text>
+    </svg>`
+    + `<div class="legenda">` + series.map((s, k) =>
+        `<span><i style="background:${CORES[k % CORES.length]}"></i>${escapar(s.chave)}</span>`).join("")
+    + `</div>`;
+}
+
+function desenharTabelaAlarmes(alvo) {
+  alvo.style.display = "block";
+  const regras = alarmes.map(a => {
+    const cond = { maior: ">", menor: "<", igual: "=" }[a.condicao] || a.condicao;
+    const onde = a.sub_id ? `${escapar(a.sub_id)} · ` : "";
+    return `<tr class="${a.disparado ? "disparado" : ""}">
+      <td>${escapar(a.titulo || a.chave)}</td>
+      <td>${onde}${escapar(a.chave)} ${cond} ${a.limite}</td>
+      <td>${a.disparado ? "disparado" : "normal"}</td>
+      <td><button data-alarme="${a.id}" style="font-size:10px;padding:2px 6px">excluir</button></td>
+    </tr>`;
+  }).join("");
+  const hist = eventos.slice(0, 12).map(e => `<tr class="${e.estado}">
+      <td>${escapar(e.titulo)}</td>
+      <td>${escapar(e.sub_id ? e.sub_id + " · " : "")}${escapar(e.chave)} = ${e.valor ?? "—"}</td>
+      <td>${e.estado}</td>
+      <td>${new Date(e.em).toLocaleString("pt-BR")}</td>
+    </tr>`).join("");
+
+  alvo.innerHTML =
+    `<table class="alarmes"><thead><tr><th>Regra</th><th>Condição</th><th>Estado</th><th></th></tr></thead>`
+    + `<tbody>${regras || '<tr><td colspan="4" class="vazio">Nenhuma regra. Use “Novo alarme”.</td></tr>'}</tbody></table>`
+    + `<h4 style="font-size:11px;color:var(--muted);margin:14px 0 4px">Histórico</h4>`
+    + `<table class="alarmes"><tbody>${hist || '<tr><td class="vazio">Sem eventos.</td></tr>'}</tbody></table>`;
+
+  alvo.querySelectorAll("button[data-alarme]").forEach(b =>
+    b.addEventListener("click", () => excluirAlarme(b.dataset.alarme)));
+}
+
+// ---------------------------------------------------------------------
+// Widgets: criar e remover
+// ---------------------------------------------------------------------
+function chavesDoSub(sub) {
+  return catalogo.itens.filter(i => (i.sub_id || "") === (sub || ""));
+}
+
+function preencherSeletoresWidget() {
+  const eGw = catalogo.e_gateway;
+  $("campo-sub").hidden = !eGw;
+  if (eGw) {
+    $("w-sub").innerHTML = (catalogo.sub_ids || []).map(
+      s => `<option value="${escapar(s)}">${escapar(s)}</option>`).join("")
+      || '<option value="">(nenhum equipamento visto ainda)</option>';
+  }
+  atualizarChavesWidget();
+}
+
+function atualizarChavesWidget() {
+  const sub = catalogo.e_gateway ? $("w-sub").value : "";
+  const tipo = $("w-tipo").value;
+  const itens = chavesDoSub(sub);
+  const soNumericas = ["area", "barras", "card", "radial"].includes(tipo);
+  const uteis = soNumericas ? itens.filter(i => i.numerica) : itens;
+  $("w-chaves").innerHTML = uteis.map(
+    i => `<option value="${escapar(i.chave)}">${escapar(i.chave)}</option>`).join("")
+    || '<option disabled>(nenhuma telemetria recebida ainda)</option>';
+  const varias = ["area", "barras", "status"].includes(tipo);
+  $("w-chaves").multiple = varias;
+  $("dica-chaves").textContent = varias
+    ? "Segure Ctrl (ou Cmd) para escolher mais de uma."
+    : "Escolha uma telemetria.";
+  $("campo-chaves").hidden = tipo === "alarmes";
+  $("campos-escala").style.display = ["radial", "area", "barras"].includes(tipo) ? "" : "none";
+}
+
+async function salvarWidget() {
+  const tipo = $("w-tipo").value;
+  const escolhidas = [...$("w-chaves").selectedOptions].map(o => o.value);
+  if (tipo !== "alarmes" && !escolhidas.length) {
+    $("msg-widget").className = "msg erro";
+    $("msg-widget").textContent = "Escolha ao menos uma telemetria.";
+    return;
+  }
+  const cfg = {
+    unidade: $("w-unidade").value.trim() || null,
+    casas: parseInt($("w-casas").value || "2", 10),
+  };
+  if ($("w-min").value !== "") cfg.min = parseFloat($("w-min").value);
+  if ($("w-max").value !== "") cfg.max = parseFloat($("w-max").value);
+  const corpo = {
+    device_id: atual.id, tipo,
+    titulo: $("w-titulo").value.trim(),
+    sub_id: catalogo.e_gateway ? $("w-sub").value : "",
+    chaves: escolhidas, config: cfg, ordem: widgets.length,
+  };
+  const r = await fetch(`${SERVER_BASE}/api/widgets`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(corpo),
+  });
+  const j = await r.json();
+  if (!r.ok) {
+    $("msg-widget").className = "msg erro";
+    $("msg-widget").textContent = j.error || "Não consegui criar.";
+    return;
+  }
+  $("modal-widget").classList.remove("open");
+  await recarregarTudo();
+}
+
+async function removerWidget(w) {
+  if (!confirm("Remover este widget?")) return;
+  await fetch(`${SERVER_BASE}/api/widgets/${w.id}`, { method: "DELETE" });
+  await recarregarTudo();
+}
+
+// ---------------------------------------------------------------------
+// Alarmes
+// ---------------------------------------------------------------------
+function preencherSeletoresAlarme() {
+  const eGw = catalogo.e_gateway;
+  $("campo-alarme-sub").hidden = !eGw;
+  if (eGw) {
+    $("a-sub").innerHTML = (catalogo.sub_ids || []).map(
+      s => `<option value="${escapar(s)}">${escapar(s)}</option>`).join("");
+  }
+  atualizarChavesAlarme();
+}
+
+function atualizarChavesAlarme() {
+  const sub = catalogo.e_gateway ? $("a-sub").value : "";
+  // So telemetria numerica: "maior que" nao faz sentido para "on"/"off".
+  $("a-chave").innerHTML = chavesDoSub(sub).filter(i => i.numerica).map(
+    i => `<option value="${escapar(i.chave)}">${escapar(i.chave)}</option>`).join("")
+    || '<option disabled>(nenhuma telemetria numérica recebida ainda)</option>';
+}
+
+async function salvarAlarme() {
+  const corpo = {
+    device_id: atual.id,
+    sub_id: catalogo.e_gateway ? $("a-sub").value : "",
+    chave: $("a-chave").value,
+    condicao: $("a-condicao").value,
+    limite: parseFloat($("a-limite").value),
+    titulo: $("a-titulo").value.trim(),
+    severidade: $("a-severidade").value,
+  };
+  if (!corpo.chave || Number.isNaN(corpo.limite)) {
+    $("msg-alarme").className = "msg erro";
+    $("msg-alarme").textContent = "Escolha a telemetria e informe o valor.";
+    return;
+  }
+  const r = await fetch(`${SERVER_BASE}/api/alarmes`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(corpo),
+  });
+  const j = await r.json();
+  if (!r.ok) {
+    $("msg-alarme").className = "msg erro";
+    $("msg-alarme").textContent = j.error || "Não consegui criar.";
+    return;
+  }
+  $("modal-alarme").classList.remove("open");
+  await recarregarTudo();
+}
+
+async function excluirAlarme(id) {
+  if (!confirm("Excluir esta regra de alarme?")) return;
+  await fetch(`${SERVER_BASE}/api/alarmes/${id}`, { method: "DELETE" });
+  await recarregarTudo();
+}
+
+// ---------------------------------------------------------------------
+// Eventos da tela
+// ---------------------------------------------------------------------
+$("sel-dispositivo").addEventListener("change", async (e) => {
+  atual = dispositivos.find(d => d.id === e.target.value);
+  const url = new URL(location.href);
+  url.searchParams.set("device_id", atual.id);
+  history.replaceState(null, "", url);
+  await recarregarTudo();
+});
+
+$("btn-widget").addEventListener("click", () => {
+  $("msg-widget").textContent = "";
+  $("sub-widget").textContent = catalogo.e_gateway
+    ? "Este equipamento é um gateway: escolha primeiro de qual deviceID é a telemetria."
+    : "Este equipamento manda as próprias telemetrias.";
+  preencherSeletoresWidget();
+  $("modal-widget").classList.add("open");
+});
+$("w-tipo").addEventListener("change", atualizarChavesWidget);
+$("w-sub").addEventListener("change", atualizarChavesWidget);
+$("w-cancelar").addEventListener("click", () => $("modal-widget").classList.remove("open"));
+$("w-salvar").addEventListener("click", salvarWidget);
+
+$("btn-alarme").addEventListener("click", () => {
+  $("msg-alarme").textContent = "";
+  preencherSeletoresAlarme();
+  $("modal-alarme").classList.add("open");
+});
+$("a-sub").addEventListener("change", atualizarChavesAlarme);
+$("a-cancelar").addEventListener("click", () => $("modal-alarme").classList.remove("open"));
+$("a-salvar").addEventListener("click", salvarAlarme);
+
+// Telemetria nova chega pelo mesmo WebSocket que o resto do painel usa.
+// O intervalo e a rede de seguranca para quando o socket cai.
+(function ouvir() {
+  try {
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    const ws = new WebSocket(proto + location.host + "/ws");
+    let pendente = false;
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if ((msg.type !== "telemetria" && msg.type !== "alarme") || !atual) return;
+      if (msg.device_id !== atual.id && msg.type === "telemetria") return;
+      // Agrupa rajadas: um gateway manda dezenas de valores de uma vez.
+      if (pendente) return;
+      pendente = true;
+      setTimeout(() => { pendente = false; recarregarTudo(); }, 800);
+    };
+    ws.onclose = () => setTimeout(ouvir, 15000);
+  } catch (e) { /* sem websocket: fica o intervalo abaixo */ }
+})();
+setInterval(() => { if (atual) recarregarTudo(); }, 60000);
+
+carregarDispositivos();
+</script>
+</body>
+</html>
