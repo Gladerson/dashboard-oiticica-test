@@ -29,6 +29,7 @@ import shutil
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import numpy as np
 import requests
@@ -266,6 +267,20 @@ def index():
     return FileResponse("static/dashboard.html")
 
 
+_HOSTS_LOOPBACK = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def _url_para_o_navegador(url):
+    """A URL do agente que vale a pena o navegador tentar, ou None."""
+    if not url:
+        return None
+    try:
+        host = urlparse(url).hostname or ""
+    except Exception:
+        return None
+    return None if host.lower() in _HOSTS_LOOPBACK else url
+
+
 @app.get("/api/camera_info")
 def camera_info(device_id: str):
     device = registro.por_id(device_id)
@@ -298,7 +313,12 @@ def camera_info(device_id: str):
         "lat": device.lat,
         "lon": device.lon,
         "alt": device.alt_acima_solo,
-        "controller_url": device.controller_url_publica,
+        # Modo LAN: so faz sentido oferecer um endereco que o NAVEGADOR possa
+        # alcancar. Se a URL aponta para loopback (o padrao herdado de quando
+        # tudo rodava na mesma maquina, ou CONTROLLER_PUBLIC_URL apagada do
+        # .env), o dashboard sondaria o localhost de quem esta olhando -- que
+        # nao e o equipamento. Melhor nao oferecer.
+        "controller_url": _url_para_o_navegador(device.controller_url_publica),
         # Modo LAN: o navegador so fala direto com o equipamento se ele
         # estiver na mesma rede E o agente tiver entregue um lan_token nesta
         # conexao. Sem token, o dashboard usa o servidor -- que e o caminho
@@ -566,7 +586,7 @@ class AimPayload(BaseModel):
 
 
 @app.post("/api/aim")
-def aim(payload: AimPayload):
+async def aim(payload: AimPayload):
     device = registro.por_id(payload.device_id)
     if device is None:
         return JSONResponse({"error": "dispositivo não encontrado"}, status_code=404)
@@ -608,20 +628,18 @@ def aim(payload: AimPayload):
     if not payload.apply:
         return resultado
 
-    try:
-        r = http.post(
-            f"{device.controller_url}/command/absolute",
-            json={
-                "pan_deg": resultado["coord_p"],
-                "tilt_deg": resultado["coord_t"],
-                "zoom_pct": resultado["coord_z"],
-            },
-            timeout=6,
-        )
-        resultado["controller"] = r.json()
-    except Exception as e:
-        return JSONResponse({"error": str(e), **resultado}, status_code=502)
-
+    # Pelo canal de descida, como o resto do PTZ: este POST direto no agente
+    # so funcionava com servidor e equipamento na mesma rede -- ficou para
+    # tras quando o PTZ migrou para o WebSocket (§9-quater).
+    r = await _enviar_comando(device, "/command/absolute", {
+        "pan_deg": resultado["coord_p"],
+        "tilt_deg": resultado["coord_t"],
+        "zoom_pct": resultado["coord_z"],
+    }, timeout=8)
+    if isinstance(r, JSONResponse):
+        return JSONResponse({**json.loads(bytes(r.body).decode("utf-8")), **resultado},
+                            status_code=502)
+    resultado["controller"] = r
     return resultado
 
 
@@ -672,20 +690,16 @@ async def locate(payload: LocatePayload):
     if not payload.move_camera:
         return resposta
 
-    try:
-        r = http.post(
-            f"{device.controller_url}/command/absolute",
-            json={
-                "pan_deg": entrada["coord_p"],
-                "tilt_deg": entrada["coord_t"],
-                "zoom_pct": entrada["coord_z"],
-            },
-            timeout=6,
-        )
-        resposta["controller"] = r.json()
+    r = await _enviar_comando(device, "/command/absolute", {
+        "pan_deg": entrada["coord_p"],
+        "tilt_deg": entrada["coord_t"],
+        "zoom_pct": entrada["coord_z"],
+    }, timeout=8)
+    if isinstance(r, JSONResponse):      # 502: o motivo vai junto, sem derrubar
+        resposta["erro_camera"] = json.loads(bytes(r.body).decode("utf-8"))
+    else:
+        resposta["controller"] = r
         resposta["moved"] = True
-    except Exception as e:
-        resposta["error_camera"] = str(e)
 
     return resposta
 

@@ -932,6 +932,21 @@ Duas camadas separadas de propósito: a **fila de comandos** (`server/comandos.p
 não sabe como o comando será entregue; o **adaptador** atual é o WebSocket. Se
 um dia o transporte virar MQTT, só o adaptador muda.
 
+### As variáveis `CONTROLLER_URL` são opcionais agora
+
+Elas alimentam **só o plano B**: o `POST` do servidor direto no agente, que
+por definição não atravessa NAT. Com o WebSocket aberto, nenhum comando passa
+por ali — PTZ, "close por seleção" (`/api/aim`) e "revisitar detecção"
+(`/api/locate`) descem todos pelo canal.
+
+Com o servidor na nuvem, **apague as duas do `server/.env`**. Se
+`CONTROLLER_PUBLIC_URL` apontar para loopback (ou sumir), o servidor
+deliberadamente **não oferece** o modo LAN ao navegador — senão o dashboard
+sondaria o `localhost` de quem está olhando, que não é o equipamento.
+
+Mantenha-as apenas numa instalação local, em que servidor e Pi estão na mesma
+rede e o plano B tem chance de servir para alguma coisa.
+
 ### Modo LAN (opcional)
 
 Com o servidor na nuvem, cada comando atravessa a internet duas vezes. Quando
@@ -1288,8 +1303,8 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
 | `DATABASE_URL` | ver `.env.example` | conexão PostgreSQL (usuários/sessões, §5.1a) |
 | `SESSION_COOKIE_SECURE` | `false` | `true` só atrás de HTTPS de verdade (reverse proxy) |
 | `SESSAO_DURACAO_H` | 168 (7 dias) | validade do cookie de sessão |
-| `CONTROLLER_URL` | `http://127.0.0.1:8090` | *fallback* servidor → Pi, só para dispositivos sem `controller_url` próprio cadastrado |
-| `CONTROLLER_PUBLIC_URL` | = acima | *fallback* navegador → Pi (PTZ direto), idem acima |
+| `CONTROLLER_URL` | `http://127.0.0.1:8090` | **opcional** (§9-quater). Só alimenta o *fallback* HTTP servidor → Pi, que exige os dois na mesma rede. Com o WebSocket no ar nada a consulta; com o servidor na nuvem, pode ser apagada |
+| `CONTROLLER_PUBLIC_URL` | = acima | **opcional.** Endereço que o navegador tenta no modo LAN. Apagada — ou apontando para loopback — o modo LAN não é oferecido e tudo passa pelo servidor |
 | `TIMEOUT_PTZ_S` | 3 | espera máxima por um comando de PTZ (§9-quater). Curto de propósito: o dashboard repete o comando a cada 300 ms |
 | `TELEMETRIA_JANELA_MIN` | 1440 | janela padrão dos gráficos de área, em minutos |
 | `STREAM_JANELA_S` | 60 | duração do pedido de vídeo |
