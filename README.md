@@ -1478,6 +1478,35 @@ corrigido: o `/status` resolve o que precisa de lock **antes** do `with`, e o
 `SERVER_URL` aponta para o endereço errado. O agente reclama e continua
 funcionando, o que é o comportamento desejado.
 
+**O dashboard abre em branco: nem modelo 3D, nem imagem da câmera, nem
+telemetria** — e no console (F12) aparece
+`THREE.WebGLRenderer: A WebGL context could not be created`. **É o navegador,
+não o servidor.** Sem aceleração gráfica o construtor do renderer do Three.js
+levanta exceção; como o script do dashboard é um **módulo**, a exceção lá no
+topo abortava o arquivo inteiro — e junto iam embora coisas que não têm nada a
+ver com 3D: vídeo, PTZ, detecções e telemetria. Duas frentes:
+
+* *no código* (já corrigido): a criação do renderer está protegida. Sem WebGL
+  o viewport 3D mostra o aviso explicando o motivo e **o resto do dashboard
+  continua funcionando**;
+* *na máquina do operador* (o que resolve de fato): ligue a aceleração
+  gráfica. Chrome/Edge → Configurações → Sistema → “Usar aceleração gráfica
+  quando disponível”, e **reinicie o navegador**. O diagnóstico completo fica
+  em `chrome://gpu` — se aparecer `WebGL: Disabled` ou
+  `GL_RENDERER = Disabled`, é isso. Em máquina virtual ou acesso remoto sem
+  GPU, pode ser preciso o renderizador por software
+  (`chrome://flags` → *Override software rendering list* → Enabled).
+
+Para confirmar em 5 segundos, cole no console:
+`document.createElement("canvas").getContext("webgl2") ? "ok" : "sem WebGL"`.
+
+**Diagnóstico só olha os últimos N registros e “não acha nada”** — com o
+Raspberry mandando telemetria a cada segundo, `journalctl -n 200` cobre uns
+200 **segundos**: as linhas da inicialização (`>> Malha carregada`,
+`>> Raycasting acelerado por Embree`, `[registro] ... pronto`) já saíram da
+janela. Use `-b` (o boot inteiro) e filtre:
+`sudo journalctl -u dashboard-oiticica -b --no-pager | grep -E "Malha|Embree|\[registro\]|\[ws\]"`.
+
 **`apt install nodejs npm` falha com `nodejs : Conflita: npm`** (ou uma lista
 enorme de `Depende: node-*`) — você já tem Node instalado por outra via (o mais
 comum: o repositório da NodeSource, `.../nodesource1` no nome do pacote). O
