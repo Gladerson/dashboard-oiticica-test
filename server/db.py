@@ -40,6 +40,19 @@ ADMIN_SENHA_PADRAO = "hydroconecta"
 # a ver com o padrao usado para o Pi em server/borda.py.
 SESSAO_DURACAO_H = float(os.getenv("SESSAO_DURACAO_H", str(24 * 7)))
 
+# Inatividade: quanto tempo SEM ACAO DO OPERADOR a sessao sobrevive. E outra
+# coisa, e mais importante, que SESSAO_DURACAO_H -- aquela e o prazo maximo
+# absoluto; esta e o que fecha a sessao do posto de operacao que ficou
+# aberto e sozinho. Vale o que vencer primeiro.
+#
+# Cuidado de projeto: quem renova o prazo e a ATIVIDADE DA PESSOA, nao a
+# requisicao. O dashboard sozinho consulta o servidor a cada 3s; se qualquer
+# requisicao renovasse, a tela esquecida se manteria logada para sempre --
+# exatamente o que isto existe para evitar. Por isso a renovacao vem de uma
+# rota propria, chamada pelo navegador so quando ha mouse/teclado/toque
+# (ver POST /api/sessao/atividade em auth.py e layout.js).
+SESSAO_INATIVIDADE_MIN = float(os.getenv("SESSAO_INATIVIDADE_MIN", "30"))
+
 pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=5, open=False,
                       kwargs={"row_factory": dict_row})
 
@@ -65,6 +78,7 @@ CREATE TABLE IF NOT EXISTS sessoes (
     expira_em       TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_sessoes_usuario ON sessoes(usuario_id);
+ALTER TABLE sessoes ADD COLUMN IF NOT EXISTS visto_em TIMESTAMPTZ NOT NULL DEFAULT now();
 
 -- A partir daqui, esquema preparado para as proximas etapas (aba
 -- "Dispositivos" e aba "Dashboard") -- ver cabecalho do arquivo.
@@ -348,15 +362,67 @@ def criar_sessao(usuario_id) -> str:
 
 
 def usuario_da_sessao(token):
-    """Usuario dono do token, ou None se o token nao existir/tiver expirado."""
+    """Usuario dono do token, ou None se a sessao nao existir, tiver estourado
+    o prazo absoluto OU passado do limite de inatividade."""
     if not token:
         return None
     with pool.connection() as conn:
         return conn.execute(
             "SELECT u.* FROM sessoes s JOIN usuarios u ON u.id = s.usuario_id "
-            "WHERE s.token = %s AND s.expira_em > now()",
+            "WHERE s.token = %s AND s.expira_em > now() "
+            "  AND s.visto_em > now() - make_interval(secs => %s)",
+            (token, SESSAO_INATIVIDADE_MIN * 60),
+        ).fetchone()
+
+
+def renovar_sessao(token):
+    """Marca atividade do OPERADOR agora. Devolve quantos segundos ainda
+    restam de inatividade, ou None se a sessao ja nao vale mais (ai o
+    navegador manda o usuario para o login)."""
+    if not token:
+        return None
+    with pool.connection() as conn:
+        linha = conn.execute(
+            "UPDATE sessoes SET visto_em = now() "
+            "WHERE token = %s AND expira_em > now() "
+            "  AND visto_em > now() - make_interval(secs => %s) "
+            "RETURNING EXTRACT(EPOCH FROM (expira_em - now())) AS ate_o_fim",
+            (token, SESSAO_INATIVIDADE_MIN * 60),
+        ).fetchone()
+    if linha is None:
+        return None
+    # Vale o que vencer primeiro: o prazo absoluto ou a inatividade.
+    return min(SESSAO_INATIVIDADE_MIN * 60, float(linha["ate_o_fim"]))
+
+
+def segundos_restantes(token):
+    """Quanto falta para a sessao cair, sem renovar nada. E o que o navegador
+    usa para acertar o relogio dele depois de uma recarga de pagina."""
+    if not token:
+        return None
+    with pool.connection() as conn:
+        linha = conn.execute(
+            "SELECT EXTRACT(EPOCH FROM (expira_em - now())) AS ate_o_fim, "
+            "       EXTRACT(EPOCH FROM (now() - visto_em))  AS parado_ha "
+            "FROM sessoes WHERE token = %s",
             (token,),
         ).fetchone()
+    if linha is None:
+        return None
+    por_inatividade = SESSAO_INATIVIDADE_MIN * 60 - float(linha["parado_ha"])
+    restante = min(por_inatividade, float(linha["ate_o_fim"]))
+    return int(restante) if restante > 0 else 0
+
+
+def limpar_sessoes_mortas():
+    """Sessoes vencidas nao servem para nada e so fazem a tabela crescer.
+    Chamado no login -- e barato e nao precisa de agendador."""
+    with pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM sessoes WHERE expira_em <= now() "
+            "   OR visto_em <= now() - make_interval(secs => %s)",
+            (SESSAO_INATIVIDADE_MIN * 60,),
+        )
 
 
 def destruir_sessao(token):

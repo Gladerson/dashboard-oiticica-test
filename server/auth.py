@@ -39,6 +39,9 @@ CAMINHOS_LIVRES = {
 # fica preso sem conseguir trocar a propria senha).
 CAMINHOS_PERMITIDOS_COM_TROCA_PENDENTE = {
     "/config", "/api/logout", "/api/usuarios/me", "/api/usuarios/me/senha",
+    # O relogio de inatividade tambem corre na tela de troca de senha: sem
+    # isto, quem parasse ali seria desconectado sem chance de renovar.
+    "/api/sessao", "/api/sessao/atividade",
 }
 
 
@@ -126,11 +129,38 @@ def instalar(app):
         u = db.usuario_por_username(payload.username.strip())
         if u is None or not db.verificar_senha(payload.senha, u["senha_hash"]):
             return JSONResponse({"error": "usuario ou senha invalidos"}, status_code=401)
+        db.limpar_sessoes_mortas()
         token = db.criar_sessao(u["id"])
         resp = JSONResponse({"status": "ok", "usuario": _usuario_publico(u)})
         resp.set_cookie(COOKIE_NOME, token, httponly=True, samesite="lax",
                         secure=COOKIE_SECURE, max_age=int(db.SESSAO_DURACAO_H * 3600))
         return resp
+
+    # ------------------------------------------------------------------
+    # Sessao: prazo de inatividade
+    #
+    # Duas rotas so, e a diferenca entre elas e o ponto todo do desenho:
+    #   GET  /api/sessao            -> CONSULTA quanto falta (nao renova)
+    #   POST /api/sessao/atividade  -> RENOVA, e so o navegador chama, quando
+    #                                  houve mouse/teclado/toque de verdade
+    # Nenhuma outra rota renova. Se renovassem, o proprio dashboard (que
+    # consulta o servidor a cada 3s) manteria viva para sempre uma tela
+    # esquecida -- o oposto do que se quer aqui.
+    # ------------------------------------------------------------------
+    @app.get("/api/sessao")
+    def estado_sessao(request: Request):
+        return {
+            "inatividade_s": int(db.SESSAO_INATIVIDADE_MIN * 60),
+            "restante_s": db.segundos_restantes(request.cookies.get(COOKIE_NOME)),
+        }
+
+    @app.post("/api/sessao/atividade")
+    def marcar_atividade(request: Request):
+        restante = db.renovar_sessao(request.cookies.get(COOKIE_NOME))
+        if restante is None:
+            return JSONResponse({"error": "sessao encerrada", "expirada": True},
+                                status_code=401)
+        return {"status": "ok", "restante_s": int(restante)}
 
     @app.post("/api/logout")
     def logout(request: Request):
