@@ -2014,9 +2014,12 @@ chmod 600 server/.env
 
 ### 17.8 Serviço
 
+Caminhos absolutos de propósito: assim os comandos funcionam de qualquer
+diretório em que você esteja.
+
 ```bash
-cd /opt/oiticica/dashboard_oiticica_test
-sudo cp server/dashboard-oiticica.service /etc/systemd/system/
+sudo cp /opt/oiticica/dashboard_oiticica_test/server/dashboard-oiticica.service \
+        /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dashboard-oiticica
 sudo systemctl status dashboard-oiticica --no-pager
@@ -2034,6 +2037,9 @@ Se o log disser `Embree indisponível`, volte ao 17.5.
 
 ### 17.9 nginx
 
+> Faça o **17.8 antes**: o nginx só repassa para o servidor; se o serviço não
+> estiver no ar, o painel responde `502 Bad Gateway`.
+
 ```bash
 sudo tee /etc/nginx/conf.d/websocket.conf >/dev/null <<'EOF'
 map $http_upgrade $connection_upgrade {
@@ -2042,7 +2048,8 @@ map $http_upgrade $connection_upgrade {
 }
 EOF
 
-sudo cp server/nginx-oiticica.conf /etc/nginx/sites-available/oiticica
+sudo cp /opt/oiticica/dashboard_oiticica_test/server/nginx-oiticica.conf \
+        /etc/nginx/sites-available/oiticica
 sudo ln -sf /etc/nginx/sites-available/oiticica /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t && sudo systemctl reload nginx
