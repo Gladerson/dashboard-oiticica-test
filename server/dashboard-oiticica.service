@@ -1,0 +1,41 @@
+# Servico do servidor do dashboard. Instalar com:
+#
+#   sudo cp server/dashboard-oiticica.service /etc/systemd/system/
+#   sudo nano /etc/systemd/system/dashboard-oiticica.service   # ajuste User/paths
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dashboard-oiticica
+#
+# WorkingDirectory TEM de ser a pasta server/: o codigo usa caminhos
+# relativos ("static", "history"), entao rodar de outro lugar faz o modelo
+# 3D e as evidencias "sumirem" sem erro nenhum.
+[Unit]
+Description=Dashboard Oiticica (servidor: API, painel 3D e telemetria)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=oiticica
+Group=oiticica
+WorkingDirectory=/opt/oiticica/dashboard_oiticica_test/server
+ExecStart=/opt/oiticica/dashboard_oiticica_test/server/venv/bin/python server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# O .env fica com as credenciais do banco: so o dono le.
+UMask=0077
+
+# Endurecimento basico. O servico so precisa escrever dentro do proprio
+# projeto (history/ e static/modelos/), entao o resto do disco fica somente
+# leitura -- se um dia houver falha de upload, ela nao alcanca o sistema.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/oiticica/dashboard_oiticica_test/server
+
+[Install]
+WantedBy=multi-user.target

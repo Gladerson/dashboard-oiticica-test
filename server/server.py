@@ -847,4 +847,11 @@ async def ws_endpoint(websocket: WebSocket):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Atras de um proxy reverso (nginx, na VPS) o certo e escutar so em
+    # 127.0.0.1: a porta 8001 nao precisa -- e nao deve -- ficar aberta para
+    # a internet. Numa instalacao local, 0.0.0.0 continua sendo o padrao.
+    uvicorn.run(app,
+                host=os.getenv("SERVER_HOST", "0.0.0.0"),
+                port=int(os.getenv("SERVER_PORT", "8001")),
+                proxy_headers=True,
+                forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1"))

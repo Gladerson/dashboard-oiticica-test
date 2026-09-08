@@ -1781,3 +1781,263 @@ funciona igual pelo servidor.
   `Authorization: Bearer <token>` e o JSON das leituras (§9-quinquies).
 - Em **Monitoramento**, escolha o equipamento e monte os widgets. As
   telemetrias só aparecem nos seletores **depois** da primeira mensagem.
+
+---
+
+## 17. Colocar o servidor numa VPS
+
+Passo a passo para sair do desktop local e ir para uma máquina na nuvem
+(testado contra a topologia da §9-quater: o Raspberry disca para o servidor,
+não o contrário). Substitua `IP_DA_VPS` pelo endereço real em todos os
+comandos.
+
+Duas coisas **não** vão junto com o `git clone`, e são justamente as que
+quebram tudo se você esquecer:
+
+* o **banco** (dispositivos, tokens, usuários, calibração) — se você recriar
+  em vez de restaurar, os tokens mudam e o Raspberry em campo para de
+  autenticar;
+* os **modelos 3D** (`server/static/modelos/*.glb`) e o **histórico**
+  (`server/history/`), que são `.gitignore` por serem grandes.
+
+### 17.1 Na máquina antiga: fazer o backup
+
+```bash
+cd ~/Projetos/dashboard_oiticica_test
+
+# Banco inteiro (inclui os tokens dos dispositivos -- é o que preserva o Pi)
+pg_dump "postgresql://oiticica:SENHA@127.0.0.1:5432/oiticica" -Fc -f /tmp/oiticica.dump
+
+# Modelos 3D, evidências e o .env
+tar czf /tmp/oiticica_arquivos.tgz \
+    server/static/modelos server/history server/.env
+
+ls -lh /tmp/oiticica.dump /tmp/oiticica_arquivos.tgz
+```
+
+### 17.2 Primeiro acesso à VPS e usuário sem root
+
+Entre como root (a Contabo manda a senha por e-mail) e crie um usuário para
+a aplicação — o serviço nunca deve rodar como root:
+
+```bash
+ssh root@IP_DA_VPS
+
+adduser --disabled-password --gecos "" oiticica
+usermod -aG sudo oiticica
+mkdir -p /home/oiticica/.ssh && chmod 700 /home/oiticica/.ssh
+```
+
+Na **sua máquina**, mande sua chave pública (crie uma com `ssh-keygen -t ed25519`
+se ainda não tiver):
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub oiticica@IP_DA_VPS
+ssh oiticica@IP_DA_VPS       # tem de entrar sem pedir senha
+```
+
+Com a chave funcionando, desligue o login por senha e por root:
+
+```bash
+sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/;s/^#\?PasswordAuthentication.*/PasswordAuthentication no/' \
+    /etc/ssh/sshd_config
+sudo systemctl restart ssh
+```
+
+> Não feche a sessão atual antes de abrir **outra** e confirmar que ainda
+> entra. Se errar aqui, você fica de fora da máquina.
+
+### 17.3 Firewall
+
+```bash
+sudo apt update && sudo apt install -y ufw
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw --force enable
+sudo ufw status
+```
+
+A porta 8001 **não** é aberta: o nginx fala com ela por `127.0.0.1`.
+
+### 17.4 Dependências
+
+```bash
+sudo apt install -y python3-venv python3-pip python3-dev build-essential \
+    libgl1 libglib2.0-0 ffmpeg libxml2-dev libxslt1-dev libspatialindex-dev \
+    postgresql nginx git nodejs npm
+```
+
+`nodejs`/`npm` são só para a descompressão Draco do `.glb` no upload; o resto
+do servidor roda sem eles.
+
+### 17.5 Código e ambiente Python
+
+```bash
+sudo mkdir -p /opt/oiticica && sudo chown oiticica:oiticica /opt/oiticica
+cd /opt/oiticica
+git clone https://github.com/Gladerson/dashboard-oiticica-test.git dashboard_oiticica_test
+cd dashboard_oiticica_test/server
+
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+python -c "import embreex, trimesh, psycopg; print('deps OK')"
+deactivate
+```
+
+O `embreex` é obrigatório na prática: sem ele o raycasting do cone fica
+centenas de vezes mais lento (§14) e uma única câmera em movimento satura um
+núcleo.
+
+### 17.6 Banco
+
+```bash
+sudo -u postgres psql -c "CREATE ROLE oiticica WITH LOGIN PASSWORD 'ESCOLHA_UMA_SENHA';"
+sudo -u postgres psql -c "CREATE DATABASE oiticica OWNER oiticica;"
+```
+
+Mande o dump da máquina antiga e restaure:
+
+```bash
+# na SUA máquina
+scp /tmp/oiticica.dump /tmp/oiticica_arquivos.tgz oiticica@IP_DA_VPS:/tmp/
+
+# na VPS
+pg_restore -d "postgresql://oiticica:SENHA@127.0.0.1:5432/oiticica" \
+           --no-owner --clean --if-exists /tmp/oiticica.dump
+
+# confere que os dispositivos (e os tokens) vieram
+psql "postgresql://oiticica:SENHA@127.0.0.1:5432/oiticica" \
+     -c "SELECT nome, tipo, left(token, 8) || '...' AS token FROM dispositivos;"
+```
+
+Se você **não** for restaurar (começar do zero), pule o `pg_restore`: o
+schema se cria sozinho na primeira subida, com o usuário `admin` padrão. Mas
+aí terá de cadastrar os dispositivos de novo e trocar o `DEVICE_TOKEN` no
+`.env` do Raspberry.
+
+### 17.7 Arquivos que não vêm do Git
+
+```bash
+cd /opt/oiticica/dashboard_oiticica_test
+tar xzf /tmp/oiticica_arquivos.tgz          # restaura modelos, history e .env
+ls -lh server/static/modelos/ server/history/ | head
+```
+
+Ajuste o `server/.env`:
+
+```bash
+nano server/.env
+```
+
+```ini
+DATABASE_URL=postgresql://oiticica:SENHA@127.0.0.1:5432/oiticica
+
+# Atrás do nginx: a porta 8001 não deve ficar exposta.
+SERVER_HOST=127.0.0.1
+SERVER_PORT=8001
+
+# APAGUE (ou deixe comentadas) as duas: com o servidor na nuvem elas não
+# têm serventia -- ver §9-quater.
+# CONTROLLER_URL=
+# CONTROLLER_PUBLIC_URL=
+
+# Deixe false enquanto for HTTP. Vira true junto com o HTTPS.
+SESSION_COOKIE_SECURE=false
+```
+
+```bash
+chmod 600 server/.env
+```
+
+### 17.8 Serviço
+
+```bash
+cd /opt/oiticica/dashboard_oiticica_test
+sudo cp server/dashboard-oiticica.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dashboard-oiticica
+sudo systemctl status dashboard-oiticica --no-pager
+journalctl -u dashboard-oiticica -n 40 --no-pager
+```
+
+Devem aparecer as linhas dos módulos, entre elas:
+
+```
+>> Canal de comandos instalado (WebSocket de saida em /api/edge/ws).
+>> Modulo de telemetria instalado (sensores, gateways, widgets e alarmes).
+```
+
+Se o log disser `Embree indisponível`, volte ao 17.5.
+
+### 17.9 nginx
+
+```bash
+sudo tee /etc/nginx/conf.d/websocket.conf >/dev/null <<'EOF'
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+EOF
+
+sudo cp server/nginx-oiticica.conf /etc/nginx/sites-available/oiticica
+sudo ln -sf /etc/nginx/sites-available/oiticica /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+O `websocket.conf` **não é opcional**: sem ele o `nginx -t` falha com
+`unknown "connection_upgrade" variable`, e é ele que faz o canal de comandos
+do agente passar pelo proxy.
+
+Teste do seu navegador: `http://IP_DA_VPS/login`.
+
+**Troque a senha do admin agora**, antes de qualquer outra coisa: a máquina
+está na internet aberta.
+
+### 17.10 Apontar o Raspberry para a VPS
+
+No `edge/.env` do Pi:
+
+```ini
+SERVER_URL=http://IP_DA_VPS
+```
+
+Sem `:8001` — quem atende na porta 80 é o nginx. Depois:
+
+```bash
+sudo systemctl restart agente-borda
+journalctl -u agente-borda -n 30 --no-pager | grep -E "\[ws\]|Traceback"
+```
+
+Tem de aparecer `[ws] canal de comandos aberto em ws://IP_DA_VPS/api/edge/ws`.
+No dashboard, a pastilha abaixo dos botões de PTZ deve dizer **pelo
+servidor**, e o PTZ tem de responder.
+
+### 17.11 Conferir a latência (antes de confiar no PTZ)
+
+```bash
+# do site da barragem
+ping -c 20 IP_DA_VPS
+mtr -rwzc 20 IP_DA_VPS
+```
+
+Se o `mtr` mostrar Miami no caminho, o PTZ vai parecer lento — ver a análise
+de orçamento de latência que motivou a escolha da região.
+
+### 17.12 Antes de considerar em produção
+
+- [ ] **HTTPS.** Enquanto for HTTP puro na internet aberta, o token dos
+      dispositivos e o cookie de sessão trafegam em claro. Com um domínio
+      apontando para a VPS:
+      `sudo apt install certbot python3-certbot-nginx && sudo certbot --nginx -d SEU.DOMINIO`,
+      e depois `SESSION_COOKIE_SECURE=true` no `.env`. Sem domínio, restrinja
+      o acesso no `ufw` aos IPs conhecidos até resolver.
+- [ ] **Retenção do `history/` e da tabela `telemetria`** (§16): as duas
+      crescem sem teto hoje.
+- [ ] **Backup do banco.** Um `pg_dump` diário para fora da VPS:
+      `0 3 * * * pg_dump ... -Fc -f /var/backups/oiticica-$(date +\%F).dump`
+- [ ] **Fuso horário** da VPS, se quiser os horários do painel em local:
+      `sudo timedatectl set-timezone America/Fortaleza`
