@@ -18,6 +18,7 @@
 import base64
 import json
 import os
+import secrets
 import sys
 import threading
 import time
@@ -30,7 +31,7 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 import config_borda as cfg
@@ -564,11 +565,209 @@ def stream_loop():
 
 
 # ============================================================================
-# API local (PTZ + atalho de baixa latencia para o estado desejado)
+# Comandos
+#
+# Cada comando e uma FUNCAO comum, e nao um handler de rota. Existem dois
+# jeitos de chegar aqui:
+#
+#   1. o WebSocket de saida que este agente abre com o servidor (o caminho
+#      normal em producao: atravessa NAT, nao exige que o Pi seja alcancavel
+#      de fora);
+#   2. a API local na porta 8090, para quem esta na MESMA rede (modo LAN do
+#      dashboard) e para diagnostico.
+#
+# Antes so existia (2), e por isso o PTZ so funcionava com o servidor na
+# mesma rede do equipamento.
+# ============================================================================
+def _cmd_status(_=None):
+    # Tudo que precisa de outro lock (ou do proprio est.lock, via
+    # est.streaming()) e resolvido ANTES de entrar no with. Aninhar
+    # est.streaming() dentro de "with est.lock" trava a thread para sempre:
+    # threading.Lock nao e reentrante.
+    movendo = motion.em_movimento()
+    transporte = canal.nome()
+    streaming = est.streaming()
+    with est.lock:
+        return {
+            "coord_p": est.pan, "coord_t": est.tilt, "coord_z": est.zoom,
+            "has_continuous": ptz_cmd.has_continuous,
+            "moving": movendo,
+            "transporte": transporte,
+            "stream": streaming,
+            "fps": round(est.fps, 1),
+        }
+
+
+def _cmd_continuous(c):
+    motion.solicitar(float(c.get("pan_speed", 0)), float(c.get("tilt_speed", 0)),
+                     float(c.get("zoom_speed", 0)),
+                     max(0.2, min(3.0, float(c.get("hold_ms", 800)) / 1000.0)))
+    return {"status": "ok"}
+
+
+def _cmd_stop(_=None):
+    motion.parar()
+    return {"status": "ok"}
+
+
+def _cmd_relativo(c):
+    motion.parar()
+    est.marcar_movimento()
+    p, t, z = ptz_cmd.move_relative(float(c.get("pan_delta", 0)),
+                                    float(c.get("tilt_delta", 0)),
+                                    float(c.get("zoom_delta", 0)))
+    with est.lock:
+        est.pan, est.tilt, est.zoom = p, t, z
+    return {"coord_p": p, "coord_t": t, "coord_z": z}
+
+
+def _cmd_absoluto(c):
+    motion.parar()
+    time.sleep(cfg.PTZ_MOTION_TICK_S * 2)
+    est.marcar_movimento()
+    p, t, z = ptz_cmd.move_absolute(float(c["pan_deg"]), float(c["tilt_deg"]),
+                                    float(c["zoom_pct"]))
+    with est.lock:
+        est.pan, est.tilt, est.zoom = p, t, z
+    return {"coord_p": p, "coord_t": t, "coord_z": z}
+
+
+def _cmd_home(_=None):
+    motion.parar()
+    time.sleep(cfg.PTZ_MOTION_TICK_S * 2)
+    est.marcar_movimento()
+    ptz_cmd.go_home()
+    return {"status": "ok"}
+
+
+def _cmd_estado(c):
+    aplicar_estado(c)
+    return {"status": "ok", "streaming": est.streaming(), "transporte": canal.nome()}
+
+
+COMANDOS = {
+    "/status": _cmd_status,
+    "/command/continuous": _cmd_continuous,
+    "/command/stop": _cmd_stop,
+    "/command": _cmd_relativo,
+    "/command/absolute": _cmd_absoluto,
+    "/command/home": _cmd_home,
+    "/borda/estado": _cmd_estado,
+}
+
+
+def executar_comando(rota, corpo):
+    fn = COMANDOS.get(rota)
+    if fn is None:
+        raise ValueError(f"rota desconhecida: {rota}")
+    return fn(corpo or {})
+
+
+# ============================================================================
+# Canal de descida: WebSocket de SAIDA para o servidor
+#
+# Quem disca e o equipamento. E o que permite o servidor estar na nuvem e o
+# Pi atras de NAT sem VPN, sem porta aberta e sem IP fixo. Se a conexao cair,
+# reconecta com espera crescente; enquanto isso o estado desejado continua
+# chegando de carona na resposta da telemetria (nada trava).
+# ============================================================================
+lan_token_atual = ""      # autoriza o navegador na LAN; trocado a cada conexao
+
+
+def ws_comandos_loop():
+    try:
+        from websockets.sync.client import connect as ws_connect
+    except Exception as e:
+        print(f"[ws] biblioteca 'websockets' indisponivel ({e}); PTZ so pela "
+              f"API local. Instale com: pip install 'websockets>=12'")
+        return
+
+    global lan_token_atual
+    url = cfg.SERVER_URL.replace("https://", "wss://").replace("http://", "ws://")
+    url = f"{url.rstrip('/')}/api/edge/ws"
+    espera = 1.0
+
+    while not parar_tudo.is_set():
+        try:
+            with ws_connect(url, additional_headers={
+                    "Authorization": f"Bearer {cfg.DEVICE_TOKEN}"},
+                    open_timeout=10, close_timeout=5) as ws:
+                print(f"[ws] canal de comandos aberto em {url}")
+                espera = 1.0
+                ws.send(json.dumps({"tipo": "ola", "info": {
+                    "device_id": cfg.DEVICE_ID,
+                    "api_local": f"{cfg.API_HOST}:{cfg.API_PORT}",
+                }}))
+                while not parar_tudo.is_set():
+                    # O recv com timeout deixa o laco checar parar_tudo e nao
+                    # ficar preso para sempre num socket morto por NAT.
+                    try:
+                        bruto = ws.recv(timeout=30)
+                    except TimeoutError:
+                        ws.send(json.dumps({"tipo": "ping"}))
+                        continue
+                    try:
+                        msg = json.loads(bruto)
+                    except Exception:
+                        continue
+                    tipo = msg.get("tipo")
+                    if tipo == "comando":
+                        try:
+                            corpo = executar_comando(msg.get("rota"), msg.get("corpo"))
+                            resposta = {"tipo": "resposta", "id": msg.get("id"),
+                                        "corpo": corpo}
+                        except Exception as e:
+                            resposta = {"tipo": "resposta", "id": msg.get("id"),
+                                        "corpo": {"erro": str(e)}}
+                        ws.send(json.dumps(resposta))
+                    elif tipo == "estado":
+                        aplicar_estado(msg.get("estado") or {})
+                    elif tipo == "bem_vindo":
+                        lan_token_atual = msg.get("lan_token") or ""
+        except Exception as e:
+            if parar_tudo.is_set():
+                return
+            print(f"[ws] canal caiu ({type(e).__name__}: {e}); "
+                  f"tentando de novo em {espera:.0f}s")
+        lan_token_atual = ""
+        parar_tudo.wait(espera)
+        espera = min(espera * 2, 30.0)
+
+
+# ============================================================================
+# API local (mesma rede): PTZ de baixa latencia e diagnostico
+#
+# Por padrao escuta so em 127.0.0.1 -- ela nao tem senha propria e o PTZ nao
+# depende mais dela. Para usar o "modo LAN" do dashboard (navegador falando
+# direto com o equipamento, sem passar pela nuvem), exponha com
+# API_HOST=0.0.0.0: ai as rotas de comando passam a exigir o lan_token que o
+# servidor entrega por este mesmo canal.
 # ============================================================================
 app = FastAPI(title="Agente de Borda - Oiticica")
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
+app.add_middleware(CORSMiddleware, allow_origins=cfg.CORS_ORIGENS,
                    allow_methods=["*"], allow_headers=["*"])
+
+_EXPOSTO_NA_REDE = cfg.API_HOST not in ("127.0.0.1", "localhost", "::1")
+
+
+def _autorizado(req: Request) -> bool:
+    """Quando a API escuta so em localhost, quem chegou ja esta dentro da
+    maquina. Exposta na rede, exige o lan_token do servidor -- sem isso
+    qualquer um na LAN dirigiria a camera, que era o caso ate aqui."""
+    if not _EXPOSTO_NA_REDE:
+        return True
+    if not lan_token_atual:
+        return False
+    enviado = (req.headers.get("x-lan-token")
+               or req.query_params.get("lan_token") or "")
+    return secrets.compare_digest(enviado, lan_token_atual)
+
+
+def _negado():
+    return JSONResponse(
+        {"error": "lan_token ausente ou invalido",
+         "dica": "O dashboard obtem este token do servidor; use o modo LAN."},
+        status_code=401)
 
 
 class ContinuousCommand(BaseModel):
@@ -592,73 +791,52 @@ class AbsoluteCommand(BaseModel):
 
 @app.get("/status")
 def status():
-    # Tudo que precisa de outro lock (ou do proprio est.lock, via
-    # est.streaming()) e resolvido ANTES de entrar no with. Aninhar
-    # est.streaming() dentro de "with est.lock" trava a thread para sempre:
-    # threading.Lock nao e reentrante.
-    movendo = motion.em_movimento()
-    transporte = canal.nome()
-    streaming = est.streaming()
-    with est.lock:
-        return {
-            "coord_p": est.pan, "coord_t": est.tilt, "coord_z": est.zoom,
-            "has_continuous": ptz_cmd.has_continuous,
-            "moving": movendo,
-            "transporte": transporte,
-            "stream": streaming,
-            "fps": round(est.fps, 1),
-        }
+    return _cmd_status()
 
 
 @app.post("/command/continuous")
-def cmd_continuous(c: ContinuousCommand):
-    motion.solicitar(c.pan_speed, c.tilt_speed, c.zoom_speed,
-                     max(0.2, min(3.0, c.hold_ms / 1000.0)))
-    return {"status": "ok"}
+def cmd_continuous(c: ContinuousCommand, req: Request):
+    if not _autorizado(req):
+        return _negado()
+    return _cmd_continuous(c.model_dump())
 
 
 @app.post("/command/stop")
-def cmd_stop():
-    motion.parar()
-    return {"status": "ok"}
+def cmd_stop(req: Request):
+    if not _autorizado(req):
+        return _negado()
+    return _cmd_stop()
 
 
 @app.post("/command")
-def cmd(c: MoveCommand):
-    motion.parar()
-    est.marcar_movimento()
-    p, t, z = ptz_cmd.move_relative(c.pan_delta, c.tilt_delta, c.zoom_delta)
-    with est.lock:
-        est.pan, est.tilt, est.zoom = p, t, z
-    return {"coord_p": p, "coord_t": t, "coord_z": z}
+def cmd(c: MoveCommand, req: Request):
+    if not _autorizado(req):
+        return _negado()
+    return _cmd_relativo(c.model_dump())
 
 
 @app.post("/command/absolute")
-def cmd_absolute(c: AbsoluteCommand):
-    motion.parar()
-    time.sleep(cfg.PTZ_MOTION_TICK_S * 2)
-    est.marcar_movimento()
-    p, t, z = ptz_cmd.move_absolute(c.pan_deg, c.tilt_deg, c.zoom_pct)
-    with est.lock:
-        est.pan, est.tilt, est.zoom = p, t, z
-    return {"coord_p": p, "coord_t": t, "coord_z": z}
+def cmd_absolute(c: AbsoluteCommand, req: Request):
+    if not _autorizado(req):
+        return _negado()
+    return _cmd_absoluto(c.model_dump())
 
 
 @app.post("/command/home")
-def cmd_home():
-    motion.parar()
-    time.sleep(cfg.PTZ_MOTION_TICK_S * 2)
-    est.marcar_movimento()
-    ptz_cmd.go_home()
-    return {"status": "ok"}
+def cmd_home(req: Request):
+    if not _autorizado(req):
+        return _negado()
+    return _cmd_home()
 
 
 @app.post("/borda/estado")
 async def borda_estado(req: Request):
-    """Atalho: na LAN o servidor empurra o estado desejado direto, e o stream
-    comeca em ~100ms em vez de esperar o proximo ciclo de telemetria. E so um
-    acelerador -- se esta rota nao existir ou falhar, o mecanismo normal
-    (carona na resposta da telemetria) resolve igual, so que ate 1s depois."""
+    """Atalho para servidor e equipamento na MESMA rede. Hoje o caminho
+    normal e o WebSocket de saida; esta rota fica para instalacao local.
+    Continua sendo so um acelerador: se falhar, o estado desce de carona na
+    resposta da telemetria em ate 1s."""
+    if not _autorizado(req):
+        return _negado()
     try:
         aplicar_estado(await req.json())
     except Exception as e:
@@ -709,7 +887,7 @@ if __name__ == "__main__":
 
     for alvo in (motion.loop, video_loop, telemetria_loop, stream_loop,
                  gerente_transporte_loop, atender_pedidos_imagem,
-                 limpar_evidencias):
+                 limpar_evidencias, ws_comandos_loop):
         threading.Thread(target=alvo, daemon=True).start()
 
     try:

@@ -11,3 +11,6 @@ uvicorn[standard]==0.32.0
 paho-mqtt<2.0
 contextlib2
 future
+
+# Necessario para o canal de comandos (WebSocket de saida do agente).
+websockets>=12

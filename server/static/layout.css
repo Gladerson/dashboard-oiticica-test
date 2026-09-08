@@ -242,3 +242,47 @@ td button:hover { border-color: var(--accent); }
   .sidebar-nav a { justify-content: center; padding: 9px 0; }
   .sidebar-rodape { flex-direction: column; padding: 10px 6px; }
 }
+
+/* ---- Sininho de alarmes (montado por layout.js em todas as telas) --------
+   Fica no cabecalho compartilhado de proposito: um alarme que dispara
+   enquanto o operador olha o video 3D precisa aparecer do mesmo jeito. */
+.sino-caixa { position: relative; }
+.sino-caixa > button {
+  width: 34px; height: 34px; display: grid; place-items: center;
+  background: transparent; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 8px; cursor: pointer; padding: 0; position: relative;
+}
+.sino-caixa > button:hover { color: var(--text); border-color: var(--accent); }
+.sino-caixa > button svg { width: 17px; height: 17px; }
+.sino-conta {
+  position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px;
+  padding: 0 4px; border-radius: 999px; background: var(--danger); color: #fff;
+  font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+}
+.sino-conta[hidden] { display: none; }
+.sino-painel {
+  position: absolute; right: 0; top: 40px; width: 340px; max-height: 60vh;
+  overflow: auto; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--raio); box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+  z-index: 40; padding: 10px 12px;
+}
+.sino-painel[hidden] { display: none; }
+.sino-topo { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.sino-topo b { flex: 1; font-size: 12px; }
+.sino-topo button {
+  background: transparent; border: none; color: var(--accent);
+  font-size: 11px; cursor: pointer; padding: 2px 4px;
+}
+.sino-painel ul { list-style: none; margin: 0; padding: 0; }
+.sino-painel li {
+  padding: 8px 6px; border-top: 1px solid var(--border); font-size: 11px;
+  line-height: 1.45; display: flex; flex-direction: column; gap: 1px;
+}
+.sino-painel li:first-child { border-top: none; }
+.sino-painel li.vazio { color: var(--muted); text-align: center; padding: 14px; }
+.sino-painel li.novo { background: var(--accent-fraco); border-radius: 6px; }
+.sino-painel li b { font-size: 12px; }
+.sino-painel li.disparado b { color: var(--danger); }
+.sino-painel li.normal b { color: var(--ok); }
+.sino-painel .det { color: var(--muted); }
+.sino-painel .quando { color: var(--muted); font-size: 10px; }

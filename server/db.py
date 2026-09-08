@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 
 from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://oiticica:oiticica@127.0.0.1:5432/oiticica"
@@ -123,6 +124,95 @@ ALTER TABLE localidades ADD COLUMN IF NOT EXISTS modelo_erro TEXT;
 -- quem tem so um dispositivo e nunca preencheu isto).
 ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS controller_url TEXT;
 ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS controller_url_publica TEXT;
+
+-- ---------------------------------------------------------------------------
+-- Sensores e gateways (ESP32) -- ver README secao "Telemetria de sensores"
+--
+-- 'camera'  = o Raspberry com a PTZ (tudo que existia ate aqui);
+-- 'sensor'  = ESP32 que fala por si mesmo;
+-- 'gateway' = ESP32 que recebe de N controladores por LoRa e reenvia tudo
+--             junto. O payload dele traz varios equipamentos numa mensagem
+--             so, e o servidor separa por sub_id.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS tipo TEXT NOT NULL DEFAULT 'camera';
+ALTER TABLE dispositivos DROP CONSTRAINT IF EXISTS dispositivos_tipo_check;
+ALTER TABLE dispositivos ADD CONSTRAINT dispositivos_tipo_check
+    CHECK (tipo IN ('camera', 'sensor', 'gateway'));
+
+-- Serie historica. sub_id = '' quer dizer "o proprio dispositivo" (sensor
+-- direto); num gateway e o identificador do equipamento remoto
+-- ("nivel-rd01"). Guardamos numero E texto porque o gateway manda os dois
+-- ("distancia": 12.5 e "nivel-rd01": "on").
+CREATE TABLE IF NOT EXISTS telemetria (
+    id              BIGSERIAL PRIMARY KEY,
+    dispositivo_id  UUID NOT NULL REFERENCES dispositivos(id) ON DELETE CASCADE,
+    sub_id          TEXT NOT NULL DEFAULT '',
+    chave           TEXT NOT NULL,
+    valor_num       DOUBLE PRECISION,
+    valor_txt       TEXT,
+    em              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_telemetria_serie
+    ON telemetria(dispositivo_id, sub_id, chave, em DESC);
+
+-- Catalogo do que ja chegou de cada dispositivo. E o que alimenta os
+-- seletores da tela de widgets: em vez de o operador digitar o nome da
+-- telemetria, ele escolhe entre as que o equipamento realmente mandou.
+CREATE TABLE IF NOT EXISTS telemetria_chaves (
+    dispositivo_id  UUID NOT NULL REFERENCES dispositivos(id) ON DELETE CASCADE,
+    sub_id          TEXT NOT NULL DEFAULT '',
+    chave           TEXT NOT NULL,
+    numerica        BOOLEAN NOT NULL DEFAULT true,
+    unidade         TEXT,
+    ultimo_num      DOUBLE PRECISION,
+    ultimo_txt      TEXT,
+    visto_em        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (dispositivo_id, sub_id, chave)
+);
+
+CREATE TABLE IF NOT EXISTS widgets (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    dispositivo_id  UUID NOT NULL REFERENCES dispositivos(id) ON DELETE CASCADE,
+    tipo            TEXT NOT NULL
+                    CHECK (tipo IN ('area','barras','card','radial','status','alarmes')),
+    titulo          TEXT NOT NULL DEFAULT '',
+    sub_id          TEXT NOT NULL DEFAULT '',
+    chaves          JSONB NOT NULL DEFAULT '[]'::jsonb,
+    config          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ordem           INTEGER NOT NULL DEFAULT 0,
+    criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_widgets_disp ON widgets(dispositivo_id, ordem);
+
+-- 'disparado' guarda o estado ATUAL da regra. Sem ele, um sensor que fica
+-- 10 minutos acima do limite geraria um evento a cada leitura e afogaria o
+-- sininho: o evento so nasce na BORDA (normal -> disparado e volta).
+CREATE TABLE IF NOT EXISTS alarmes (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    dispositivo_id  UUID NOT NULL REFERENCES dispositivos(id) ON DELETE CASCADE,
+    sub_id          TEXT NOT NULL DEFAULT '',
+    chave           TEXT NOT NULL,
+    condicao        TEXT NOT NULL CHECK (condicao IN ('maior','menor','igual')),
+    limite          DOUBLE PRECISION NOT NULL,
+    titulo          TEXT NOT NULL DEFAULT '',
+    severidade      TEXT NOT NULL DEFAULT 'alerta'
+                    CHECK (severidade IN ('info','alerta','critico')),
+    ativo           BOOLEAN NOT NULL DEFAULT true,
+    disparado       BOOLEAN NOT NULL DEFAULT false,
+    criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_alarmes_disp ON alarmes(dispositivo_id);
+
+CREATE TABLE IF NOT EXISTS alarmes_eventos (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    alarme_id       UUID NOT NULL REFERENCES alarmes(id) ON DELETE CASCADE,
+    valor           DOUBLE PRECISION,
+    estado          TEXT NOT NULL DEFAULT 'disparado'
+                    CHECK (estado IN ('disparado','normalizado')),
+    lido            BOOLEAN NOT NULL DEFAULT false,
+    em              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_alarmes_eventos_em ON alarmes_eventos(em DESC);
 """
 
 
@@ -418,17 +508,19 @@ def dispositivo_por_id_com_localidade(dispositivo_id):
 def criar_dispositivo(entity_id, entity_type, nome, proprietario, localidade_id,
                       lat, lon, alt_acima_solo, transporte, token,
                       topico_telemetria, topico_atributos, topico_frame,
-                      dono_usuario_id, controller_url=None, controller_url_publica=None):
+                      dono_usuario_id, controller_url=None, controller_url_publica=None,
+                      tipo="camera"):
     with pool.connection() as conn:
         return conn.execute(
             "INSERT INTO dispositivos (entity_id, entity_type, nome, proprietario, "
             "localidade_id, lat, lon, alt_acima_solo, transporte, token, "
             "topico_telemetria, topico_atributos, topico_frame, dono_usuario_id, "
-            "controller_url, controller_url_publica) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+            "controller_url, controller_url_publica, tipo) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
             (entity_id, entity_type, nome, proprietario, localidade_id, lat, lon,
              alt_acima_solo, transporte, token, topico_telemetria, topico_atributos,
-             topico_frame, dono_usuario_id, controller_url, controller_url_publica),
+             topico_frame, dono_usuario_id, controller_url, controller_url_publica,
+             tipo),
         ).fetchone()
 
 
@@ -438,7 +530,7 @@ def criar_dispositivo(entity_id, entity_type, nome, proprietario, localidade_id,
 # significa para quem opera.
 CAMPOS_EDITAVEIS_DISPOSITIVO = (
     "nome", "proprietario", "localidade_id", "lat", "lon", "alt_acima_solo",
-    "transporte", "controller_url", "controller_url_publica",
+    "transporte", "controller_url", "controller_url_publica", "tipo",
 )
 
 
@@ -462,3 +554,217 @@ def atualizar_dispositivo(dispositivo_id, campos):
 def excluir_dispositivo(dispositivo_id):
     with pool.connection() as conn:
         conn.execute("DELETE FROM dispositivos WHERE id = %s", (dispositivo_id,))
+
+
+# ============================================================================
+# Telemetria de sensores/gateways, widgets e alarmes
+#
+# O gateway (edge ESP32) manda UMA mensagem com varios equipamentos dentro.
+# Aqui embaixo tudo ja chega separado em (sub_id, chave, valor) -- quem faz
+# essa separacao e server/telemetria.py.
+# ============================================================================
+def gravar_telemetria(dispositivo_id, amostras):
+    """amostras: lista de (sub_id, chave, valor_num, valor_txt).
+
+    Grava a serie e atualiza o catalogo numa transacao so. O catalogo
+    (telemetria_chaves) e o que a tela de widgets oferece nos seletores:
+    sem ele o operador teria de digitar o nome da telemetria de cabeca."""
+    if not amostras:
+        return
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO telemetria (dispositivo_id, sub_id, chave, valor_num, valor_txt) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                [(dispositivo_id, s, c, n, t) for (s, c, n, t) in amostras],
+            )
+            cur.executemany(
+                "INSERT INTO telemetria_chaves "
+                "  (dispositivo_id, sub_id, chave, numerica, ultimo_num, ultimo_txt, visto_em) "
+                "VALUES (%s,%s,%s,%s,%s,%s, now()) "
+                "ON CONFLICT (dispositivo_id, sub_id, chave) DO UPDATE SET "
+                "  numerica = EXCLUDED.numerica, ultimo_num = EXCLUDED.ultimo_num, "
+                "  ultimo_txt = EXCLUDED.ultimo_txt, visto_em = now()",
+                [(dispositivo_id, s, c, n is not None, n, t) for (s, c, n, t) in amostras],
+            )
+
+
+def listar_chaves_telemetria(dispositivo_id):
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT * FROM telemetria_chaves WHERE dispositivo_id = %s "
+            "ORDER BY sub_id, chave", (dispositivo_id,)
+        ).fetchall()
+
+
+def serie_telemetria(dispositivo_id, sub_id, chave, desde_minutos=1440, limite=2000):
+    """Serie de um ponto, mais antigo primeiro (e a ordem que o grafico quer).
+    O ORDER BY do SELECT interno e DESC para usar o indice e pegar os N mais
+    RECENTES; a inversao acontece depois."""
+    with pool.connection() as conn:
+        linhas = conn.execute(
+            "SELECT em, valor_num, valor_txt FROM telemetria "
+            "WHERE dispositivo_id = %s AND sub_id = %s AND chave = %s "
+            "  AND em > now() - (%s || ' minutes')::interval "
+            "ORDER BY em DESC LIMIT %s",
+            (dispositivo_id, sub_id, chave, str(int(desde_minutos)), int(limite)),
+        ).fetchall()
+    return list(reversed(linhas))
+
+
+def ultimos_valores(dispositivo_id):
+    """Ultimo valor de cada (sub_id, chave) -- o que os widgets de card,
+    radial e status precisam, sem varrer a serie."""
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT sub_id, chave, numerica, ultimo_num, ultimo_txt, visto_em "
+            "FROM telemetria_chaves WHERE dispositivo_id = %s ORDER BY sub_id, chave",
+            (dispositivo_id,)
+        ).fetchall()
+
+
+def limpar_telemetria_antiga(dias):
+    """Retencao. Sem isso a tabela cresce para sempre -- ver README."""
+    with pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM telemetria WHERE em < now() - (%s || ' days')::interval",
+            (str(int(dias)),))
+
+
+# ---- widgets ---------------------------------------------------------------
+CAMPOS_EDITAVEIS_WIDGET = ("tipo", "titulo", "sub_id", "chaves", "config", "ordem")
+
+
+def listar_widgets(dispositivo_id):
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT * FROM widgets WHERE dispositivo_id = %s ORDER BY ordem, criado_em",
+            (dispositivo_id,)
+        ).fetchall()
+
+
+def criar_widget(dispositivo_id, tipo, titulo, sub_id, chaves, config, ordem):
+    with pool.connection() as conn:
+        return conn.execute(
+            "INSERT INTO widgets (dispositivo_id, tipo, titulo, sub_id, chaves, config, ordem) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+            (dispositivo_id, tipo, titulo, sub_id, Jsonb(chaves), Jsonb(config), ordem),
+        ).fetchone()
+
+
+def atualizar_widget(widget_id, campos):
+    campos = {k: v for k, v in campos.items() if k in CAMPOS_EDITAVEIS_WIDGET}
+    if not campos:
+        return widget_por_id(widget_id)
+    for k in ("chaves", "config"):
+        if k in campos:
+            campos[k] = Jsonb(campos[k])
+    atribuicoes = ", ".join(f"{k} = %s" for k in campos)
+    with pool.connection() as conn:
+        return conn.execute(
+            f"UPDATE widgets SET {atribuicoes} WHERE id = %s RETURNING *",
+            list(campos.values()) + [widget_id],
+        ).fetchone()
+
+
+def widget_por_id(widget_id):
+    with pool.connection() as conn:
+        return conn.execute("SELECT * FROM widgets WHERE id = %s", (widget_id,)).fetchone()
+
+
+def excluir_widget(widget_id):
+    with pool.connection() as conn:
+        conn.execute("DELETE FROM widgets WHERE id = %s", (widget_id,))
+
+
+# ---- alarmes ---------------------------------------------------------------
+CAMPOS_EDITAVEIS_ALARME = ("sub_id", "chave", "condicao", "limite", "titulo",
+                           "severidade", "ativo")
+
+
+def listar_alarmes(dispositivo_id=None):
+    with pool.connection() as conn:
+        if dispositivo_id is None:
+            return conn.execute(
+                "SELECT a.*, d.nome AS dispositivo_nome FROM alarmes a "
+                "JOIN dispositivos d ON d.id = a.dispositivo_id ORDER BY a.criado_em"
+            ).fetchall()
+        return conn.execute(
+            "SELECT a.*, d.nome AS dispositivo_nome FROM alarmes a "
+            "JOIN dispositivos d ON d.id = a.dispositivo_id "
+            "WHERE a.dispositivo_id = %s ORDER BY a.criado_em", (dispositivo_id,)
+        ).fetchall()
+
+
+def alarmes_ativos_de(dispositivo_id):
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT * FROM alarmes WHERE dispositivo_id = %s AND ativo",
+            (dispositivo_id,)
+        ).fetchall()
+
+
+def criar_alarme(dispositivo_id, sub_id, chave, condicao, limite, titulo, severidade):
+    with pool.connection() as conn:
+        return conn.execute(
+            "INSERT INTO alarmes (dispositivo_id, sub_id, chave, condicao, limite, "
+            "titulo, severidade) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+            (dispositivo_id, sub_id, chave, condicao, limite, titulo, severidade),
+        ).fetchone()
+
+
+def atualizar_alarme(alarme_id, campos):
+    campos = {k: v for k, v in campos.items() if k in CAMPOS_EDITAVEIS_ALARME}
+    if not campos:
+        return None
+    atribuicoes = ", ".join(f"{k} = %s" for k in campos)
+    with pool.connection() as conn:
+        return conn.execute(
+            f"UPDATE alarmes SET {atribuicoes} WHERE id = %s RETURNING *",
+            list(campos.values()) + [alarme_id],
+        ).fetchone()
+
+
+def excluir_alarme(alarme_id):
+    with pool.connection() as conn:
+        conn.execute("DELETE FROM alarmes WHERE id = %s", (alarme_id,))
+
+
+def registrar_evento_alarme(alarme_id, valor, estado):
+    """So chamado na BORDA da condicao (ver coluna 'disparado')."""
+    with pool.connection() as conn:
+        conn.execute("UPDATE alarmes SET disparado = %s WHERE id = %s",
+                     (estado == "disparado", alarme_id))
+        return conn.execute(
+            "INSERT INTO alarmes_eventos (alarme_id, valor, estado) "
+            "VALUES (%s,%s,%s) RETURNING *", (alarme_id, valor, estado)
+        ).fetchone()
+
+
+def listar_eventos_alarme(limite=50, apenas_nao_lidos=False):
+    filtro = "WHERE NOT e.lido" if apenas_nao_lidos else ""
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT e.*, a.titulo, a.chave, a.sub_id, a.condicao, a.limite, "
+            "       a.severidade, d.nome AS dispositivo_nome, d.id AS dispositivo_id "
+            "FROM alarmes_eventos e "
+            "JOIN alarmes a ON a.id = e.alarme_id "
+            "JOIN dispositivos d ON d.id = a.dispositivo_id "
+            f"{filtro} ORDER BY e.em DESC LIMIT %s", (int(limite),)
+        ).fetchall()
+
+
+def contar_eventos_nao_lidos():
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT count(*) AS n FROM alarmes_eventos WHERE NOT lido"
+        ).fetchone()["n"]
+
+
+def marcar_eventos_lidos(ids=None):
+    with pool.connection() as conn:
+        if ids:
+            conn.execute("UPDATE alarmes_eventos SET lido = true WHERE id = ANY(%s)",
+                         (list(ids),))
+        else:
+            conn.execute("UPDATE alarmes_eventos SET lido = true WHERE NOT lido")

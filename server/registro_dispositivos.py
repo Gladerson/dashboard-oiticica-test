@@ -153,11 +153,31 @@ class EstadoDesejado:
             self.pedidos_imagem = []
 
 
-def empurrador_http(controller_url):
-    """So um acelerador de latencia -- o caminho garantido continua sendo a
-    carona na resposta do proximo POST de telemetria (funciona mesmo atras
-    de NAT). Se isto falhar ou nao existir controller_url, tanto faz."""
+# Preenchido por server/comandos.py quando ele instala o canal WebSocket.
+# Fica como um gancho (e nao um import) para nao criar ciclo: comandos.py
+# ja importa este modulo.
+_entregador_ws = None
+
+
+def definir_entregador_ws(fn):
+    global _entregador_ws
+    _entregador_ws = fn
+
+
+def empurrador(device_id, controller_url):
+    """Entrega o estado desejado o quanto antes. Ordem:
+
+      1. WebSocket de saida do proprio equipamento (server/comandos.py) --
+         funciona atras de NAT, que e o caso real;
+      2. POST direto no agente, se houver controller_url cadastrada e o
+         servidor estiver na mesma rede (instalacao local);
+      3. nada -- e esta e a garantia: o estado desce de carona na resposta
+         do proximo POST de telemetria, em no maximo 1s.
+
+    Nenhum dos dois primeiros e obrigatorio; sao aceleradores."""
     def _empurrar(snap):
+        if _entregador_ws is not None and _entregador_ws(device_id, snap):
+            return
         if not controller_url:
             return
 
@@ -239,6 +259,9 @@ class DispositivoRuntime:
         self.nome = linha["nome"]
         self.entity_id = linha["entity_id"]
         self.transporte_cadastrado = linha["transporte"]
+        # 'camera' | 'sensor' | 'gateway' -- so a camera tem geometria 3D e
+        # PTZ; os outros dois so sobem telemetria (ver server/telemetria.py).
+        self.tipo = linha.get("tipo") or "camera"
         self.controller_url = linha.get("controller_url") or CONTROLLER_URL_PADRAO
         self.controller_url_publica = (linha.get("controller_url_publica")
                                        or self.controller_url or CONTROLLER_URL_PUBLICA_PADRAO)
@@ -249,7 +272,7 @@ class DispositivoRuntime:
         self.localidade_nome = linha.get("localidade_nome")
         self.localidade_modelo_3d_path = linha.get("localidade_modelo_3d_path")
 
-        self.estado = EstadoDesejado(empurrar_para=empurrador_http(self.controller_url))
+        self.estado = EstadoDesejado(empurrar_para=empurrador(self.id, self.controller_url))
         self.quadro = Quadro()
         self.mapa_det = {}   # det_id da borda -> id no historico do servidor
         self._view_cache = {"key": None, "value": None}

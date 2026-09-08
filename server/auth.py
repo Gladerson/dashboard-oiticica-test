@@ -29,6 +29,10 @@ CAMINHOS_LIVRES = {
     "/api/edge/telemetria", "/api/edge/deteccao",
     "/api/edge/frame", "/api/edge/imagem",
     "/api/telemetry", "/api/detection",
+    # Sensores e gateways (ESP32): mesma ideia das rotas acima -- a
+    # autenticacao e o token do dispositivo no header, nao a sessao do
+    # operador. Ver server/telemetria.py.
+    "/api/edge/dados",
 }
 
 # Com sessao, mas mesmo que "trocar_senha" esteja pendente (senao o usuario
