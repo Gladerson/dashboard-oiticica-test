@@ -1830,61 +1830,62 @@ tar czf /tmp/oiticica_arquivos.tgz \
 ls -lh /tmp/oiticica.dump /tmp/oiticica_arquivos.tgz
 ```
 
-### 17.2 Primeiro acesso à VPS e usuário sem root
+### 17.2 Primeiro acesso à VPS e usuário próprio
 
-#### a) Ter uma chave SSH na sua máquina
+O serviço nunca deve rodar como root, então o primeiro passo é criar um
+usuário para ele. Esse usuário **tem senha** — e o acesso remoto continua
+sendo só por chave. Não é contradição, são duas coisas diferentes:
+
+| | Para quê |
+|---|---|
+| **Chave SSH** | entrar na máquina pela rede. É o único jeito, depois do passo (d) |
+| **Senha do `oiticica`** | confirmar o `sudo`, e entrar pelo console VNC do painel se você perder o acesso SSH |
+
+Manter a senha é mais seguro do que a alternativa (`sudo` sem senha): se um
+dia sua chave privada vazar ou alguém pegar uma sessão aberta, ainda falta a
+senha para virar root. E é mais seguro do que deixar o SSH aceitar senha,
+porque ninguém consegue tentar a senha de fora — o passo (d) fecha isso.
+
+#### a) Na SUA máquina: ter uma chave SSH
 
 ```bash
 ls ~/.ssh/id_ed25519.pub || ssh-keygen -t ed25519 -C "oiticica"
-cat ~/.ssh/id_ed25519.pub      # é esta linha que vai para a VPS
 ```
 
-#### b) Criar o usuário e instalar a chave — tudo como root
+Se ele pedir passphrase, pode deixar em branco (Enter) ou escolher uma — é a
+senha da chave, guardada só na sua máquina.
 
-O serviço nunca deve rodar como root, daí o usuário próprio. Ele é criado
-**sem senha** (`--disabled-password`): entra só por chave, que é mais seguro
-e evita ataque de força bruta.
-
-> **Justamente por não ter senha, `ssh-copy-id oiticica@IP` NÃO funciona** —
-> o `ssh-copy-id` precisa se autenticar para instalar a chave, e não há senha
-> para isso. Ele responde `Permission denied`. A chave tem de ser instalada
-> por dentro, como root.
+#### b) Na VPS, como root: criar o usuário
 
 ```bash
 ssh root@IP_DA_VPS            # senha que a Contabo mandou por e-mail
 
-adduser --disabled-password --gecos "" oiticica
-usermod -aG sudo oiticica
+adduser oiticica              # vai PEDIR a senha do novo usuário, duas vezes
+usermod -aG sudo oiticica     # dá direito de sudo
 
-# COLE aqui a linha do seu id_ed25519.pub, entre as aspas:
-CHAVE="ssh-ed25519 AAAA... voce@sua-maquina"
-
-mkdir -p /home/oiticica/.ssh
-echo "$CHAVE" >> /home/oiticica/.ssh/authorized_keys
-chown -R oiticica:oiticica /home/oiticica/.ssh
-chmod 700 /home/oiticica/.ssh
-chmod 600 /home/oiticica/.ssh/authorized_keys
-
-# sudo sem pedir senha (o usuário não tem senha para digitar)
-echo "oiticica ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/oiticica
-chmod 440 /etc/sudoers.d/oiticica
+exit                          # volta para a sua máquina
 ```
 
-#### c) Testar a chave ANTES de endurecer o SSH
+Anote a senha do `oiticica`: é ela que o `sudo` vai pedir daqui em diante.
 
-Numa janela **nova** do terminal, na sua máquina:
+#### c) Na SUA máquina: instalar a chave
+
+Agora o `ssh-copy-id` funciona, porque o usuário tem senha:
 
 ```bash
-ssh oiticica@IP_DA_VPS        # tem de entrar direto, sem pedir senha
-sudo whoami                   # tem de responder: root
+ssh-copy-id oiticica@IP_DA_VPS    # digite a senha do oiticica
+
+ssh oiticica@IP_DA_VPS            # deve entrar SEM pedir senha (usou a chave)
+sudo whoami                       # pede a senha do oiticica e responde: root
 ```
 
-Só siga se as duas linhas funcionarem.
+**Só siga adiante se essas duas linhas funcionarem.**
 
-#### d) Endurecer o SSH
+#### d) Fechar o SSH para senha e para root
 
-Os dois ajustes abaixo fecham a máquina para força bruta: ninguém entra com
-senha, e ninguém entra como root.
+Uma VPS com IP público leva milhares de tentativas de login por dia. Os dois
+ajustes abaixo acabam com isso: só entra quem tem a chave, e ninguém entra
+como root.
 
 ```bash
 sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/;s/^#\?PasswordAuthentication.*/PasswordAuthentication no/' \
@@ -1892,16 +1893,19 @@ sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/;s/^#\?PasswordAuthentic
 sudo sshd -t && sudo systemctl restart ssh
 ```
 
-> **Por que "sem fechar a sessão atual".** Se a sua chave não estiver
-> realmente instalada, esses dois ajustes te trancam do lado de fora: não há
-> mais senha para tentar. Então: **mantenha aberta** a janela em que você já
-> está conectado, abra **outra** janela e confirme que `ssh oiticica@IP_DA_VPS`
-> ainda entra. Se não entrar, desfaça pela janela antiga
-> (`sudo nano /etc/ssh/sshd_config`, volte `PasswordAuthentication yes`,
-> `sudo systemctl restart ssh`).
+> **Faça isso com duas janelas abertas.** Se a chave não estiver mesmo
+> instalada, esses ajustes te trancam do lado de fora: não sobra senha para
+> tentar pela rede.
 >
-> Rede de segurança se você fechar tudo mesmo assim: o painel da Contabo tem
-> um **console VNC**, que entra pela tela da máquina sem passar pelo SSH.
+> 1. **Não feche** a janela em que você está conectado agora.
+> 2. Abra **outra** janela e teste `ssh oiticica@IP_DA_VPS`.
+> 3. Entrou? Pode fechar as duas, está tudo certo.
+> 4. Não entrou? Desfaça pela janela antiga: `sudo nano /etc/ssh/sshd_config`,
+>    volte `PasswordAuthentication yes`, `sudo systemctl restart ssh`.
+>
+> A senha do `oiticica` continua valendo para o `sudo` e para o **console
+> VNC** do painel da Contabo — que é a sua rede de segurança se fechar tudo
+> mesmo assim.
 
 ### 17.3 Firewall
 
