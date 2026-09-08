@@ -898,11 +898,6 @@ tenta carregar modelo 3D nem vídeo.
 
 ## 9-quater. Comunicação: quem disca para quem
 
-> **NÃO APLICADO NO SERVIDOR AINDA.** Esta seção descreve o branch
-> `claude/comunicacao-ws-telemetria`, que ainda não foi para `main` (ver
-> §16, "Pendências"). Enquanto ele não for aplicado, vale o que está na
-> §8: o PTZ exige que o servidor alcance o Raspberry.
-
 ### O problema
 
 Até aqui o PTZ era `POST http://<ip-do-Pi>:8090/command/...`, disparado
@@ -965,8 +960,6 @@ câmera. Agora:
 ---
 
 ## 9-quinquies. Telemetria de sensores e gateways (ESP32)
-
-> **NÃO APLICADO NO SERVIDOR AINDA** — mesmo branch da seção anterior.
 
 ### Tipos de equipamento
 
@@ -1609,16 +1602,16 @@ indesejável, mova para variável de ambiente.
 
 ## 16. Pendências conhecidas
 
-### ⚠ Etapa pronta, mas ainda NÃO aplicada em produção
+### ⚠ Atualização que exige atenção ao implantar
 
-O branch **`claude/comunicacao-ws-telemetria`** contém as seções §9-quater e
-§9-quinquies (canal de descida por WebSocket, modo LAN, API do agente em
-localhost, telemetria de sensores/gateways, widgets e alarmes). Está validado
-em bancada, **mas ainda não foi para `main`** — foi deixado assim de propósito,
-para ser aplicado quando houver como testar em campo. Como aplicar está no
-final desta seção.
+As seções §9-quater e §9-quinquies (canal de descida por WebSocket, modo LAN,
+API do agente em localhost, telemetria de sensores/gateways, widgets e
+alarmes) já estão em `main`. **Servidor e Raspberry precisam ser atualizados
+JUNTOS** — o passo a passo está no final desta seção. Enquanto o Pi não
+atualizar, o PTZ continua funcionando pelo caminho antigo (HTTP direto), mas
+só se o servidor alcançar a rede dele.
 
-Pontos de atenção quando for aplicar:
+Pontos de atenção:
 
 - **`websockets>=12` é dependência nova do Raspberry** (`edge/requirements.txt`).
   Sem ela o agente sobe, avisa no log e o PTZ fica só pela API local.
@@ -1712,14 +1705,13 @@ Pontos de atenção quando for aplicar:
 
 ---
 
-### Como aplicar o branch `claude/comunicacao-ws-telemetria`
+### Como implantar esta atualização
 
 **1. Servidor**
 
 ```bash
 cd ~/dashboard-oiticica-test
-git fetch origin
-git checkout main && git merge --no-ff origin/claude/comunicacao-ws-telemetria
+git pull origin main
 pip install -r server/requirements.txt      # confirma o embreex
 sudo systemctl restart dashboard-oiticica
 ```
