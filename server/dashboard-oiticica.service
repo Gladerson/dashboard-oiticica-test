@@ -25,6 +25,15 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# SEM isto o journal PERDE tudo que o servidor imprime com print(): sob o
+# systemd o stdout nao e um terminal, entao o Python o bufferiza em blocos
+# de 8 KB e as mensagens so aparecem muito depois (ou nunca). O uvicorn usa
+# logging, que vai para o stderr e sai na hora -- e por isso o log parecia
+# ter so as linhas "INFO: Uvicorn running", sem as linhas ">> Modulo ...".
+# Todo o diagnostico do projeto ([ws], [ptz], [registro], [alarme]) usa
+# print(), entao isto nao e cosmetico.
+Environment=PYTHONUNBUFFERED=1
+
 # O .env fica com as credenciais do banco: so o dono le.
 UMask=0077
 

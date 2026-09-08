@@ -2035,6 +2035,25 @@ Devem aparecer as linhas dos módulos, entre elas:
 
 Se o log disser `Embree indisponível`, volte ao 17.5.
 
+**Se aparecerem só as linhas `INFO: Uvicorn running` e nenhuma linha `>>`:**
+o `Environment=PYTHONUNBUFFERED=1` está faltando na unit. Sob o systemd o
+stdout não é um terminal, então o Python bufferiza o `print()` em blocos de
+8 KB e as mensagens só saem muito depois — enquanto o uvicorn, que usa
+`logging` no stderr, aparece na hora. Todo o diagnóstico do projeto
+(`[ws]`, `[ptz]`, `[registro]`, `[alarme]`) usa `print()`, então isso não é
+cosmético: copie a unit de novo e recarregue.
+
+Confira também **onde** o servidor está escutando:
+
+```bash
+sudo ss -lntp | grep 8001
+```
+
+Tem de aparecer `127.0.0.1:8001`. Se aparecer `0.0.0.0:8001`, o
+`SERVER_HOST=127.0.0.1` não está no `server/.env` (ou o serviço não foi
+reiniciado depois de editá-lo) e a porta está exposta à internet — só o
+firewall a esconde.
+
 ### 17.9 nginx
 
 > Faça o **17.8 antes**: o nginx só repassa para o servidor; se o serviço não
