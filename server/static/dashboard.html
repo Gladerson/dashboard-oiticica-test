@@ -597,10 +597,31 @@ const scene = new THREE.Scene();
 const camera3d = new THREE.PerspectiveCamera(50, viewport.clientWidth / viewport.clientHeight, 0.1, 5000);
 camera3d.position.set(30, 30, 30);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(viewport.clientWidth, viewport.clientHeight);
-viewport.appendChild(renderer.domElement);
+// A criacao do renderer PRECISA ser protegida. Quando o navegador nao tem
+// WebGL (aceleracao grafica desligada, GPU na lista de bloqueio, maquina
+// virtual sem driver 3D), o construtor LEVANTA excecao -- e como este e um
+// modulo, a excecao aqui no topo aborta o SCRIPT INTEIRO. O operador ficava
+// com o dashboard morto: sem imagem da camera, sem PTZ, sem telemetria, sem
+// deteccoes -- nada disso depende de 3D --, e sem nenhuma explicacao na
+// tela. Agora a falha fica confinada ao viewport 3D.
+let webglOk = true;
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+  viewport.appendChild(renderer.domElement);
+} catch (e) {
+  webglOk = false;
+  console.error("WebGL indisponivel neste navegador:", e);
+  // Dublê com a mesma superfície que o resto do codigo usa (OrbitControls
+  // pede domElement; ajustarViewport chama setSize; animate chama render).
+  // O canvas existe mas NAO entra no DOM -- so serve de alvo dos listeners.
+  renderer = {
+    domElement: document.createElement("canvas"),
+    setSize() {}, setPixelRatio() {}, render() {}, dispose() {},
+  };
+}
 
 const controls = new OrbitControls(camera3d, renderer.domElement);
 controls.enableDamping = true;
@@ -917,6 +938,20 @@ async function init() {
   // dashboard minimizado -- exatamente o trafego que queremos eliminar.
   atualizarPainelBorda();
 
+  if (!webglOk) {
+    // Chega aqui DEPOIS de atualizarPainelBorda(): video, PTZ, deteccoes e
+    // telemetria ja estao de pe. So a cena 3D fica fora -- e nao adianta
+    // baixar dezenas de MB de .glb para nao renderizar nada.
+    mostrarAvisoSem3D(
+      "O navegador não conseguiu criar um contexto WebGL.",
+      `A visão 3D precisa de aceleração gráfica. No Chrome/Edge: Configurações →
+       Sistema → “Usar aceleração gráfica quando disponível”, e reinicie o
+       navegador (o diagnóstico completo está em <code>chrome://gpu</code>).
+       Vídeo, PTZ, detecções e telemetria continuam funcionando normalmente.`
+    );
+    return;
+  }
+
   if (!info.pronto_3d) {
     // Dispositivo cadastrado mas sem localidade/modelo 3D pronto: PTZ e
     // vídeo continuam funcionando, só a visão 3D fica indisponível (sem
@@ -988,6 +1023,7 @@ async function init() {
 }
 
 function animate() {
+  if (!webglOk) return;   // sem contexto grafico nao ha o que desenhar
   requestAnimationFrame(animate);
   aplicarVoo();
   controls.update();
