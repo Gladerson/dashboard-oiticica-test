@@ -1,7 +1,17 @@
-# Sistema de Monitoramento de Rachaduras — Barragem Oiticica
+# HydroConecta — telemetria e integridade estrutural monitoradas por IA
 
-Detecção de fissuras em concreto com câmera PTZ, inferência em borda
-(Raspberry Pi 5 + Hailo-8L) e visualização 3D georreferenciada.
+Plataforma de monitoramento para barragens. A primeira instalação é a
+**Barragem de Oiticica**, e o repositório ainda se chama
+`dashboard-oiticica-test` por isso — mas o produto é o HydroConecta, e é esse
+o nome que aparece nas telas (assinatura em `server/static/logo-hydroconecta.svg`).
+
+Duas frentes, no mesmo painel:
+
+- **SHM por visão computacional** — detecção de fissuras em concreto com
+  câmera PTZ, inferência em borda (Raspberry Pi 5 + Hailo-8L) e visualização
+  3D georreferenciada. É o **Painel SHM** do menu;
+- **Telemetria de sensores** — nível, piezômetros e afins, por ESP32 (direto
+  ou via gateway), com widgets e alarmes. É o **Monitoramento** do menu.
 
 O Raspberry executa a inferência localmente e envia ao servidor **apenas
 metadados**. O vídeo sobe unicamente quando o operador pede, e por tempo
@@ -106,7 +116,8 @@ dashboard_oiticica_test/
 │   ├── static/layout.css           # casca visual comum: menu lateral, barra de título, cartões, tabelas
 │   ├── static/layout.js            # monta o menu/barra nas três telas (um lugar só para a navegação)
 │   ├── static/dashboard.html       # Three.js: modelo, cone, telinha, histórico, marcações 3D
-│   ├── static/login.html           # tela de entrada
+│   ├── static/login.html           # tela de entrada (marca embutida: /estatico exige sessão)
+│   ├── static/logo-hydroconecta.svg # assinatura da marca, em vetor
 │   ├── static/config.html          # tema, própria senha, administração de usuários (admin)
 │   ├── static/dispositivos.html    # cadastro/edição + mapa Leaflet + preview 3D (Three.js) do modelo enviado
 │   ├── static/modelos/             # .glb enviados pela aba Dispositivos (fora do Git)
@@ -1142,6 +1153,8 @@ Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
 | `/api/detection/{id}/pedir_imagem` | POST | sessão | pede a foto completa ao Pi ("Abrir") -- dispositivo idem `/api/locate` |
 | `/login`, `/api/login` | GET/POST | não | tela e endpoint de entrada |
 | `/api/logout` | POST | sessão | encerra a sessão atual |
+| `/api/sessao` | GET | sessão | quanto falta para expirar (**não** renova) |
+| `/api/sessao/atividade` | POST | sessão | renova o prazo — única rota que faz isso; só o navegador chama, e só quando há ação do operador (§11-bis) |
 | `/config` | GET | sessão | tema, própria senha, administração de usuários |
 | `/api/usuarios/me` | GET | sessão | dados do usuário logado |
 | `/api/usuarios/me/senha` \| `/tema` | POST | sessão | própria senha / próprio tema |
@@ -1302,7 +1315,8 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
 |---|---|---|
 | `DATABASE_URL` | ver `.env.example` | conexão PostgreSQL (usuários/sessões, §5.1a) |
 | `SESSION_COOKIE_SECURE` | `false` | `true` só atrás de HTTPS de verdade (reverse proxy) |
-| `SESSAO_DURACAO_H` | 168 (7 dias) | validade do cookie de sessão |
+| `SESSAO_DURACAO_H` | 168 (7 dias) | prazo **máximo** da sessão, contado do login |
+| `SESSAO_INATIVIDADE_MIN` | 30 | minutos **sem ação do operador** até deslogar |
 | `CONTROLLER_URL` | `http://127.0.0.1:8090` | **opcional** (§9-quater). Só alimenta o *fallback* HTTP servidor → Pi, que exige os dois na mesma rede. Com o WebSocket no ar nada a consulta; com o servidor na nuvem, pode ser apagada |
 | `CONTROLLER_PUBLIC_URL` | = acima | **opcional.** Endereço que o navegador tenta no modo LAN. Apagada — ou apontando para loopback — o modo LAN não é oferecido e tudo passa pelo servidor |
 | `TIMEOUT_PTZ_S` | 3 | espera máxima por um comando de PTZ (§9-quater). Curto de propósito: o dashboard repete o comando a cada 300 ms |
@@ -1333,6 +1347,87 @@ Mesmas credenciais de câmera, mais `SERVER_URL`, `YOLO_CONF_THRESHOLD` (0.558),
 `DETECTION_COOLDOWN_SECONDS` (5) e **`DEVICE_TOKEN`** (obrigatória, mesmo
 esquema do `edge/.env` -- `/api/telemetry`/`/api/detection` também exigem
 Bearer agora).
+
+---
+
+## 11-bis. Identidade visual e sessão do operador
+
+### A marca nas telas
+
+A assinatura fica em **`server/static/logo-hydroconecta.svg`** — vetor, um
+arquivo só, sem CDN e sem imagem de fundo. É a versão completa (símbolo +
+nome + assinatura), usada quando houver espaço.
+
+Duas telas **não** carregam esse arquivo, e por um motivo que não é
+descuido:
+
+- **`login.html`** embute o desenho no próprio HTML. `/estatico/...` exige
+  sessão (ver `CAMINHOS_LIVRES` em `server/auth.py`), e quem está na tela de
+  login ainda não tem uma — o `<img>` viria redirecionado para `/login`.
+  Liberar o prefixo `/estatico` resolveria, mas ele aponta para a mesma pasta
+  de `/model`: os `.glb` das barragens ficariam públicos. Melhor duplicar
+  cinquenta linhas de SVG;
+- **`layout.js`** embute só a gota, para o menu lateral.
+
+No login o **símbolo é SVG e o texto é HTML**. A assinatura inteira em SVG,
+dentro de um cartão de 400 px, encolhe a linha de apoio a ponto de não se
+ler; separando, o texto usa a fonte do sistema no tamanho certo.
+
+As cores do nome são variáveis CSS (`--marca-forte`, `--marca-clara`,
+`--marca-apoio`) porque o azul-marinho da marca desaparece no tema escuro.
+
+**Trocar por um arquivo próprio:** substitua o `.svg` (mantendo o nome) e, se
+o desenho mudar, ajuste as cópias embutidas em `login.html` e `layout.js`.
+São os três lugares, e só eles.
+
+### Nomes das telas
+
+| Onde | Texto |
+|---|---|
+| Menu lateral, topo | **HydroConecta** · Telemetria e integridade |
+| Menu, primeiro item | **Painel SHM** |
+| Barra de título do painel | **Painel SHM - Dispositivos de Visão Computacional** |
+| Aba do navegador | `<tela> - HydroConecta` |
+
+### Sessão: dois prazos, vale o que vencer primeiro
+
+| Variável | Padrão | O que é |
+|---|---|---|
+| `SESSAO_DURACAO_H` | 168 h | prazo máximo, contado do login |
+| `SESSAO_INATIVIDADE_MIN` | 30 min | tempo **sem ação do operador** |
+
+O segundo é o que importa no dia a dia: fecha o posto de operação que ficou
+aberto e sozinho.
+
+**O detalhe que faz isso funcionar:** quem renova o prazo é a **pessoa**, não
+a página. O dashboard conversa com o servidor a cada 3 s por conta própria —
+se qualquer requisição renovasse a sessão, uma tela esquecida na sala de
+controle ficaria logada para sempre, exatamente o que este controle existe
+para evitar. Por isso:
+
+- `POST /api/sessao/atividade` é a **única** rota que renova, e o navegador
+  só a chama quando há mouse, teclado ou toque de verdade (`layout.js`);
+- `GET /api/sessao` apenas consulta quanto falta;
+- o banco guarda `sessoes.visto_em`, e `usuario_da_sessao()` recusa o cookie
+  passado o limite. A checagem é do **servidor** — o relógio no navegador é
+  só cortesia com o operador.
+
+Na tela, um minuto antes do fim aparece uma faixa com a contagem e o botão
+**Continuar conectado**. Passou do prazo, o navegador vai para
+`/login?motivo=expirado&next=…`, o login explica que foi inatividade (e não
+senha errada) e devolve o operador à página em que ele estava.
+
+Qualquer resposta `401` de qualquer requisição também manda para o login:
+sem isso, uma aba aberta continuaria viva batendo em 401 para sempre depois
+que a sessão caísse em outra aba ou o servidor reiniciasse.
+
+Os tempos de aviso e de renovação **derivam** do limite do servidor (um terço
+e um quarto dele, com tetos). Fixá-los quebrava com limites curtos: com
+`SESSAO_INATIVIDADE_MIN=2`, uma renovação a cada 45 s chegaria depois de a
+sessão já ter caído — foi um bug real, pego em teste.
+
+`db.limpar_sessoes_mortas()` roda a cada login: as sessões vencidas saem da
+tabela sem precisar de agendador.
 
 ---
 
@@ -1758,6 +1853,10 @@ indesejável, mova para variável de ambiente.
 ## 16. Pendências conhecidas
 
 ### ⚠ Atualização que exige atenção ao implantar
+
+> **Status:** já aplicada na instalação atual (VPS Contabo + Raspberry em
+> campo). O que segue vale para **uma instalação nova** ou para um Raspberry
+> que ainda esteja em versão antiga.
 
 As seções §9-quater e §9-quinquies (canal de descida por WebSocket, modo LAN,
 API do agente em localhost, telemetria de sensores/gateways, widgets e

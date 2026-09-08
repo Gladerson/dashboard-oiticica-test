@@ -37,8 +37,24 @@
     sino: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 6-3 7-3 7h18s-3-1-3-7"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
   };
 
+  // A gota da marca, so o simbolo (a assinatura completa fica na tela de
+  // login). Os ids do gradiente levam prefixo proprio para nao colidirem com
+  // outro SVG da mesma pagina.
+  var MARCA_GOTA =
+    '<svg viewBox="0 0 200 260" aria-hidden="true">' +
+      '<defs><linearGradient id="hc-mini" x1="0.15" y1="0" x2="0.85" y2="1">' +
+        '<stop offset="0" stop-color="#0d5f78"/>' +
+        '<stop offset="0.45" stop-color="#1a8fa8"/>' +
+        '<stop offset="1" stop-color="#15b9c9"/>' +
+      "</linearGradient></defs>" +
+      '<path d="M100 34c0 0 74 84 74 128a74 74 0 0 1-148 0C26 118 100 34 100 34Z" ' +
+        'fill="url(#hc-mini)"/>' +
+      '<path d="M64 152 88 196 143 128" fill="none" stroke="#fff" stroke-width="13" ' +
+        'stroke-linecap="round" stroke-linejoin="round"/>' +
+    "</svg>";
+
   var ITENS = [
-    { chave: "dashboard", href: "/", rotulo: "Painel", icone: ICONES.dashboard },
+    { chave: "dashboard", href: "/", rotulo: "Painel SHM", icone: ICONES.dashboard },
     { chave: "dispositivos", href: "/dispositivos", rotulo: "Dispositivos", icone: ICONES.dispositivos },
     { chave: "monitoramento", href: "/monitoramento", rotulo: "Monitoramento", icone: ICONES.monitoramento },
     { chave: "config", href: "/config", rotulo: "Configuração", icone: ICONES.config },
@@ -84,8 +100,11 @@
     }).join("");
     aside.innerHTML =
       '<div class="sidebar-marca">' +
-        '<div class="sigla">CV</div>' +
-        '<div class="nome">Oiticica<small>Monitoramento de fissuras</small></div>' +
+        '<div class="sigla">' + MARCA_GOTA + "</div>" +
+        '<div class="nome">HydroConecta' +
+                // Curto de proposito: o menu lateral tem largura fixa e a frase
+        // completa da marca ficava cortada no meio da palavra.
+        "<small>Telemetria e integridade</small></div>" +
       "</div>" +
       '<nav class="sidebar-nav">' + links + "</nav>" +
       '<div class="sidebar-rodape">' +
@@ -115,11 +134,13 @@
     });
 
     document.getElementById("layout-sair").addEventListener("click", async function () {
+      encerrando = true;   // nao deixa o vigia disparar "expirou" no caminho
       try { await fetch("/api/logout", { method: "POST" }); } catch (e) { /* segue */ }
-      location.href = "/login";
+      location.href = "/login?motivo=saiu";
     });
 
     montarSino(document.getElementById("layout-acoes"));
+    iniciarVigiaDeSessao(conteudo);
     carregarUsuario();
     return { acoes: document.getElementById("layout-acoes") };
   }
@@ -222,6 +243,135 @@
       // pressa para nao criar tempestade de conexoes numa queda do servidor.
       ws.onclose = function () { setTimeout(ouvirWebSocket, 15000); };
     } catch (e) { /* sem websocket: fica so o intervalo */ }
+  }
+
+  // ==========================================================================
+  // Vigia de sessao (inatividade)
+  //
+  // O servidor e quem decide: ele so aceita o cookie enquanto houve
+  // atividade recente (ver SESSAO_INATIVIDADE_MIN em db.py). O que se faz
+  // aqui e (a) avisar o operador ANTES de cair, para ele nao perder o que
+  // estava fazendo, e (b) renovar o prazo quando ha atividade DE VERDADE.
+  //
+  // O ponto delicado: "atividade" e a pessoa, nao a pagina. O dashboard
+  // conversa com o servidor a cada 3s sozinho; se isso renovasse a sessao,
+  // uma tela esquecida na sala de controle ficaria logada indefinidamente.
+  // Por isso a renovacao sai daqui, disparada por mouse/teclado/toque, e
+  // nenhuma outra requisicao mexe no prazo.
+  // ==========================================================================
+  // Estes dois nao sao constantes: sao derivados do limite que o SERVIDOR
+  // informa. Fixa-los quebra quando o limite e curto -- com 30 min de
+  // inatividade, renovar no maximo a cada 45s e de sobra; com 2 min, a
+  // primeira renovacao chegaria depois da sessao ja ter caido.
+  var AVISO_ANTES_S = 60;      // com quanto tempo de sobra o aviso aparece
+  var INTERVALO_MIN_S = 45;    // nao manda "estou aqui" mais que isso
+  var prazoEm = 0;             // instante (ms) em que a sessao cai
+  var ultimoEnvio = 0;
+  var houveAtividade = false;
+  var encerrando = false;      // logout/expiracao ja em curso
+  var avisoEl = null;
+
+  function iniciarVigiaDeSessao(conteudo) {
+    avisoEl = document.createElement("div");
+    avisoEl.className = "aviso-sessao";
+    avisoEl.hidden = true;
+    avisoEl.innerHTML =
+      "<span>Sua sessão vai encerrar por inatividade em " +
+      '<b id="layout-sessao-conta">--</b>.</span>' +
+      '<button type="button" id="layout-sessao-continuar">Continuar conectado</button>';
+    conteudo.insertBefore(avisoEl, conteudo.children[1] || null);
+    avisoEl.querySelector("#layout-sessao-continuar")
+           .addEventListener("click", function () { renovar(true); });
+
+    ["pointerdown", "keydown", "wheel", "touchstart"].forEach(function (ev) {
+      document.addEventListener(ev, marcarAtividade, { passive: true });
+    });
+    // Voltar para a aba nao e atividade, mas e a hora certa de reconferir:
+    // o prazo pode ter corrido enquanto a aba estava escondida.
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) sincronizar();
+    });
+
+    interceptar401();
+    sincronizar();
+    setInterval(tique, 1000);
+    setInterval(sincronizar, 60000);   // mantem varias abas em acordo
+  }
+
+  function marcarAtividade() {
+    houveAtividade = true;
+    // Se o aviso ja esta na tela, a sessao esta por um fio: mexer no mouse
+    // TEM de renovar na hora, sem esperar a vez do intervalo.
+    if (prazoEm && (prazoEm - Date.now()) / 1000 <= AVISO_ANTES_S)
+      return renovar(true);
+    // Fora disso, renova cedo mas com parcimonia: se o operador esta usando
+    // a tela, ele nao deve nem chegar a ver o aviso.
+    if ((Date.now() - ultimoEnvio) / 1000 >= INTERVALO_MIN_S) renovar(false);
+  }
+
+  async function renovar(forcado) {
+    if (encerrando) return;
+    if (!forcado && !houveAtividade) return;
+    houveAtividade = false;
+    ultimoEnvio = Date.now();
+    try {
+      var r = await fetch("/api/sessao/atividade", { method: "POST" });
+      if (r.status === 401) return expirar();
+      var j = await r.json();
+      definirPrazo(j.restante_s);
+    } catch (e) { /* rede oscilou: o tique continua com o prazo anterior */ }
+  }
+
+  async function sincronizar() {
+    if (encerrando) return;
+    try {
+      var j = await fetch("/api/sessao").then(function (r) { return r.json(); });
+      if (j.inatividade_s) {
+        // Aviso com um terco do prazo de sobra (no maximo 1 min), e uma
+        // renovacao a cada um quarto dele (no maximo 45s, no minimo 5s).
+        AVISO_ANTES_S = Math.min(60, Math.max(10, j.inatividade_s / 3));
+        INTERVALO_MIN_S = Math.min(45, Math.max(5, j.inatividade_s / 4));
+      }
+      definirPrazo(j.restante_s);
+    } catch (e) { /* offline: segue com o que ja tem */ }
+  }
+
+  function definirPrazo(restanteS) {
+    if (restanteS == null) return;
+    prazoEm = Date.now() + restanteS * 1000;
+  }
+
+  function tique() {
+    if (encerrando || !prazoEm) return;
+    var faltam = Math.round((prazoEm - Date.now()) / 1000);
+    if (faltam <= 0) return expirar();
+    var mostrar = faltam <= AVISO_ANTES_S;
+    avisoEl.hidden = !mostrar;
+    if (mostrar) {
+      document.getElementById("layout-sessao-conta").textContent =
+        faltam >= 60 ? Math.ceil(faltam / 60) + " min" : faltam + " s";
+    }
+  }
+
+  function expirar() {
+    if (encerrando) return;
+    encerrando = true;
+    location.href = "/login?motivo=expirado&next=" +
+                    encodeURIComponent(location.pathname + location.search);
+  }
+
+  /** Se QUALQUER requisicao da pagina voltar 401, a sessao ja caiu (outra
+   *  aba saiu, o servidor reiniciou, o prazo estourou). Sem isto o dashboard
+   *  ficaria numa tela viva batendo em 401 para sempre, sem dizer nada. */
+  function interceptar401() {
+    var original = global.fetch;
+    if (!original) return;
+    global.fetch = function () {
+      return original.apply(this, arguments).then(function (r) {
+        if (r.status === 401 && !encerrando) expirar();
+        return r;   // a resposta segue intacta para quem chamou
+      });
+    };
   }
 
   async function carregarUsuario() {

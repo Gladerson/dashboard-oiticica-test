@@ -3,47 +3,123 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Entrar - Barragem Oiticica</title>
+<title>Entrar - HydroConecta</title>
 <style>
+  /* Esta tela NAO usa /estatico/layout.css nem a logo como arquivo: as duas
+     coisas exigem sessao (ver CAMINHOS_LIVRES em server/auth.py), e quem
+     esta na tela de login ainda nao tem uma. Por isso o SVG vem embutido --
+     o mesmo desenho de static/logo-hydroconecta.svg. */
   :root {
     --bg: #0b1220; --panel: #121b2e; --border: #223049;
-    --text: #dbe4f3; --muted: #8093b3; --accent: #4fa3ff; --danger: #ff5c5c;
+    --text: #dbe4f3; --muted: #8093b3; --accent: #21b6d8; --danger: #ff5c5c;
+    --marca-forte: #e8f0fb; --marca-clara: #39c9e6; --marca-apoio: #8093b3;
+    --brilho: rgba(33,182,216,.16);
   }
   body.tema-claro {
-    --bg: #f5f7fa; --panel: #ffffff; --border: #d5dbe5;
-    --text: #16202f; --muted: #5a6a85; --accent: #1668c4; --danger: #c62828;
+    --bg: #eef2f6; --panel: #ffffff; --border: #d5dbe5;
+    --text: #16202f; --muted: #5a6a85; --accent: #1094b5; --danger: #c62828;
+    --marca-forte: #123f5c; --marca-clara: #21b6d8; --marca-apoio: #5a748a;
+    --brilho: rgba(33,182,216,.20);
   }
   * { box-sizing: border-box; }
   body {
     margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-    background:var(--bg); color:var(--text); font-family: system-ui, sans-serif;
+    padding:24px; background:var(--bg); color:var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    /* Dois halos frios: dao profundidade sem custar nenhuma imagem. */
+    background-image:
+      radial-gradient(60rem 40rem at 12% -10%, var(--brilho), transparent 60%),
+      radial-gradient(50rem 36rem at 108% 108%, var(--brilho), transparent 62%);
   }
   .box {
-    width:320px; background:var(--panel); border:1px solid var(--border);
-    border-radius:10px; padding:28px; box-shadow:0 8px 30px rgba(0,0,0,.25);
+    width:100%; max-width:400px; background:var(--panel); border:1px solid var(--border);
+    border-radius:14px; padding:30px 30px 26px;
+    box-shadow:0 18px 50px rgba(0,0,0,.30);
   }
-  h1 { font-size:16px; margin:0 0 4px; }
-  p.sub { color:var(--muted); font-size:12px; margin:0 0 20px; }
+  /* Simbolo em SVG, texto em HTML. A assinatura inteira em SVG dentro de um
+     cartao estreito encolhe o subtitulo a ponto de nao se ler; separando, o
+     texto usa a fonte do sistema no tamanho certo e fica nitido. */
+  .marca { text-align:center; margin-bottom:22px; }
+  .marca .gota { width:74px; height:96px; display:block; margin:0 auto 10px; }
+  .marca .nome {
+    font-size:30px; font-weight:700; letter-spacing:-.02em; line-height:1.1;
+    color:var(--marca-forte);
+  }
+  .marca .nome i { font-style:normal; color:var(--marca-clara); }
+  .marca .tag {
+    margin:6px 0 0; font-size:11.5px; line-height:1.4; color:var(--marca-apoio);
+  }
+  .marca .regua {
+    width:120px; height:4px; border-radius:2px; background:var(--marca-clara);
+    margin:12px auto 0;
+  }
+  .linha { height:1px; background:var(--border); margin:22px 0 20px; }
   label { display:block; font-size:12px; color:var(--muted); margin:14px 0 5px; }
   input {
-    width:100%; padding:9px 10px; background:var(--bg); color:var(--text);
-    border:1px solid var(--border); border-radius:6px; font-size:14px; font-family:inherit;
+    width:100%; padding:11px 12px; background:var(--bg); color:var(--text);
+    border:1px solid var(--border); border-radius:8px; font-size:14px; font-family:inherit;
   }
-  input:focus { outline:none; border-color:var(--accent); }
+  input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--brilho); }
   button {
-    width:100%; margin-top:20px; padding:10px; background:var(--accent); color:#fff;
-    border:0; border-radius:6px; font-size:14px; cursor:pointer; font-family:inherit;
+    width:100%; margin-top:22px; padding:11px; background:var(--accent); color:#04222c;
+    border:0; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;
+    font-family:inherit;
   }
+  button:hover { filter:brightness(1.07); }
   button:disabled { opacity:.6; cursor:wait; }
-  #erro {
-    margin-top:12px; font-size:12px; color:var(--danger); min-height:14px;
+  #erro { margin-top:12px; font-size:12px; color:var(--danger); min-height:14px; }
+  /* Aviso de sessao encerrada: quem cai aqui por inatividade precisa saber
+     que nao foi erro de senha, senao tenta de novo achando que digitou errado. */
+  .aviso {
+    display:none; align-items:flex-start; gap:8px; margin-bottom:18px; padding:10px 12px;
+    border:1px solid var(--accent); border-radius:8px; background:var(--brilho);
+    font-size:12px; line-height:1.45; color:var(--text);
   }
+  .aviso.ver { display:flex; }
 </style>
 </head>
 <body>
 <form class="box" id="form-login">
-  <h1>Barragem Oiticica</h1>
-  <p class="sub">Monitoramento de rachaduras — entre com seu usuário.</p>
+  <div class="marca">
+    <svg class="gota" viewBox="20 28 160 216" role="img" aria-label="HydroConecta">
+      <defs>
+        <linearGradient id="hc-gota" x1="0.15" y1="0" x2="0.85" y2="1">
+          <stop offset="0"    stop-color="#0d5f78"/>
+          <stop offset="0.45" stop-color="#1a8fa8"/>
+          <stop offset="1"    stop-color="#15b9c9"/>
+        </linearGradient>
+        <linearGradient id="hc-brilho" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ffffff" stop-opacity="0.30"/>
+          <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <g fill="none" stroke="#2fc3d6" stroke-linecap="round" stroke-width="7">
+        <path d="M126 44a34 34 0 0 1 34-9"/>
+        <path d="M132 62a20 20 0 0 1 20-6"/>
+      </g>
+      <path d="M100 34c0 0 74 84 74 128a74 74 0 0 1-148 0C26 118 100 34 100 34Z"
+            fill="url(#hc-gota)"/>
+      <path d="M100 34c0 0 74 84 74 128a74 74 0 0 1-148 0C26 118 100 34 100 34Z"
+            fill="url(#hc-brilho)"/>
+      <path d="M27 150a74 74 0 0 0 146 0Z" fill="#ffffff" opacity="0.07"/>
+      <path d="M64 152 88 196 143 128" fill="none" stroke="#ffffff" stroke-width="7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <g fill="#ffffff">
+        <circle cx="64" cy="152" r="8"/><circle cx="88" cy="196" r="8"/>
+        <circle cx="143" cy="128" r="8"/>
+      </g>
+    </svg>
+    <div class="nome">Hydro<i>conecta</i></div>
+    <p class="tag">Telemetria e integridade estrutural monitoradas por IA</p>
+    <div class="regua"></div>
+  </div>
+  <div class="linha"></div>
+
+  <div class="aviso" id="aviso-sessao">
+    <span aria-hidden="true">&#9201;</span>
+    <span id="aviso-texto"></span>
+  </div>
+
   <label for="username">Usuário</label>
   <input id="username" name="username" autocomplete="username" required autofocus />
   <label for="senha">Senha</label>
@@ -57,11 +133,23 @@ try {
     document.body.classList.add("tema-claro");
 } catch (e) {}
 
+var params = new URLSearchParams(location.search);
+var MOTIVOS = {
+  expirado: "Sua sessão foi encerrada por inatividade. Entre novamente para continuar.",
+  saiu: "Você saiu do sistema.",
+};
+var motivo = MOTIVOS[params.get("motivo")];
+if (motivo) {
+  document.getElementById("aviso-texto").textContent = motivo;
+  document.getElementById("aviso-sessao").classList.add("ver");
+}
+
 function proximaPagina(trocarSenha) {
   if (trocarSenha) return "/config?trocar_senha=1";
-  const params = new URLSearchParams(location.search);
-  const next = params.get("next");
-  return (next && next.startsWith("/")) ? next : "/";
+  var next = params.get("next");
+  // So caminho relativo: um "next" com host de fora seria um redirecionamento
+  // aberto, util para phishing em cima do nosso proprio dominio.
+  return (next && next.startsWith("/") && !next.startsWith("//")) ? next : "/";
 }
 
 document.getElementById("form-login").addEventListener("submit", async (ev) => {
