@@ -1323,6 +1323,10 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
 > mais**: hoje isso é `alt_acima_solo`, cadastrado por dispositivo em
 > `/dispositivos` (relativo ao terreno, não absoluto).
 
+`GLTF_TRANSFORM` (opcional) — qual versão da ferramenta de descompressão
+Draco o `npx` deve usar no upload do modelo. Padrão `@gltf-transform/cli@4.3.0`,
+a última que roda no Node 18. Só mexa junto com a versão do Node (§17.4).
+
 ### `controller/.env` — ambiente de teste sem Pi
 
 Mesmas credenciais de câmera, mais `SERVER_URL`, `YOLO_CONF_THRESHOLD` (0.558),
@@ -1499,6 +1503,27 @@ ver com 3D: vídeo, PTZ, detecções e telemetria. Duas frentes:
 
 Para confirmar em 5 segundos, cole no console:
 `document.createElement("canvas").getContext("webgl2") ? "ok" : "sem WebGL"`.
+
+**O upload do `.glb` termina e a localidade fica com o selo `erro`** — o envio
+deu certo (o arquivo está em `static/modelos/`), quem falhou foi a
+descompressão Draco, que roda depois, em segundo plano. **O motivo agora
+aparece escrito embaixo do selo, no próprio painel**, e também no log:
+
+```bash
+sudo journalctl -u dashboard-oiticica -b --no-pager | grep "\[modelos\]"
+```
+
+Duas causas cobrem quase todos os casos:
+
+* **Node antigo demais.** Confira com `node -v`. Ver “Versão do Node” em
+  §17.4. A mensagem no painel diz isso com todas as letras quando o npm
+  devolve `EBADENGINE`;
+* **o arquivo não é um `.glb` válido** (às vezes é um `.gltf` renomeado, ou um
+  download interrompido). A mensagem traz a saída da ferramenta.
+
+Um sinal que confirma antes mesmo de ler o erro: se `<id>.glb` e
+`<id>_original_draco.glb` tiverem **exatamente o mesmo tamanho**, a
+descompressão não chegou a produzir saída nenhuma.
 
 **Troquei o `.glb` de uma localidade e o modelo antigo continua aparecendo**
 — era um bug, corrigido. O upload é guardado em
@@ -1986,6 +2011,22 @@ sudo apt install -y python3-venv python3-pip python3-dev build-essential \
 
 `nodejs`/`npm` são só para a descompressão Draco do `.glb` no upload; o resto
 do servidor roda sem eles.
+
+**Versão do Node.** O servidor chama `npx @gltf-transform/cli@4.3.0` — a
+versão é **fixa no código** de propósito. Sem fixar, o `npx` baixaria sempre a
+mais recente do npm, e o projeto passaria a depender de algo que muda sozinho:
+foi exatamente o que aconteceu quando a CLI, da 4.4.1 em diante, passou a
+exigir Node ≥ 20 e o upload quebrou num servidor com o Node 18 do Ubuntu, sem
+nenhuma alteração aqui. A 4.3.0 roda no Node 18, 20 e 22.
+
+Se quiser uma versão mais nova da ferramenta, ponha `GLTF_TRANSFORM=` no
+`server/.env` — e aí instale o Node 20 ou superior antes:
+
+```bash
+node -v                                    # o que está instalado
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
 
 ### 17.5 Código e ambiente Python
 

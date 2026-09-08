@@ -27,6 +27,12 @@
   .badge.erro { border-color:var(--danger); color:var(--danger); }
   .badge.processando { border-color:var(--warn); color:var(--warn); }
   .badge.nenhum { color:var(--muted); }
+  /* O motivo da falha ficava so no title do selo -- ninguem passa o mouse
+     num selo vermelho para descobrir por que o upload nao funcionou. */
+  .erro-modelo {
+    display:block; margin-top:4px; max-width:340px; color:var(--danger);
+    font-size:11px; line-height:1.35; white-space:pre-wrap; word-break:break-word;
+  }
   .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:0 12px; }
   .grid2 .full { grid-column: 1 / -1; }
   #mapa { height:260px; border-radius:8px; border:1px solid var(--border); margin-top:6px; }
@@ -438,7 +444,14 @@ for (const id of ["dev-lat", "dev-lon"]) {
 // ---------------------------------------------------------------------
 function badgeModelo(loc) {
   const rotulo = { nenhum: "sem modelo", processando: "processando…", pronto: "pronto", erro: "erro" };
-  return `<span class="badge ${loc.modelo_status}" title="${loc.modelo_erro ? escapar(loc.modelo_erro) : ''}">${rotulo[loc.modelo_status] || loc.modelo_status}</span>`;
+  const selo = `<span class="badge ${loc.modelo_status}">${rotulo[loc.modelo_status] || loc.modelo_status}</span>`;
+  // Falhou: o motivo vai VISIVEL, embaixo do selo. Antes ficava so no
+  // atributo title, e na pratica ninguem o lia -- o operador via "erro" e
+  // nao tinha como saber que faltava atualizar o Node no servidor.
+  if (loc.modelo_status === "erro" && loc.modelo_erro) {
+    return selo + `<span class="erro-modelo">${escapar(loc.modelo_erro)}</span>`;
+  }
+  return selo;
 }
 
 function escapar(texto) {
