@@ -1504,6 +1504,22 @@ ver com 3D: vídeo, PTZ, detecções e telemetria. Duas frentes:
 Para confirmar em 5 segundos, cole no console:
 `document.createElement("canvas").getContext("webgl2") ? "ok" : "sem WebGL"`.
 
+**Atualizei o Node e agora o erro é outro: `sharp` … `Cannot read properties
+of undefined (reading 'output')`** — trocar o Node não basta, é preciso
+**reinstalar a ferramenta**. A árvore que o `npx` montou com o Node antigo
+fica guardada no cache e é reaproveitada (dá para conferir: o caminho
+`_npx/<hash>` no erro é o mesmo de antes). Ela não traz o binário nativo
+correto do `sharp`, e a falha só aparece mais adiante.
+
+O servidor agora percebe isso sozinho: ele anota com qual Node a árvore foi
+montada e a descarta na primeira execução depois de uma troca — aparece
+`[modelos] o Node mudou (18 -> 20): descartando a arvore do npx` no log.
+Se precisar forçar à mão, é só apagar:
+
+```bash
+rm -rf /opt/oiticica/dashboard_oiticica_test/server/.cache-npm
+```
+
 **O modelo dá `erro` dizendo que o Node é antigo demais** (`SyntaxError:
 Unexpected token 'with'`, ou a mensagem “este servidor tem o Node 18…”) — é o
 Node do servidor, não o seu `.glb`. Instale o Node 20 ou superior; o passo a
