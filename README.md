@@ -1504,6 +1504,28 @@ ver com 3D: vídeo, PTZ, detecções e telemetria. Duas frentes:
 Para confirmar em 5 segundos, cole no console:
 `document.createElement("canvas").getContext("webgl2") ? "ok" : "sem WebGL"`.
 
+**O modelo dá `erro` com `EACCES: permission denied, /home/<usuário>/.npm`**
+— e o npm sugere `sudo chown -R ... /home/<usuário>/.npm`. **Não faça isso: a
+sugestão do npm está errada neste caso.** O problema nunca foi o dono do
+arquivo. O serviço roda com `ProtectHome=true`
+(`server/dashboard-oiticica.service`), que torna `/home` um diretório **vazio
+e inacessível** para ele — por endurecimento, de propósito. O npm queria
+gravar cache e logs em `$HOME/.npm`, um caminho que, para aquele processo,
+simplesmente não existe. O `chown` mudaria a permissão de um arquivo que o
+serviço nem enxerga.
+
+Corrigido: o cache do npm passou a ficar em `server/.cache-npm/`, dentro da
+única pasta em que o serviço pode escrever (`ReadWritePaths`). Funciona com ou
+sem `ProtectHome`, por systemd ou à mão. Basta atualizar:
+
+```bash
+cd /opt/oiticica/dashboard_oiticica_test && git pull origin main
+sudo systemctl restart dashboard-oiticica
+```
+
+A pasta chega a ~150 MB depois do primeiro uso (é o cache do npm, não o seu
+modelo) e está no `.gitignore`. Apagar é seguro: ela se refaz sozinha.
+
 **Cliquei em “Enviar modelo .glb” e nada acontece** — dois casos distintos,
 que se separam pela aba **Network** do F12:
 

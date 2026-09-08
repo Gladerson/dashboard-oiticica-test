@@ -45,6 +45,29 @@ MODELO_MAX_BYTES = 300 * 1024 * 1024
 # Para usar outra, exporte GLTF_TRANSFORM no server/.env.
 GLTF_TRANSFORM = os.getenv("GLTF_TRANSFORM", "@gltf-transform/cli@4.3.0")
 
+# Onde o npm pode escrever. O servico roda com ProtectHome=true (ver
+# server/dashboard-oiticica.service): para ele, /home e um diretorio VAZIO e
+# inacessivel. O npm, porem, guarda cache e logs em $HOME/.npm -- e falhava
+# com "EACCES: permission denied, /home/<user>/.npm/_logs", sugerindo um
+# `chown` que nao resolveria nada, porque o problema nunca foi o dono do
+# arquivo: e que aquele caminho simplesmente nao existe para este processo.
+#
+# A saida certa nao e afrouxar o endurecimento do servico, e sim dizer ao npm
+# onde escrever: dentro da propria pasta do projeto, que ja e a unica com
+# permissao de escrita (ReadWritePaths). Assim funciona com ou sem
+# ProtectHome, rodando por systemd ou a mao.
+CACHE_NPM = Path(".cache-npm")
+
+
+def _ambiente_npm():
+    CACHE_NPM.mkdir(parents=True, exist_ok=True)
+    caminho = str(CACHE_NPM.resolve())
+    env = os.environ.copy()
+    env["npm_config_cache"] = caminho
+    env["HOME"] = caminho          # npx e algumas libs ainda leem HOME direto
+    env["XDG_CACHE_HOME"] = caminho
+    return env
+
 
 def _caminho_backup(caminho_final: Path) -> Path:
     """O .glb como veio do upload (ainda comprimido em Draco). Guardado ao
@@ -212,6 +235,7 @@ def _descomprimir_draco(localidade_id, caminho_final: Path):
         subprocess.run(
             ["npx", "--yes", GLTF_TRANSFORM, "copy", str(backup), str(caminho_final)],
             check=True, capture_output=True, timeout=600, text=True,
+            env=_ambiente_npm(),
         )
         print(f"[modelos] {caminho_final.name}: descompressao concluida.")
         db.atualizar_status_modelo(localidade_id, "pronto")
@@ -253,6 +277,12 @@ def _explicar_falha_npx(e: subprocess.CalledProcessError) -> str:
         return ("a versao do Node deste servidor e antiga demais para a "
                 f"ferramenta '{GLTF_TRANSFORM}'. Instale o Node 20 ou "
                 "superior (README 17.4). Detalhe: " + saida.strip()[-400:])
+    if "EACCES" in saida and "/.npm" in saida:
+        return ("o npm nao conseguiu escrever o proprio cache. Este servidor "
+                "esta com uma versao antiga do projeto: atualize com "
+                "`git pull` e reinicie o servico (o cache do npm passou a "
+                "ficar dentro da pasta do projeto). Detalhe: "
+                + saida.strip()[-300:])
     if "ERR_MODULE_NOT_FOUND" in saida or "SyntaxError" in saida:
         return ("a ferramenta de descompressao nao rodou nesta versao do "
                 "Node -- atualize o Node para 20 ou superior (README 17.4). "
