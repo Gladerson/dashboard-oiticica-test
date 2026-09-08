@@ -1504,6 +1504,12 @@ ver com 3D: vídeo, PTZ, detecções e telemetria. Duas frentes:
 Para confirmar em 5 segundos, cole no console:
 `document.createElement("canvas").getContext("webgl2") ? "ok" : "sem WebGL"`.
 
+**O modelo dá `erro` dizendo que o Node é antigo demais** (`SyntaxError:
+Unexpected token 'with'`, ou a mensagem “este servidor tem o Node 18…”) — é o
+Node do servidor, não o seu `.glb`. Instale o Node 20 ou superior; o passo a
+passo está em §17.4. Vale mesmo com a versão da CLI fixada: `npx` resolve as
+**dependências** dela na hora, e elas já exigem Node 20.
+
 **O modelo dá `erro` com `EACCES: permission denied, /home/<usuário>/.npm`**
 — e o npm sugere `sudo chown -R ... /home/<usuário>/.npm`. **Não faça isso: a
 sugestão do npm está errada neste caso.** O problema nunca foi o dono do
@@ -2048,21 +2054,28 @@ sudo apt install -y python3-venv python3-pip python3-dev build-essential \
 `nodejs`/`npm` são só para a descompressão Draco do `.glb` no upload; o resto
 do servidor roda sem eles.
 
-**Versão do Node.** O servidor chama `npx @gltf-transform/cli@4.3.0` — a
-versão é **fixa no código** de propósito. Sem fixar, o `npx` baixaria sempre a
-mais recente do npm, e o projeto passaria a depender de algo que muda sozinho:
-foi exatamente o que aconteceu quando a CLI, da 4.4.1 em diante, passou a
-exigir Node ≥ 20 e o upload quebrou num servidor com o Node 18 do Ubuntu, sem
-nenhuma alteração aqui. A 4.3.0 roda no Node 18, 20 e 22.
-
-Se quiser uma versão mais nova da ferramenta, ponha `GLTF_TRANSFORM=` no
-`server/.env` — e aí instale o Node 20 ou superior antes:
+**O Node TEM de ser 20 ou superior**, e o pacote `nodejs` do Ubuntu 24.04
+instala o **18**. Confira e corrija:
 
 ```bash
-node -v                                    # o que está instalado
+node -v                                    # se disser v18.x, troque:
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
+node -v                                    # tem que dizer v20.x ou maior
 ```
+
+Por quê: o servidor chama `npx @gltf-transform/cli@4.3.0` — versão **fixa no
+código**, para o projeto não depender de algo que muda sozinho no npm. Mas
+**fixar a versão da ferramenta não fixa a árvore dela**: o `npx` resolve as
+dependências transitivas na hora, e uma delas (`sharp`, via `ndarray-pixels`)
+já usa `import … with { type: "json" }`, sintaxe que só existe do Node 20 em
+diante. Ou seja, não há versão da CLI que salve um servidor com o Node 18.
+
+Se um dia quiser outra versão da ferramenta, use `GLTF_TRANSFORM=` no
+`server/.env`.
+
+O servidor confere a versão do Node **antes** de tentar o upload e responde na
+hora, em vez de baixar a ferramenta inteira para falhar no fim.
 
 ### 17.5 Código e ambiente Python
 
