@@ -41,3 +41,6 @@ edge/hailort*.log
 *.bak
 *.bak_*
 __pycache__/
+
+# Cache do npm usado na descompressao Draco do .glb (ver server/dispositivos.py)
+server/.cache-npm/
