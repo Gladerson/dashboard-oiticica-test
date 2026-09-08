@@ -1832,35 +1832,76 @@ ls -lh /tmp/oiticica.dump /tmp/oiticica_arquivos.tgz
 
 ### 17.2 Primeiro acesso à VPS e usuário sem root
 
-Entre como root (a Contabo manda a senha por e-mail) e crie um usuário para
-a aplicação — o serviço nunca deve rodar como root:
+#### a) Ter uma chave SSH na sua máquina
 
 ```bash
-ssh root@IP_DA_VPS
+ls ~/.ssh/id_ed25519.pub || ssh-keygen -t ed25519 -C "oiticica"
+cat ~/.ssh/id_ed25519.pub      # é esta linha que vai para a VPS
+```
+
+#### b) Criar o usuário e instalar a chave — tudo como root
+
+O serviço nunca deve rodar como root, daí o usuário próprio. Ele é criado
+**sem senha** (`--disabled-password`): entra só por chave, que é mais seguro
+e evita ataque de força bruta.
+
+> **Justamente por não ter senha, `ssh-copy-id oiticica@IP` NÃO funciona** —
+> o `ssh-copy-id` precisa se autenticar para instalar a chave, e não há senha
+> para isso. Ele responde `Permission denied`. A chave tem de ser instalada
+> por dentro, como root.
+
+```bash
+ssh root@IP_DA_VPS            # senha que a Contabo mandou por e-mail
 
 adduser --disabled-password --gecos "" oiticica
 usermod -aG sudo oiticica
-mkdir -p /home/oiticica/.ssh && chmod 700 /home/oiticica/.ssh
+
+# COLE aqui a linha do seu id_ed25519.pub, entre as aspas:
+CHAVE="ssh-ed25519 AAAA... voce@sua-maquina"
+
+mkdir -p /home/oiticica/.ssh
+echo "$CHAVE" >> /home/oiticica/.ssh/authorized_keys
+chown -R oiticica:oiticica /home/oiticica/.ssh
+chmod 700 /home/oiticica/.ssh
+chmod 600 /home/oiticica/.ssh/authorized_keys
+
+# sudo sem pedir senha (o usuário não tem senha para digitar)
+echo "oiticica ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/oiticica
+chmod 440 /etc/sudoers.d/oiticica
 ```
 
-Na **sua máquina**, mande sua chave pública (crie uma com `ssh-keygen -t ed25519`
-se ainda não tiver):
+#### c) Testar a chave ANTES de endurecer o SSH
+
+Numa janela **nova** do terminal, na sua máquina:
 
 ```bash
-ssh-copy-id -i ~/.ssh/id_ed25519.pub oiticica@IP_DA_VPS
-ssh oiticica@IP_DA_VPS       # tem de entrar sem pedir senha
+ssh oiticica@IP_DA_VPS        # tem de entrar direto, sem pedir senha
+sudo whoami                   # tem de responder: root
 ```
 
-Com a chave funcionando, desligue o login por senha e por root:
+Só siga se as duas linhas funcionarem.
+
+#### d) Endurecer o SSH
+
+Os dois ajustes abaixo fecham a máquina para força bruta: ninguém entra com
+senha, e ninguém entra como root.
 
 ```bash
 sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/;s/^#\?PasswordAuthentication.*/PasswordAuthentication no/' \
     /etc/ssh/sshd_config
-sudo systemctl restart ssh
+sudo sshd -t && sudo systemctl restart ssh
 ```
 
-> Não feche a sessão atual antes de abrir **outra** e confirmar que ainda
-> entra. Se errar aqui, você fica de fora da máquina.
+> **Por que "sem fechar a sessão atual".** Se a sua chave não estiver
+> realmente instalada, esses dois ajustes te trancam do lado de fora: não há
+> mais senha para tentar. Então: **mantenha aberta** a janela em que você já
+> está conectado, abra **outra** janela e confirme que `ssh oiticica@IP_DA_VPS`
+> ainda entra. Se não entrar, desfaça pela janela antiga
+> (`sudo nano /etc/ssh/sshd_config`, volte `PasswordAuthentication yes`,
+> `sudo systemctl restart ssh`).
+>
+> Rede de segurança se você fechar tudo mesmo assim: o painel da Contabo tem
+> um **console VNC**, que entra pela tela da máquina sem passar pelo SSH.
 
 ### 17.3 Firewall
 
