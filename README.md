@@ -1500,6 +1500,34 @@ ver com 3D: vídeo, PTZ, detecções e telemetria. Duas frentes:
 Para confirmar em 5 segundos, cole no console:
 `document.createElement("canvas").getContext("webgl2") ? "ok" : "sem WebGL"`.
 
+**Troquei o `.glb` de uma localidade e o modelo antigo continua aparecendo**
+— era um bug, corrigido. O upload é guardado em
+`static/modelos/<id-da-localidade>.glb` e uma cópia do arquivo original (ainda
+comprimido em Draco) fica ao lado, como `<id>_original_draco.glb`. A
+descompressão lê **do backup** e escreve no arquivo servido. O backup só era
+criado quando ainda não existia — então, no segundo envio, a descompressão
+pegava o backup **do modelo anterior** e o escrevia por cima do que acabara de
+subir. O arquivo novo sumia sem nenhum erro: o painel dizia “pronto” e servia o
+modelo velho. Agora o backup antigo é apagado no momento do upload. Se você
+passou por isso antes da correção, basta reenviar o `.glb`.
+
+**Excluí a localidade no painel e o `.glb` continua no disco** — também era
+assim, também foi corrigido. A exclusão só apagava a linha do banco; os dois
+arquivos (o servido e o `_original_draco`) ficavam órfãos, dezenas de MB cada,
+sem ninguém para reclamá-los. Agora saem junto com a localidade.
+
+Para limpar órfãos deixados **antes** da correção, compare os arquivos com o
+que o banco ainda referencia:
+
+```bash
+cd /opt/oiticica/dashboard_oiticica_test/server/static/modelos
+psql "$DATABASE_URL" -tAc "select modelo_3d_path from localidades" | sed 's|.*/||'
+ls -l
+```
+
+Todo `.glb` cujo UUID não aparecer na primeira lista é órfão e pode ser
+apagado — junto com o `_original_draco.glb` de mesmo nome.
+
 **Diagnóstico só olha os últimos N registros e “não acha nada”** — com o
 Raspberry mandando telemetria a cada segundo, `journalctl -n 200` cobre uns
 200 **segundos**: as linhas da inicialização (`>> Malha carregada`,
