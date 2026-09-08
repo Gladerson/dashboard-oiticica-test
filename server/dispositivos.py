@@ -36,6 +36,44 @@ MODELOS_DIR.mkdir(parents=True, exist_ok=True)
 MODELO_MAX_BYTES = 300 * 1024 * 1024
 
 
+def _caminho_backup(caminho_final: Path) -> Path:
+    """O .glb como veio do upload (ainda comprimido em Draco). Guardado ao
+    lado do arquivo servido, com sufixo, porque a descompressao le DELE."""
+    return caminho_final.with_name(caminho_final.stem + "_original_draco.glb")
+
+
+def _apagar_modelo_do_disco(caminho) -> list[str]:
+    """Apaga o .glb de uma localidade e o backup do upload. Devolve o que
+    saiu, para o log.
+
+    So mexe DENTRO de static/modelos: o caminho vem do banco e um dia pode
+    vir de uma linha antiga (ou adulterada) apontando para fora."""
+    if not caminho:
+        return []
+    try:
+        alvo = Path(caminho).resolve()
+        raiz = MODELOS_DIR.resolve()
+        if not alvo.is_relative_to(raiz):
+            print(f"[modelos] recuso apagar fora de {raiz}: {alvo}")
+            return []
+    except Exception as e:
+        print(f"[modelos] caminho invalido '{caminho}': {e}")
+        return []
+
+    apagados = []
+    for f in (alvo, _caminho_backup(alvo)):
+        try:
+            if f.exists():
+                f.unlink()
+                apagados.append(f.name)
+        except OSError as e:
+            # Nao interrompe a exclusao da localidade por causa do disco: o
+            # cadastro sai do banco de qualquer forma, e um arquivo orfao e
+            # menos grave do que uma localidade que nao se consegue excluir.
+            print(f"[modelos] nao consegui apagar '{f}': {e}")
+    return apagados
+
+
 def _slug(texto):
     s = re.sub(r"[^a-z0-9]+", "-", texto.strip().lower()).strip("-")
     return s or "dispositivo"
@@ -157,7 +195,7 @@ def _dispositivo_publico(d):
 # so que chamada pela aplicacao em vez de rodada a mao por SSH).
 # ============================================================================
 def _descomprimir_draco(localidade_id, caminho_final: Path):
-    backup = caminho_final.with_name(caminho_final.stem + "_original_draco.glb")
+    backup = _caminho_backup(caminho_final)
     try:
         if not backup.exists():
             shutil.copy2(caminho_final, backup)
@@ -252,7 +290,16 @@ def instalar(app):
 
     @app.delete("/api/localidades/{localidade_id}")
     def excluir_localidade(localidade_id: str, _usuario=Depends(auth.usuario_atual)):
+        # O arquivo tem de sair JUNTO. Sem isto cada localidade excluida
+        # deixava dois .glb orfaos (o servido e o backup do upload), de
+        # dezenas de MB cada, que ninguem mais sabia a quem pertenciam --
+        # so restava conferir os UUIDs contra o banco, na mao.
+        loc = db.localidade_por_id(localidade_id)
         db.excluir_localidade(localidade_id)
+        if loc is not None:
+            apagados = _apagar_modelo_do_disco(loc.get("modelo_3d_path"))
+            if apagados:
+                print(f"[modelos] localidade excluida: apaguei {', '.join(apagados)}")
         # Os dispositivos que apontavam pra ela ficam sem localidade: os
         # runtimes em memoria precisam parar de usar o GeoModel antigo.
         registro.invalidar_localidade(localidade_id)
@@ -282,6 +329,12 @@ def instalar(app):
         except ValueError as e:
             destino.unlink(missing_ok=True)
             return JSONResponse({"error": str(e)}, status_code=400)
+
+        # O backup do upload ANTERIOR precisa morrer aqui. _descomprimir_draco
+        # so cria o backup se ele ainda nao existir, e descomprime LENDO dele
+        # -- com um backup velho no lugar, o modelo antigo era escrito por
+        # cima do que acabou de subir e o upload novo sumia sem erro nenhum.
+        _caminho_backup(destino).unlink(missing_ok=True)
 
         db.definir_modelo_localidade(localidade_id, str(destino))
         # O arquivo em disco ACABOU de ser sobrescrito: qualquer GeoModel ja
