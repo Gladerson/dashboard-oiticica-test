@@ -247,6 +247,32 @@ def _versao_node():
     return int(m.group(1)) if m else None
 
 
+def _preparar_cache_npm(major):
+    """Descarta a arvore que o npx montou se ela foi instalada com OUTRA
+    versao do Node.
+
+    Motivo concreto: a instalacao feita pelo npm do Node 18 pode nao trazer
+    o binario nativo certo do `sharp` (dependencia transitiva da CLI). A
+    arvore fica no cache, e depois de atualizar o Node ela e REAPROVEITADA --
+    mesmo hash em _npx/ --, e agora falha mais adiante, dentro do sharp:
+    "TypeError: Cannot read properties of undefined (reading 'output')".
+    Atualizar o Node sem limpar o cache nao resolve nada; e preciso
+    reinstalar. Isto faz isso sozinho, uma vez, na primeira execucao depois
+    da troca."""
+    marca = CACHE_NPM / ".node-major"
+    try:
+        anterior = marca.read_text().strip() if marca.exists() else ""
+        if anterior == str(major):
+            return
+        if (CACHE_NPM / "_npx").exists():
+            print(f"[modelos] o Node mudou ({anterior or 'desconhecido'} -> "
+                  f"{major}): descartando a arvore do npx para reinstalar.")
+            shutil.rmtree(CACHE_NPM / "_npx", ignore_errors=True)
+        marca.write_text(str(major))
+    except OSError as e:
+        print(f"[modelos] nao consegui preparar o cache do npm: {e}")
+
+
 def _descomprimir_draco(localidade_id, caminho_final: Path):
     backup = _caminho_backup(caminho_final)
     try:
@@ -261,6 +287,8 @@ def _descomprimir_draco(localidade_id, caminho_final: Path):
                     f".glb exige o Node {NODE_MINIMO} ou superior. Instale-o "
                     f"(README 17.4) e envie o modelo de novo.")
             return
+        if major is not None:
+            _preparar_cache_npm(major)
 
         if not backup.exists():
             shutil.copy2(caminho_final, backup)
@@ -314,6 +342,12 @@ def _explicar_falha_npx(e: subprocess.CalledProcessError) -> str:
                 "esta com uma versao antiga do projeto: atualize com "
                 "`git pull` e reinicie o servico (o cache do npm passou a "
                 "ficar dentro da pasta do projeto). Detalhe: "
+                + saida.strip()[-300:])
+    if "sharp" in saida and "reading 'output'" in saida:
+        return ("a ferramenta de descompressao esta com uma instalacao "
+                "quebrada no cache (o binario nativo do 'sharp' nao veio "
+                "completo). Apague a pasta server/.cache-npm e envie o "
+                "modelo de novo -- ela se refaz sozinha. Detalhe: "
                 + saida.strip()[-300:])
     if "ERR_MODULE_NOT_FOUND" in saida or "SyntaxError" in saida:
         return ("a ferramenta de descompressao nao rodou nesta versao do "
