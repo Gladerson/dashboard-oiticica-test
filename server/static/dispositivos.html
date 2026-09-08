@@ -492,7 +492,10 @@ async function carregarLocalidades() {
         inputArquivo.value = "";
         return;
       }
-      enviarModelo(loc.id, inputArquivo.files[0]);
+      enviarModelo(loc.id, inputArquivo.files[0], btnUpload);
+      // Sem isto, escolher DE NOVO o mesmo arquivo nao dispara 'change' --
+      // o valor do input nao mudou -- e o clique parece nao fazer nada.
+      inputArquivo.value = "";
     });
 
     const btnUpload = document.createElement("button");
@@ -606,20 +609,53 @@ document.getElementById("form-editar-loc").addEventListener("submit", async (ev)
   }
 });
 
-async function enviarModelo(localidadeId, arquivo) {
+function enviarModelo(localidadeId, arquivo, botao) {
   if (!arquivo) return;
   const dados = new FormData();
   dados.append("arquivo", arquivo);
-  try {
-    const r = await fetch(`${SERVER_BASE}/api/localidades/${localidadeId}/modelo`,
-                          { method: "POST", body: dados });
-    const j = await r.json();
-    if (!r.ok) { alert(j.error || "Falha ao enviar o modelo."); return; }
-  } catch (e) {
-    alert("Não consegui enviar o modelo.");
-    return;
-  }
-  carregarLocalidades();
+
+  // XMLHttpRequest em vez de fetch por um motivo so: o fetch NAO informa o
+  // progresso do envio. Um .glb de dezenas de MB para um servidor na nuvem
+  // leva de meio a varios minutos, e sem nenhum sinal na tela o operador
+  // conclui que o botao nao funcionou -- e clica de novo, empilhando
+  // uploads do mesmo arquivo.
+  const rotuloOriginal = botao ? botao.textContent : null;
+  const mostrar = (texto) => { if (botao) botao.textContent = texto; };
+  const restaurar = () => {
+    if (botao) { botao.disabled = false; botao.textContent = rotuloOriginal; }
+  };
+  if (botao) botao.disabled = true;
+  const tamanho = arquivo.size >= 1e6
+    ? `${(arquivo.size / 1e6).toFixed(arquivo.size >= 1e7 ? 0 : 1)} MB`
+    : `${Math.max(1, Math.round(arquivo.size / 1e3))} KB`;
+  mostrar(`enviando ${tamanho}…`);
+
+  const req = new XMLHttpRequest();
+  req.open("POST", `${SERVER_BASE}/api/localidades/${localidadeId}/modelo`);
+  req.upload.addEventListener("progress", (ev) => {
+    if (!ev.lengthComputable) return;
+    const pct = Math.round((ev.loaded / ev.total) * 100);
+    // 100% do UPLOAD nao e o fim: o servidor ainda grava e o painel so
+    // muda depois. Dizer "processando" evita a impressao de travamento.
+    mostrar(pct < 100 ? `enviando ${pct}%…` : "processando no servidor…");
+  });
+  req.addEventListener("load", () => {
+    restaurar();
+    let corpo = {};
+    try { corpo = JSON.parse(req.responseText || "{}"); } catch (e) {}
+    if (req.status < 200 || req.status >= 300) {
+      alert(corpo.error || `Falha ao enviar o modelo (HTTP ${req.status}).`);
+    }
+    // Recarrega em qualquer caso: no sucesso o selo vira "processando",
+    // e a descompressao Draco ainda vai levar seu tempo em segundo plano.
+    carregarLocalidades();
+  });
+  req.addEventListener("error", () => {
+    restaurar();
+    alert("Não consegui enviar o modelo: a conexão caiu durante o envio.");
+  });
+  req.addEventListener("abort", restaurar);
+  req.send(dados);
 }
 
 async function excluirLocalidade(id, nome) {

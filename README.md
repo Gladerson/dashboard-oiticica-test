@@ -1504,6 +1504,20 @@ ver com 3D: vídeo, PTZ, detecções e telemetria. Duas frentes:
 Para confirmar em 5 segundos, cole no console:
 `document.createElement("canvas").getContext("webgl2") ? "ok" : "sem WebGL"`.
 
+**Cliquei em “Enviar modelo .glb” e nada acontece** — dois casos distintos,
+que se separam pela aba **Network** do F12:
+
+* **aparece um `POST .../modelo` em andamento** → está enviando. Um `.glb` de
+  25–80 MB para um servidor na nuvem leva de dezenas de segundos a alguns
+  minutos. O botão agora mostra `enviando 42%…` e depois
+  `processando no servidor…`; se o seu ainda diz só “Enviar modelo .glb”,
+  recarregue a página com **Ctrl+Shift+R** (o navegador guardou o HTML antigo);
+* **não aparece requisição nenhuma** → o seletor de arquivo nem chegou a
+  abrir, ou você escolheu **o mesmo arquivo de antes**. Um `<input type=file>`
+  não dispara `change` quando o valor não muda — era um jeito real de o clique
+  parecer morto ao reenviar o mesmo `.glb`. Corrigido: o input é limpo depois
+  de cada envio.
+
 **O upload do `.glb` termina e a localidade fica com o selo `erro`** — o envio
 deu certo (o arquivo está em `static/modelos/`), quem falhou foi a
 descompressão Draco, que roda depois, em segundo plano. **O motivo agora
