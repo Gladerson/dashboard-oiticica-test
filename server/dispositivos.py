@@ -15,6 +15,7 @@
 # conexao MQTT, nao pelo nome no topico); so o de frame e por dispositivo,
 # porque esse nao passa pelo esquema de telemetria do ThingsBoard.
 # ============================================================================
+import os
 import re
 import secrets
 import shutil
@@ -34,6 +35,15 @@ MODELOS_DIR = Path("static/modelos")
 MODELOS_DIR.mkdir(parents=True, exist_ok=True)
 
 MODELO_MAX_BYTES = 300 * 1024 * 1024
+
+# Ferramenta que descomprime o Draco do .glb enviado. A VERSAO E FIXA de
+# proposito: sem ela, `npx` baixa sempre a mais recente do npm, e o projeto
+# passa a depender de algo que muda sozinho, sem nenhum commit aqui. Foi o
+# que aconteceu -- a partir da 4.4.1 a CLI exige Node >= 20, e num servidor
+# com o Node 18 do Ubuntu o upload passou a falhar do nada. A 4.3.0 e a
+# ultima que roda no Node 18, e roda igual no 20 e no 22.
+# Para usar outra, exporte GLTF_TRANSFORM no server/.env.
+GLTF_TRANSFORM = os.getenv("GLTF_TRANSFORM", "@gltf-transform/cli@4.3.0")
 
 
 def _caminho_backup(caminho_final: Path) -> Path:
@@ -200,9 +210,10 @@ def _descomprimir_draco(localidade_id, caminho_final: Path):
         if not backup.exists():
             shutil.copy2(caminho_final, backup)
         subprocess.run(
-            ["npx", "--yes", "@gltf-transform/cli", "copy", str(backup), str(caminho_final)],
+            ["npx", "--yes", GLTF_TRANSFORM, "copy", str(backup), str(caminho_final)],
             check=True, capture_output=True, timeout=600, text=True,
         )
+        print(f"[modelos] {caminho_final.name}: descompressao concluida.")
         db.atualizar_status_modelo(localidade_id, "pronto")
         # Sem isto, um dispositivo cujo runtime ja foi montado enquanto o
         # modelo ainda estava "processando" fica com geo=None PARA SEMPRE (o
@@ -213,17 +224,40 @@ def _descomprimir_draco(localidade_id, caminho_final: Path):
         # runtimes daquela localidade pra serem remontados no proximo acesso.
         registro.invalidar_localidade(localidade_id)
     except FileNotFoundError:
-        db.atualizar_status_modelo(
-            localidade_id, "erro",
-            "npx nao encontrado no servidor -- instale Node.js/npm "
-            "(sudo apt install -y nodejs npm) e envie o modelo de novo.")
+        _falhou(localidade_id,
+                "npx nao encontrado no servidor -- instale Node.js "
+                "(veja o README 17.4) e envie o modelo de novo.")
     except subprocess.CalledProcessError as e:
-        db.atualizar_status_modelo(localidade_id, "erro", (e.stderr or "")[:2000])
+        _falhou(localidade_id, _explicar_falha_npx(e))
     except subprocess.TimeoutExpired:
-        db.atualizar_status_modelo(
-            localidade_id, "erro", "tempo esgotado ao descomprimir (modelo grande demais?)")
+        _falhou(localidade_id,
+                "tempo esgotado ao descomprimir (modelo grande demais?)")
     except Exception as e:
-        db.atualizar_status_modelo(localidade_id, "erro", str(e))
+        _falhou(localidade_id, f"{type(e).__name__}: {e}")
+
+
+def _falhou(localidade_id, mensagem):
+    """Grava o erro NOS DOIS lugares. So no banco nao basta: ele acabava
+    escondido no 'title' do selo do painel, e quem estava no servidor via
+    apenas 'erro', sem uma linha no journal para investigar."""
+    print(f"[modelos] falha ao preparar o modelo da localidade "
+          f"{localidade_id}: {mensagem}")
+    db.atualizar_status_modelo(localidade_id, "erro", mensagem[:2000])
+
+
+def _explicar_falha_npx(e: subprocess.CalledProcessError) -> str:
+    """A saida do npm e longa e o motivo real costuma ser uma linha no
+    meio. Traduz os casos conhecidos antes de devolver o texto cru."""
+    saida = ((e.stderr or "") + (e.stdout or ""))
+    if "EBADENGINE" in saida or "Unsupported engine" in saida:
+        return ("a versao do Node deste servidor e antiga demais para a "
+                f"ferramenta '{GLTF_TRANSFORM}'. Instale o Node 20 ou "
+                "superior (README 17.4). Detalhe: " + saida.strip()[-400:])
+    if "ERR_MODULE_NOT_FOUND" in saida or "SyntaxError" in saida:
+        return ("a ferramenta de descompressao nao rodou nesta versao do "
+                "Node -- atualize o Node para 20 ou superior (README 17.4). "
+                "Detalhe: " + saida.strip()[-400:])
+    return saida.strip()[:2000] or f"npx terminou com codigo {e.returncode}"
 
 
 # ============================================================================
