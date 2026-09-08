@@ -1614,7 +1614,9 @@ só se o servidor alcançar a rede dele.
 Pontos de atenção:
 
 - **`websockets>=12` é dependência nova do Raspberry** (`edge/requirements.txt`).
-  Sem ela o agente sobe, avisa no log e o PTZ fica só pela API local.
+  Sem ela o agente sobe, avisa no log e o PTZ fica só pela API local. Instale
+  **dentro do venv** — fora dele o Raspberry Pi OS recusa (PEP 668), e o
+  serviço usa `edge/venv/bin/python` de qualquer jeito.
 - **`API_HOST` mudou de padrão** (`0.0.0.0` → `127.0.0.1`). Quem depender do
   modo LAN precisa voltar para `0.0.0.0` explicitamente no `edge/.env`.
 - **`embreex` está no `server/requirements.txt` mas pode não estar instalado.**
@@ -1710,9 +1712,13 @@ Pontos de atenção:
 **1. Servidor**
 
 ```bash
-cd ~/dashboard-oiticica-test
+cd ~/Projetos/dashboard_oiticica_test
 git pull origin main
-pip install -r server/requirements.txt      # confirma o embreex
+
+cd server && source venv/bin/activate       # SEM o venv o pip recusa (PEP 668)
+pip install -r requirements.txt             # confirma o embreex
+deactivate
+
 sudo systemctl restart dashboard-oiticica
 ```
 
@@ -1729,14 +1735,27 @@ No log da subida devem aparecer as duas linhas novas:
 
 **2. Raspberry**
 
+O `pip` **precisa** ser o do venv (`edge/venv`). O Raspberry Pi OS bloqueia
+instalação no Python do sistema (PEP 668, `externally-managed-environment`), e
+mesmo que você force com `--break-system-packages` não adiantaria: o serviço
+roda `edge/venv/bin/python`, que não enxerga o pacote instalado fora dele.
+
 ```bash
-cd ~/dashboard-oiticica-test
+cd ~/Projetos/dashboard_oiticica_test
 git pull origin main
-pip install -r edge/requirements.txt        # traz o websockets>=12
+
+cd edge && source venv/bin/activate
+pip install -r requirements.txt             # traz o websockets>=12
+python -c "import websockets; print('websockets', websockets.__version__)"
+deactivate
+
 sudo systemctl restart agente-borda
+journalctl -u agente-borda -n 30 --no-pager | grep -E "\[ws\]|Traceback"
 ```
 
-Confira no log do agente: `[ws] canal de comandos aberto em ws://.../api/edge/ws`.
+A última linha deve mostrar
+`[ws] canal de comandos aberto em ws://<servidor>/api/edge/ws`.
+
 Se quiser o modo LAN (navegador falando direto com o Pi quando o operador
 estiver no local), acrescente ao `edge/.env`:
 
