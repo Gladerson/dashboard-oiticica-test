@@ -58,6 +58,14 @@ GLTF_TRANSFORM = os.getenv("GLTF_TRANSFORM", "@gltf-transform/cli@4.3.0")
 # ProtectHome, rodando por systemd ou a mao.
 CACHE_NPM = Path(".cache-npm")
 
+# Versao minima do Node. Fixar a versao da CLI NAO fixa a arvore dela: o
+# `npx` resolve as dependencias transitivas na hora, e uma delas (sharp, via
+# ndarray-pixels) ja usa `import ... with { type: "json" }`, sintaxe que so
+# existe do Node 20 em diante. Ou seja, nao ha versao da ferramenta que
+# salve um servidor com o Node 18 -- e o Ubuntu 24.04 instala justamente o
+# 18 no pacote `nodejs`. Ver README 17.4.
+NODE_MINIMO = 20
+
 
 def _ambiente_npm():
     CACHE_NPM.mkdir(parents=True, exist_ok=True)
@@ -227,9 +235,33 @@ def _dispositivo_publico(d):
 # Descompressao Draco em background (mesma ferramenta do prepare_model.sh,
 # so que chamada pela aplicacao em vez de rodada a mao por SSH).
 # ============================================================================
+def _versao_node():
+    """Numero maior da versao do Node instalada, ou None se nao der para
+    descobrir (ai seguimos em frente e deixamos o npx falar)."""
+    try:
+        r = subprocess.run(["node", "-v"], capture_output=True, text=True,
+                           timeout=20, env=_ambiente_npm())
+    except Exception:
+        return None
+    m = re.match(r"v(\d+)", (r.stdout or "").strip())
+    return int(m.group(1)) if m else None
+
+
 def _descomprimir_draco(localidade_id, caminho_final: Path):
     backup = _caminho_backup(caminho_final)
     try:
+        # Checar ANTES de rodar o npx: sem isto o operador espera o download
+        # da ferramenta inteira -- perto de um minuto -- para so entao ver um
+        # SyntaxError no meio da saida do Node. A checagem custa milissegundos
+        # e diz o que fazer.
+        major = _versao_node()
+        if major is not None and major < NODE_MINIMO:
+            _falhou(localidade_id,
+                    f"este servidor tem o Node {major}, e a descompressao do "
+                    f".glb exige o Node {NODE_MINIMO} ou superior. Instale-o "
+                    f"(README 17.4) e envie o modelo de novo.")
+            return
+
         if not backup.exists():
             shutil.copy2(caminho_final, backup)
         subprocess.run(
