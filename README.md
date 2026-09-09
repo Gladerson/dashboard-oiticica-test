@@ -1656,6 +1656,33 @@ Se precisar forçar à mão, é só apagar:
 rm -rf /opt/oiticica/dashboard_oiticica_test/server/.cache-npm
 ```
 
+**O painel mostra o equipamento funcionando, mas `journalctl … | grep
+"\[ws\]"` no Raspberry não devolve nada** — não é o agente, é a unit do
+systemd. Sob o systemd o stdout não é um terminal, então o Python o
+bufferiza em blocos de 8 KB: as linhas de `print()` ficam presas até o
+processo morrer. Como **todo** o diagnóstico do agente usa `print()`
+(`[camera]`, `[video]`, `[ws]`, `[motion]`, `[canal]`), o journal parece
+vazio mesmo com tudo funcionando. Só as linhas do uvicorn aparecem, porque
+`logging` vai para o stderr, que não é bufferizado.
+
+Medido: um script que imprime 3 linhas e dorme 6 s, com o stdout num pipe,
+tem **0 linhas** no destino depois de 3 s; com `PYTHONUNBUFFERED=1`, tem as
+**3**.
+
+A correção já está em `edge/agente-borda.service`. Para aplicar num
+Raspberry que instalou a unit antes:
+
+```bash
+cd ~/Projetos/dashboard_oiticica_test && git pull origin main
+sudo cp edge/agente-borda.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart agente-borda
+```
+
+*(Se você ajustou usuário ou caminhos na unit instalada, edite em vez de
+copiar por cima: basta acrescentar `Environment=PYTHONUNBUFFERED=1` na
+seção `[Service]`.)*
+
 **O agente reinicia sem parar e o equipamento some do painel** — no
 `systemctl status agente-borda` aparece `activating (auto-restart)` e no
 journal um traceback terminando em `PTZController(...)` /
