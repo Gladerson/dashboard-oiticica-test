@@ -262,6 +262,10 @@
                        text-align:center; }
   #borda-linha .pill.on  { border-color:#3f9c5c; color:var(--text); }
   #borda-linha .pill.off { border-color:#a8871f; }
+  /* Camera fora do ar com o Raspberry vivo: e um estado proprio, nem "ok"
+     nem "offline". Vermelho porque, numa barragem, camera muda por horas
+     sem ninguem perceber e exatamente o que este sistema existe para evitar. */
+  #borda-linha .pill.alerta { border-color:var(--danger); color:var(--danger); }
   #limiar-row { margin-top:10px; }
   #limiar-cabecalho { display:flex; justify-content:space-between; align-items:baseline;
       font-size:11px; color:var(--muted); margin-bottom:4px; }
@@ -2126,11 +2130,23 @@ async function atualizarPainelBorda() {
 
   const rel = j.relatado || {};
   bordaOnline = !!j.online;   // usado pelo vigia do primeiro quadro
+  // Tres estados, nao dois. Antes havia so "borda: <transporte>" e "borda:
+  // offline", e uma camera desligada com o Raspberry perfeito caia no
+  // segundo -- mandando o operador conferir o equipamento errado. Agora:
+  //   sem telemetria             -> o Raspberry e que nao esta reportando
+  //   telemetria com camera_ok=false -> Raspberry vivo, camera muda
+  //   telemetria normal          -> operando
   const online = document.getElementById("pill-online");
-  online.textContent = j.online
-    ? `borda: ${rel.transporte || j.estado.transporte}`
-    : "borda: offline";
-  online.className = "pill " + (j.online ? "on" : "off");
+  const semCamera = j.online && rel.camera_ok === false;
+  online.textContent = !j.online ? "borda: offline"
+                     : semCamera ? "câmera sem resposta"
+                     : `borda: ${rel.transporte || j.estado.transporte}`;
+  online.className = "pill " + (!j.online ? "off" : semCamera ? "alerta" : "on");
+  online.title = !j.online
+    ? "O Raspberry não está enviando telemetria: equipamento desligado, sem rede ou agente parado."
+    : semCamera
+      ? `O Raspberry está online; a câmera é que não responde.\n${rel.camera_erro || ""}`
+      : "";
   document.getElementById("pill-fps").textContent =
     (rel.fps !== undefined ? rel.fps : "--") + " fps";
   document.getElementById("pill-npu").textContent =
