@@ -1883,7 +1883,9 @@ Pontos de atenção:
 - **O firmware ESP32 ainda fala MQTT.** O servidor já aceita o payload achatado
   do gateway por HTTP (`POST /api/edge/dados`); falta trocar o `PubSubClient`
   por um POST HTTP nos `.ino`, usando o `DEVICE_TOKEN` do cadastro.
-- **Sem HTTPS ainda.** Combinado para depois da migração para a VM.
+- **HTTPS**: o passo a passo está em §17-bis. Enquanto não estiver feito, o
+  token dos dispositivos e o cookie de sessão trafegam em claro. Quando
+  estiver, o **modo LAN deixa de valer** (conteúdo misto — ver §17-bis).
 
 - **Curso mecânico do PTZ não calibrado.** A câmera reporta pan/tilt
   normalizados (−1..1) e assume-se ±180°/±90°. É propriedade da câmera, não do
@@ -2375,17 +2377,179 @@ mtr -rwzc 20 IP_DA_VPS
 Se o `mtr` mostrar Miami no caminho, o PTZ vai parecer lento — ver a análise
 de orçamento de latência que motivou a escolha da região.
 
+### 17.13 HTTPS com Let's Encrypt
+
+Passo a passo completo em §17-bis. Enquanto não estiver feito, o token dos
+dispositivos e o cookie de sessão trafegam em claro pela internet.
+
 ### 17.12 Antes de considerar em produção
 
-- [ ] **HTTPS.** Enquanto for HTTP puro na internet aberta, o token dos
-      dispositivos e o cookie de sessão trafegam em claro. Com um domínio
-      apontando para a VPS:
-      `sudo apt install certbot python3-certbot-nginx && sudo certbot --nginx -d SEU.DOMINIO`,
-      e depois `SESSION_COOKIE_SECURE=true` no `.env`. Sem domínio, restrinja
-      o acesso no `ufw` aos IPs conhecidos até resolver.
+- [ ] **HTTPS** — §17-bis.
 - [ ] **Retenção do `history/` e da tabela `telemetria`** (§16): as duas
       crescem sem teto hoje.
 - [ ] **Backup do banco.** Um `pg_dump` diário para fora da VPS:
       `0 3 * * * pg_dump ... -Fc -f /var/backups/oiticica-$(date +\%F).dump`
 - [ ] **Fuso horário** da VPS, se quiser os horários do painel em local:
       `sudo timedatectl set-timezone America/Fortaleza`
+
+
+---
+
+## 17-bis. HTTPS com Let's Encrypt
+
+Escrito para `hydroconecta.com.br` → `13.140.40.65`. Troque o domínio se for
+outro; o resto é igual.
+
+O certificado é gratuito, dura 90 dias e se renova sozinho. O `certbot`
+edita o arquivo do nginx por conta própria — inclusive preservando os
+ajustes de WebSocket e de upload que estão lá (§17.9), porque ele copia o
+bloco `server` inteiro para a porta 443.
+
+### 1. Conferir o DNS antes de qualquer coisa
+
+O Let's Encrypt valida o domínio acessando o servidor pela porta 80. Se o
+DNS não estiver propagado, a emissão falha e **queima uma das cinco
+tentativas por hora** que a Let's Encrypt permite.
+
+```bash
+dig +short hydroconecta.com.br
+dig +short www.hydroconecta.com.br
+```
+
+O primeiro tem de responder `13.140.40.65`. Se o `www` **não** responder,
+tire o `-d www...` do comando do passo 4 — pedir certificado para um nome que
+não aponta para a máquina faz a emissão inteira falhar.
+
+### 2. Abrir a porta 443
+
+```bash
+sudo ufw allow 443/tcp
+sudo ufw status
+```
+
+A 80 continua aberta: é por ela que a renovação se valida a cada 60 dias.
+
+### 3. Pôr o domínio no nginx
+
+O bloco atual responde por `server_name _;` (qualquer nome). O certbot
+precisa achar o bloco **pelo nome do domínio**:
+
+```bash
+sudo sed -i 's/^\( *\)server_name .*/\1server_name hydroconecta.com.br www.hydroconecta.com.br;/' \
+     /etc/nginx/sites-available/oiticica
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Confira: `grep server_name /etc/nginx/sites-available/oiticica`
+
+### 4. Emitir o certificado
+
+```bash
+sudo apt update && sudo apt install -y certbot python3-certbot-nginx
+
+sudo certbot --nginx \
+     -d hydroconecta.com.br -d www.hydroconecta.com.br \
+     --agree-tos --redirect --email SEU@EMAIL.COM --no-eff-email
+```
+
+- `--redirect` faz o nginx mandar todo HTTP para HTTPS. É o que se quer: sem
+  isso, quem digitar o endereço sem `https://` continua trafegando em claro.
+- o e-mail recebe o aviso quando um certificado estiver perto de vencer sem
+  ter renovado — vale pôr um que você leia.
+
+Sucesso termina com `Congratulations! ... /etc/letsencrypt/live/...`.
+
+### 5. Conferir o que o certbot fez
+
+```bash
+sudo nginx -t
+grep -nE "listen|ssl_certificate|301|client_max_body_size|Upgrade" \
+     /etc/nginx/sites-available/oiticica
+```
+
+Tem de aparecer `listen 443 ssl`, as duas linhas `ssl_certificate`, o
+`return 301` no bloco da porta 80 e — importante — o `client_max_body_size`
+e o `proxy_set_header Upgrade` **dentro do bloco 443**. Se o upload do `.glb`
+ou o WebSocket tiverem ficado de fora, é só copiá-los para lá e recarregar.
+
+### 6. Cookie de sessão só por HTTPS
+
+```bash
+cd /opt/oiticica/dashboard_oiticica_test/server
+grep -q '^SESSION_COOKIE_SECURE' .env \
+  && sudo sed -i 's/^SESSION_COOKIE_SECURE=.*/SESSION_COOKIE_SECURE=true/' .env \
+  || echo 'SESSION_COOKIE_SECURE=true' | sudo tee -a .env
+sudo systemctl restart dashboard-oiticica
+```
+
+Com isto o navegador passa a recusar mandar o cookie por HTTP — o que fecha a
+janela de um cookie de sessão capturado em rede aberta. **Só ligue depois que
+o HTTPS estiver funcionando**: com o cookie marcado como `Secure` e o site em
+HTTP, ninguém mais consegue entrar.
+
+Não é preciso mexer em `FORWARDED_ALLOW_IPS`: o nginx já manda
+`X-Forwarded-Proto: https` e o servidor escuta só em `127.0.0.1`.
+
+### 7. Apontar o Raspberry para o domínio
+
+```bash
+# no Raspberry
+nano ~/Projetos/dashboard_oiticica_test/edge/.env
+#   SERVER_URL=https://hydroconecta.com.br
+sudo systemctl restart agente-borda
+sudo journalctl -u agente-borda -n 20 --no-pager | grep "\[ws\]"
+```
+
+Tem de aparecer `[ws] canal de comandos aberto em wss://hydroconecta.com.br/api/edge/ws`.
+O agente converte `https://` em `wss://` sozinho — não existe variável
+separada para o WebSocket.
+
+Os ESP32, quando entrarem, apontam para o mesmo `https://`.
+
+### 8. Conferir
+
+```bash
+curl -sI https://hydroconecta.com.br/login | head -3     # 200
+curl -sI http://hydroconecta.com.br/login  | head -3     # 301 para https
+sudo journalctl -u dashboard-oiticica -n 30 --no-pager | grep "\[ws\]"
+```
+
+No navegador: cadeado fechado, login, PTZ, imagem da câmera e upload de um
+`.glb` (é o que exercita `client_max_body_size` e o tempo limite de uma vez).
+
+### 9. Renovação automática
+
+O pacote já instala um `timer` que tenta renovar duas vezes por dia e só age
+quando faltam menos de 30 dias. Confira que existe e teste sem gastar cota:
+
+```bash
+systemctl list-timers | grep certbot
+sudo certbot renew --dry-run
+```
+
+`Congratulations, all simulated renewals succeeded` e está resolvido. Não
+precisa de cron próprio.
+
+### O que deixa de funcionar: o modo LAN
+
+Página em HTTPS não pode falar com `http://192.168.0.x:8090` — o navegador
+bloqueia como conteúdo misto. O modo LAN (§9-quater), que fazia o navegador
+mandar o PTZ direto para o Raspberry quando os dois estão na mesma rede,
+**para de valer** quando o painel é servido por HTTPS.
+
+Não quebra nada: a sondagem falha em silêncio e o dashboard usa o caminho do
+servidor, que sempre funcionou. O custo é latência — cerca de 100 ms a mais
+por comando, contra os ~290 ms medidos no modo LAN (§14). Devolver o modo LAN
+sob HTTPS exigiria um certificado válido para o agente dentro da rede local,
+o que não se resolve com Let's Encrypt.
+
+### Se a emissão falhar
+
+| Mensagem | Causa |
+|---|---|
+| `DNS problem: NXDOMAIN` | o nome não resolve — passo 1 |
+| `Timeout during connect` | porta 80 fechada no `ufw` ou no firewall da Contabo |
+| `Invalid response ... 404` | o nginx não está servindo aquele `server_name` — passo 3 |
+| `too many failed authorizations` | cota da Let's Encrypt (5 falhas/hora). Espere uma hora e só tente de novo com o DNS conferido |
+
+Para depurar sem gastar cota, acrescente `--dry-run` ao comando do passo 4.
