@@ -81,6 +81,11 @@ importa quando o Pi estiver atrás de NAT ou 4G.
 dashboard_oiticica_test/
 ├── install_desktop.sh              # instalador do servidor (Debian/Ubuntu/Zorin)
 │
+├── firmware/                       # ESP32: controlador (LoRa) e gateway (HTTPS)
+│   ├── libraries/HydroConecta/     # protocolo LoRa, montador JSON e regras -- sem Arduino
+│   ├── gateway_lora/               # N equipamentos -> um POST HTTPS
+│   ├── sensor_nivel/               # radar Modbus -> LoRa com ACK
+│   └── testes/                     # suite que roda no PC, com g++
 ├── edge/                           # AGENTE DE BORDA — roda no Raspberry Pi (definitivo)
 │   ├── agente_borda.py             # processo principal: PTZ + inferência + transporte + API 8090
 │   ├── inferencia_hailo.py         # pipeline híbrido HEF (NPU) + ONNX (CPU); letterbox, NMS, máscara
@@ -1138,6 +1143,148 @@ polling de 60 s como rede de segurança.
 
 ---
 
+## 9-sexies. Firmware dos ESP32 (controlador e gateway)
+
+Os dois firmwares estão em **`firmware/`**, com uma biblioteca compartilhada e
+uma suíte de testes que roda no PC. Ver `firmware/README.md` para abrir na
+Arduino IDE.
+
+### Quem faz o quê
+
+```text
+RADAR (Modbus RTU)
+   |  RS-485
+   v
+CONTROLADOR  firmware/sensor_nivel/        mede e entrega distancia BRUTA
+   |  LoRa  "nivel-rd01|12.500|1*6B"   <-- ACK: "ACK:nivel-rd01"
+   v
+GATEWAY      firmware/gateway_lora/         aplica as regras, agrega N equipamentos
+   |  HTTPS  POST /api/edge/dados  (Bearer <token do gateway>)
+   v
+SERVIDOR
+```
+
+O controlador **não** calcula percentual, volume nem cota. Ele mede distância.
+Toda a regra de negócio mora no gateway
+(`firmware/libraries/HydroConecta/RegrasNivel.h`) — assim, recalibrar o
+reservatório é mexer em **um** lugar, e não subir numa torre para reprogramar
+cada controlador.
+
+### Um gateway, N equipamentos, N telemetrias cada
+
+O payload é **aninhado**, um objeto por equipamento:
+
+```json
+{ "dispositivos": ["nivel-rd01", "nivel-rd02"],
+  "values": {
+    "nivel-rd01": { "status": "on", "distancia": 18.000, "uso_percentual": 60.00,
+                    "volume_m3": 445200000, "cota_atual": 104.808,
+                    "alerta_revanche": false },
+    "nivel-rd02": { "status": "off", "pacotes": 0 } } }
+```
+
+Cada chave de primeiro nível dentro de `values` vira um **`sub_id`** no
+servidor; cada chave de dentro, uma **telemetria** daquele `sub_id`. É o que
+alimenta os widgets e os alarmes do **Monitoramento** (§9-quinquies).
+
+A forma achatada com prefixo (`nivel-rd01_distancia`) continua aceita, mas a
+aninhada é melhor: o servidor não precisa adivinhar onde termina o `sub_id` e
+começa a chave (ver `separar()` em `server/telemetria.py`). O campo
+`dispositivos` é redundante de propósito — garante a separação correta já no
+**primeiro** envio, quando o servidor ainda não conhece nenhum equipamento
+daquele gateway.
+
+`status` tem três valores, e a diferença importa: `off` = não chega pacote
+(problema de enlace ou energia no controlador); `erro` = chega pacote, mas o
+sensor físico falhou (problema do instrumento); `on` = medindo.
+
+### O que mudou em relação aos firmwares anteriores
+
+| Antes | Agora | Por quê |
+|---|---|---|
+| MQTT em texto claro para um IP | **HTTPS** para o domínio, CA da Let's Encrypt conferida no ESP32 | o token trafegava em claro |
+| Token do ThingsBoard | Token do dispositivo, do painel | um cadastro só, com dono e tipo |
+| Pacote LoRa sem verificação | **Checksum** (estilo NMEA) | bastava ter dois `\|` para uma leitura corrompida virar nível de reservatório |
+| Watchdog ligado **depois** do setup de rede | Ligado **antes** | um modem mudo travava o setup para sempre, sem ninguém para resgatar |
+| `String` no caminho quente | Buffers fixos | heap fragmentado é a causa clássica de "parou de enviar depois de meses" |
+| `DeviceState states[20]` fixo | Vetor dimensionado pela tabela | a 21ª linha corrompia memória em silêncio |
+| `cota = (perc/100) × cota_max` | `cota = cota_fundo + fração × (cota_max − cota_fundo)` | **a fórmula antiga tratava a cota como proporcional ao percentual** — com o reservatório vazio dava "cota 0 m", o nível do mar, e não a cota do fundo |
+| Percentual travado só no piso | Travado em 0 e em 100 | onda ou eco em estrutura produzia "112%" e volume maior que o total |
+| Resposta Modbus: só CRC e endereço | Também função e contagem de bytes | uma resposta de exceção do sensor podia ser lida como medida |
+| `esp_task_wdt_init()` sem `deinit()` no controlador | `deinit()` antes | num core que já inicializou o watchdog, o init falhava calado: ficava-se **sem watchdog achando que tinha** |
+
+### Disponibilidade: o que garante que não trava
+
+- **Watchdog cobre o setup inteiro** (180 s no gateway, 30 s no controlador).
+  Nenhuma espera longa usa `delay()` direto — `esperarComWatchdog()` alimenta
+  o cão durante a espera.
+- **Nada bloqueia o LoRa.** Recepção caractere a caractere, sem
+  `readStringUntil()` (que travava até 1 s esperando um `
+` que podia não vir).
+- **Tempos de HTTP explícitos** (8 s para conectar, 8 s para responder).
+  Durante o POST o LoRa acumula no buffer da UART — 2 KB, cerca de 60 pacotes,
+  folga larga para a cadência de 15 s.
+- **Escada de recuperação** no gateway: falha → 4 falhas seguidas refazem a
+  conexão → 30 min sem rede fazem *reboot seguro* (desliga o rádio do modem
+  antes, para ele não voltar num estado que a operadora recusa) → 3 reboots
+  consecutivos param o ciclo e esperam 30 min. O contador vive na RTC RAM e
+  sobrevive ao reinício.
+- **Nunca envia meio JSON.** Se o payload não couber no buffer, **nada** é
+  enviado e o log diz o motivo. Meio corpo viraria 400 e mandaria quem
+  investiga para o lugar errado.
+- **NaN e infinito viram `null`**, não `nan` — que quebraria o corpo inteiro e
+  derrubaria todas as telemetrias daquele envio por causa de uma só.
+- **`401` é diagnosticado como token, não como rede.** Reconectar não
+  resolveria, e a mensagem diz isso.
+
+### Ordem de atualização em campo (não derruba nada)
+
+1. **Gateway primeiro.** Ele aceita pacotes **com e sem** checksum, e anota no
+   log quem ainda está na versão antiga (`pacote SEM checksum`).
+2. **Controladores depois**, um a um, no ritmo que der.
+
+O caminho contrário também funciona — um controlador novo manda `*CS`, e um
+gateway antigo ignora o sufixo, porque ele só olhava os dois `|`. Mas aí a
+verificação não acontece; prefira a ordem acima.
+
+### Testes
+
+```bash
+g++ -std=c++17 -Wall -Wextra -I firmware/libraries/HydroConecta \
+    firmware/testes/teste_firmware.cpp -o /tmp/teste && /tmp/teste
+```
+
+52 verificações: formato do pacote (íntegro, corrompido, truncado, campos
+inválidos, ACK de id parecido), montador de JSON (payload byte a byte,
+estouro de buffer, NaN, texto que quebraria o documento) e regras de nível
+(vazio, cheio, meio, travas, calibrações incoerentes).
+
+### Limitações conhecidas
+
+- **TLS no caminho 4G não confere a cadeia.** Quem faz o TLS é o SIM7600, e
+  validar exigiria carregar o certificado raiz **no modem** (`AT+CCERTDOWN`),
+  o que este sketch não faz. O tráfego vai cifrado, mas o servidor não é
+  autenticado: um ataque no meio do enlace da operadora poderia capturar o
+  `DEVICE_TOKEN`. **No Wi-Fi a cadeia é conferida normalmente.** Onde houver
+  Wi-Fi, prefira Wi-Fi.
+- **Telemetria produzida offline é perdida.** O servidor carimba a hora na
+  chegada (`gravar_telemetria` em `server/db.py`), então reenviar amostras
+  antigas as gravaria com a hora errada — pior que perdê-las. Bufferizar exige
+  antes o servidor aceitar um instante vindo do equipamento.
+- **Volume é aproximação prismática.** `volume = fração × volume_total` supõe
+  paredes verticais; nenhum reservatório real é assim. Serve como ordem de
+  grandeza, não como medida. O certo é uma curva cota × volume do projeto,
+  interpolada — trocar só `hc_calcular_nivel()` basta.
+- **`cota_fundo` precisa ser confirmada** no projeto de cada barragem. Um erro
+  ali desloca todas as leituras de cota.
+- **Os firmwares não foram compilados para o ESP32 nem gravados em hardware**
+  neste ambiente (não há toolchain Arduino nem os equipamentos). O que foi
+  testado de verdade: os três cabeçalhos compartilhados com `g++`, e o payload
+  real do gateway enviado ao servidor real, conferindo a separação em
+  `sub_id`/chave no banco.
+
+---
+
 ## 10. Referência de API
 
 ### Agente, no Raspberry (porta 8090)
@@ -1988,9 +2135,10 @@ Pontos de atenção:
 - **Retenção da tabela `telemetria`.** A ingestão grava para sempre;
   `db.limpar_telemetria_antiga(dias)` existe mas ainda **não é chamada por
   ninguém**. Falta agendar (cron ou tarefa no startup) antes de produção.
-- **O firmware ESP32 ainda fala MQTT.** O servidor já aceita o payload achatado
-  do gateway por HTTP (`POST /api/edge/dados`); falta trocar o `PubSubClient`
-  por um POST HTTP nos `.ino`, usando o `DEVICE_TOKEN` do cadastro.
+- **Firmware ESP32**: reescrito para HTTPS em `firmware/` (§9-sexies). Pendências
+  daquele conjunto: TLS do caminho 4G não confere a cadeia (falta carregar a CA
+  no SIM7600), telemetria produzida offline é perdida (o servidor carimba a hora
+  na chegada) e o volume é aproximação prismática, não curva cota × volume.
 - **HTTPS**: o passo a passo está em §17-bis. Enquanto não estiver feito, o
   token dos dispositivos e o cookie de sessão trafegam em claro. Quando
   estiver, o **modo LAN deixa de valer** (conteúdo misto — ver §17-bis).
