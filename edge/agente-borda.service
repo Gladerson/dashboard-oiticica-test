@@ -13,5 +13,17 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# SEM isto o journal PERDE tudo que o agente imprime com print(): sob o
+# systemd o stdout nao e um terminal, entao o Python o bufferiza em blocos de
+# 8 KB, e as mensagens so aparecem muito depois -- ou so quando o processo
+# morre. O uvicorn usa logging, que vai para o stderr e sai na hora; e por
+# isso o log parecia ter so as linhas do uvicorn.
+#
+# Nao e cosmetico: TODO o diagnostico do agente usa print() -- [camera],
+# [video], [ws], [motion], [canal], [telemetria]. Sem esta linha, "grep
+# '\[ws\]' no journal" nao devolve nada mesmo com o canal aberto e
+# funcionando, e nao ha como saber de longe o que o equipamento esta fazendo.
+Environment=PYTHONUNBUFFERED=1
+
 [Install]
 WantedBy=multi-user.target
