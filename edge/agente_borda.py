@@ -106,25 +106,100 @@ cfg.EVIDENCIAS_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================================
 # PTZ (mesmo motor de intencao com prazo do controller.py)
 # ============================================================================
-ptz_cmd = PTZController(
-    cfg.CAMERA_IP, cfg.ONVIF_PORT, cfg.ONVIF_USER, cfg.ONVIF_PASSWORD,
-    label="cmd", pan_deg_range=cfg.PAN_DEG_RANGE, tilt_deg_range=cfg.TILT_DEG_RANGE,
-)
-print(">> Conectado a camera ONVIF.")
-print(ptz_cmd.describe())
+class CameraIndisponivel(RuntimeError):
+    """A camera nao respondeu. Quem chama decide o que fazer -- e ninguem
+    deve morrer por causa disso."""
 
-if cfg.PTZ_SEPARATE_CONNECTIONS:
-    ptz_tel = PTZController(
-        cfg.CAMERA_IP, cfg.ONVIF_PORT, cfg.ONVIF_USER, cfg.ONVIF_PASSWORD,
-        label="tel", pan_deg_range=cfg.PAN_DEG_RANGE, tilt_deg_range=cfg.TILT_DEG_RANGE,
-    )
-else:
-    ptz_tel = ptz_cmd
+
+class CameraPTZ:
+    """Dono da conexao ONVIF, preguicoso e teimoso.
+
+    Antes o PTZController era criado no TOPO do modulo. Sem camera na rede,
+    a excecao subia na importacao e o processo morria antes mesmo de iniciar
+    as threads -- levando junto coisas que nao dependem de camera nenhuma: o
+    canal de comandos com o servidor, a telemetria de CPU e temperatura, e a
+    propria possibilidade de diagnosticar o Raspberry de longe. Com
+    Restart=always o servico entrava em ciclo de reinicio, e uma camera
+    queimada deixava o equipamento INVISIVEL no painel.
+
+    Aqui a conexao e feita na primeira vez que alguem precisa dela, e nunca
+    se desiste: a cada falha a proxima tentativa e adiada um pouco mais, ate
+    um teto de 60s. Uma camera que volta depois de semanas e reencontrada
+    sozinha, sem reiniciar servico nenhum -- e o laco de telemetria, que roda
+    a cada segundo, e quem exercita essa retentativa.
+    """
+
+    RETENTAR_MIN_S = 5.0
+    RETENTAR_MAX_S = 60.0
+
+    def __init__(self, rotulo):
+        self.rotulo = rotulo
+        self._ptz = None
+        self._erro = "ainda nao conectada"
+        self._proxima = 0.0
+        self._espera = self.RETENTAR_MIN_S
+        # Reentrante: obter() pode ser chamado de dentro de um bloco que ja
+        # segura o lock (perdeu() -> obter() no mesmo fluxo).
+        self._lock = threading.RLock()
+
+    def conectada(self):
+        with self._lock:
+            return self._ptz is not None
+
+    def erro(self):
+        with self._lock:
+            return "" if self._ptz is not None else self._erro
+
+    def obter(self):
+        """O PTZController pronto para uso, ou CameraIndisponivel."""
+        with self._lock:
+            if self._ptz is not None:
+                return self._ptz
+            if time.time() < self._proxima:
+                raise CameraIndisponivel(self._erro)
+            try:
+                self._ptz = PTZController(
+                    cfg.CAMERA_IP, cfg.ONVIF_PORT, cfg.ONVIF_USER,
+                    cfg.ONVIF_PASSWORD, label=self.rotulo,
+                    pan_deg_range=cfg.PAN_DEG_RANGE,
+                    tilt_deg_range=cfg.TILT_DEG_RANGE,
+                )
+            except Exception as e:
+                self._erro = f"{type(e).__name__}: {e}"[:200]
+                self._proxima = time.time() + self._espera
+                print(f"[camera] ONVIF ({self.rotulo}) fora do ar: {self._erro} "
+                      f"-- nova tentativa em {self._espera:.0f}s")
+                self._espera = min(self._espera * 2, self.RETENTAR_MAX_S)
+                raise CameraIndisponivel(self._erro) from e
+            self._erro = ""
+            self._espera = self.RETENTAR_MIN_S
+            print(f">> Camera ONVIF conectada ({self.rotulo}).")
+            print(self._ptz.describe())
+            return self._ptz
+
+    def perdeu(self, excecao):
+        """Uma operacao falhou: descarta a conexao para a proxima refazer.
+
+        Sem adiar a proxima tentativa -- um erro pontual de PTZ nao deve
+        custar 5s de espera. Camera realmente morta cai no atraso crescente
+        de obter(), que e onde ele pertence."""
+        with self._lock:
+            self._ptz = None
+            self._erro = f"{type(excecao).__name__}: {excecao}"[:200]
+            self._proxima = 0.0
+
+
+camera_cmd = CameraPTZ("cmd")
+# Duas conexoes separadas evitam que a leitura de posicao (1x/s) dispute o
+# mesmo socket com os comandos de PTZ. Ver PTZ_SEPARATE_CONNECTIONS.
+camera_tel = CameraPTZ("tel") if cfg.PTZ_SEPARATE_CONNECTIONS else camera_cmd
 
 
 class PTZMotion:
-    def __init__(self, ptz, tick):
-        self.ptz, self.tick = ptz, tick
+    def __init__(self, camera, tick):
+        # Guarda a CameraPTZ, nao o PTZController: a conexao pode nao existir
+        # ainda, e pode ser trocada por outra depois de uma queda.
+        self.camera, self.tick = camera, tick
         self._lock = threading.Lock()
         self._intent, self._expires = ZERO, 0.0
         self._applied = ZERO
@@ -156,28 +231,30 @@ class PTZMotion:
             if alvo == self._applied and not forcar:
                 continue
             try:
+                ptz = self.camera.obter()
                 if alvo == ZERO:
                     if self._applied != ZERO or forcar:
-                        self.ptz.stop()
+                        ptz.stop()
                         self._applied = ZERO
-                elif self.ptz.has_continuous:
-                    self.ptz.move_continuous(*alvo)
+                elif ptz.has_continuous:
+                    ptz.move_continuous(*alvo)
                     self._applied = alvo
                 else:
-                    self.ptz.move_relative(alvo[0] * cfg.PAN_STEP_DEG,
-                                           alvo[1] * cfg.TILT_STEP_DEG,
-                                           alvo[2] * cfg.ZOOM_STEP_PCT)
+                    ptz.move_relative(alvo[0] * cfg.PAN_STEP_DEG,
+                                      alvo[1] * cfg.TILT_STEP_DEG,
+                                      alvo[2] * cfg.ZOOM_STEP_PCT)
                     self._applied = ZERO
+            except CameraIndisponivel:
+                # Nada a fazer e nada a registrar: o laco roda varias vezes
+                # por segundo e encheria o journal. Quem avisa e a telemetria.
+                self._applied = ZERO
             except Exception as e:
                 print(f"[motion] erro ao aplicar {alvo}: {e}")
-                try:
-                    self.ptz.stop()
-                except Exception:
-                    pass
+                self.camera.perdeu(e)
                 self._applied = ZERO
 
 
-motion = PTZMotion(ptz_cmd, cfg.PTZ_MOTION_TICK_S)
+motion = PTZMotion(camera_cmd, cfg.PTZ_MOTION_TICK_S)
 
 
 # ============================================================================
@@ -305,9 +382,25 @@ def telemetria_loop():
                      if (rapido or motion.em_movimento())
                      else cfg.TELEMETRIA_INTERVALO_S)
         try:
-            pan, tilt, zoom = ptz_tel.get_status()
-            with est.lock:
-                est.pan, est.tilt, est.zoom = pan, tilt, zoom
+            # A leitura de posicao e a UNICA parte daqui que depende da
+            # camera. Antes, uma falha nela abortava o envio inteiro -- e o
+            # servidor, sem telemetria, dava o equipamento como offline: a
+            # tela acusava o Raspberry por uma falha da camera. Agora a
+            # telemetria sobe do mesmo jeito, dizendo camera_ok=false.
+            try:
+                pan, tilt, zoom = camera_tel.obter().get_status()
+                camera_ok, camera_erro = True, ""
+                with est.lock:
+                    est.pan, est.tilt, est.zoom = pan, tilt, zoom
+            except CameraIndisponivel as e:
+                camera_ok, camera_erro = False, str(e)
+                with est.lock:
+                    pan, tilt, zoom = est.pan, est.tilt, est.zoom
+            except Exception as e:
+                camera_tel.perdeu(e)
+                camera_ok, camera_erro = False, camera_tel.erro()
+                with est.lock:
+                    pan, tilt, zoom = est.pan, est.tilt, est.zoom
 
             mudou = (ultimo[0] is None
                      or abs(pan - ultimo[0]) > 0.05
@@ -327,7 +420,10 @@ def telemetria_loop():
                     "stream": est.streaming(),
                     "transporte": canal.nome(),
                     "cpu_temp": temperatura_cpu(),
+                    "camera_ok": camera_ok,
                 }
+                if not camera_ok:
+                    valores["camera_erro"] = camera_erro
                 if est.transporte_erro:
                     valores["transporte_erro"] = est.transporte_erro
                 canal.telemetria(valores)
@@ -476,15 +572,14 @@ def abrir_rtsp():
 
 def video_loop():
     global detector
-    cap = abrir_rtsp()
-    if not cap.isOpened():
-        print("[video] ERRO: nao consegui abrir o RTSP. Confira RTSP_URL.")
-        return
-
     n = 0
     t_fps = time.time()
     frames_fps = 0
+    espera = 2.0
+    cap = None
 
+    # O pipeline do Hailo sobe antes do RTSP e fica de pe: e a NPU, nao
+    # depende da camera, e reabri-lo a cada reconexao custaria segundos.
     with DetectorHailo(cfg.HEF_PATH, cfg.HEAD_ONNX_PATH, cfg.MAPA_HEF_PARA_ONNX,
                        input_size=cfg.INPUT_SIZE, threads_cpu=cfg.THREADS_CPU,
                        class_names=cfg.CLASS_NAMES) as det:
@@ -492,12 +587,30 @@ def video_loop():
         print(">> Pipeline Hailo aberto e ativo (nao reconfigura por frame).")
 
         while not parar_tudo.is_set():
+            if cap is None:
+                # Antes, um RTSP fechado na subida encerrava ESTA THREAD para
+                # sempre: a camera voltar nao adiantava nada, so reiniciar o
+                # servico. Agora insiste indefinidamente, com espera crescente
+                # ate 60s -- camera que volta depois de semanas e reencontrada
+                # sozinha.
+                candidato = abrir_rtsp()
+                if not candidato.isOpened():
+                    candidato.release()
+                    print(f"[video] RTSP indisponivel ({cfg.RTSP_URL}); "
+                          f"nova tentativa em {espera:.0f}s")
+                    parar_tudo.wait(espera)
+                    espera = min(espera * 2, 60.0)
+                    continue
+                cap = candidato
+                espera = 2.0
+                print(">> RTSP aberto.")
+
             ok, frame_bgr = cap.read()
             if not ok:
                 print("[video] falha ao ler frame, reconectando...")
                 cap.release()
-                time.sleep(2)
-                cap = abrir_rtsp()
+                cap = None
+                parar_tudo.wait(2)
                 continue
 
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -587,10 +700,16 @@ def _cmd_status(_=None):
     movendo = motion.em_movimento()
     transporte = canal.nome()
     streaming = est.streaming()
+    # /status responde MESMO sem camera: e por ele que o operador descobre
+    # que o equipamento esta vivo e o que esta faltando.
+    conectada = camera_cmd.conectada()
+    has_continuous = camera_cmd.obter().has_continuous if conectada else False
     with est.lock:
         return {
             "coord_p": est.pan, "coord_t": est.tilt, "coord_z": est.zoom,
-            "has_continuous": ptz_cmd.has_continuous,
+            "camera_ok": conectada,
+            "camera_erro": camera_cmd.erro(),
+            "has_continuous": has_continuous,
             "moving": movendo,
             "transporte": transporte,
             "stream": streaming,
@@ -613,9 +732,9 @@ def _cmd_stop(_=None):
 def _cmd_relativo(c):
     motion.parar()
     est.marcar_movimento()
-    p, t, z = ptz_cmd.move_relative(float(c.get("pan_delta", 0)),
-                                    float(c.get("tilt_delta", 0)),
-                                    float(c.get("zoom_delta", 0)))
+    p, t, z = camera_cmd.obter().move_relative(float(c.get("pan_delta", 0)),
+                                              float(c.get("tilt_delta", 0)),
+                                              float(c.get("zoom_delta", 0)))
     with est.lock:
         est.pan, est.tilt, est.zoom = p, t, z
     return {"coord_p": p, "coord_t": t, "coord_z": z}
@@ -625,8 +744,9 @@ def _cmd_absoluto(c):
     motion.parar()
     time.sleep(cfg.PTZ_MOTION_TICK_S * 2)
     est.marcar_movimento()
-    p, t, z = ptz_cmd.move_absolute(float(c["pan_deg"]), float(c["tilt_deg"]),
-                                    float(c["zoom_pct"]))
+    p, t, z = camera_cmd.obter().move_absolute(float(c["pan_deg"]),
+                                              float(c["tilt_deg"]),
+                                              float(c["zoom_pct"]))
     with est.lock:
         est.pan, est.tilt, est.zoom = p, t, z
     return {"coord_p": p, "coord_t": t, "coord_z": z}
@@ -636,7 +756,7 @@ def _cmd_home(_=None):
     motion.parar()
     time.sleep(cfg.PTZ_MOTION_TICK_S * 2)
     est.marcar_movimento()
-    ptz_cmd.go_home()
+    camera_cmd.obter().go_home()
     return {"status": "ok"}
 
 
@@ -794,6 +914,14 @@ def status():
     return _cmd_status()
 
 
+@app.exception_handler(CameraIndisponivel)
+async def _camera_fora(_req, exc):
+    """503 com o motivo, em vez de um 500 sem explicacao. O dashboard mostra
+    esta mensagem ao operador."""
+    return JSONResponse({"error": "camera indisponivel", "detalhe": str(exc)},
+                        status_code=503)
+
+
 @app.post("/command/continuous")
 def cmd_continuous(c: ContinuousCommand, req: Request):
     if not _autorizado(req):
@@ -879,11 +1007,19 @@ def video_feed():
 
 # ============================================================================
 if __name__ == "__main__":
-    print(">> Indo para o ponto zero (home)...")
-    ptz_cmd.go_home()
-    time.sleep(3)
-    p, t, z = ptz_cmd.get_status()
-    print(f">> Apos o home: pan={p:.2f} tilt={t:.2f} zoom={z:.2f}")
+    # O "home" e desejavel, NAO obrigatorio. Sem camera o agente sobe do
+    # mesmo jeito: o canal de comandos, a telemetria e a API local nao
+    # dependem dela, e sao justamente o que permite descobrir de longe que a
+    # camera e que esta faltando.
+    try:
+        print(">> Indo para o ponto zero (home)...")
+        camera_cmd.obter().go_home()
+        time.sleep(3)
+        p, t, z = camera_cmd.obter().get_status()
+        print(f">> Apos o home: pan={p:.2f} tilt={t:.2f} zoom={z:.2f}")
+    except Exception as e:
+        print(f">> Sem camera na subida ({e}). O agente sobe assim mesmo e "
+              f"reconecta sozinho quando ela voltar.")
 
     for alvo in (motion.loop, video_loop, telemetria_loop, stream_loop,
                  gerente_transporte_loop, atender_pedidos_imagem,
@@ -910,7 +1046,8 @@ if __name__ == "__main__":
         parar_tudo.set()
         time.sleep(0.5)   # deixa o infer() em curso terminar
         try:
-            ptz_cmd.stop()
-            print(">> Stop enviado ao encerrar.")
+            if camera_cmd.conectada():
+                camera_cmd.obter().stop()
+                print(">> Stop enviado ao encerrar.")
         except Exception:
             pass

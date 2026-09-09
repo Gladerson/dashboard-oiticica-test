@@ -671,6 +671,47 @@ Duas decisões de layout que vieram de problemas reais de operação:
   estava um segundo antes. Com duas linhas sempre, a altura do bloco não
   depende do texto e o PTZ não se move.
 
+### O agente sobrevive à câmera
+
+O agente **não depende da câmera para existir**. Isso não era verdade até
+setembro/2026, e a diferença importa numa barragem.
+
+Antes, a conexão ONVIF era feita no topo do módulo, ao importar
+`agente_borda.py`. Câmera fora da rede → exceção → processo morto **antes de
+iniciar qualquer thread**. Com `Restart=always`, o serviço entrava em ciclo
+de reinício, e junto com a câmera iam embora coisas que não têm relação
+nenhuma com ela: o canal de comandos com o servidor, a telemetria de CPU e
+temperatura, a API local e a própria possibilidade de diagnosticar o
+equipamento de longe. **Câmera queimada = Raspberry invisível no painel.**
+
+Hoje:
+
+- **`CameraPTZ`** (em `edge/agente_borda.py`) conecta na primeira vez que
+  alguém precisa e **nunca desiste**: a cada falha, a próxima tentativa é
+  adiada um pouco mais, até um teto de 60 s. O laço de telemetria, que roda a
+  cada segundo, é quem exercita a retentativa — então uma câmera que volta
+  **depois de semanas** é reencontrada sozinha, sem reiniciar serviço nenhum;
+- **o RTSP também insiste.** Antes, um vídeo que não abrisse na subida
+  encerrava aquela thread *para sempre*: a câmera voltar não adiantava. Agora
+  reabre com a mesma espera crescente. O pipeline do Hailo fica de pé o tempo
+  todo (é a NPU, não depende da câmera, e reabri-lo custaria segundos);
+- **a telemetria sobe do mesmo jeito**, com `camera_ok: false` e
+  `camera_erro`. É por isso que o servidor consegue distinguir os dois casos;
+- **comandos de PTZ** sem câmera respondem `503` com o motivo, em vez de
+  `500` sem explicação.
+
+No painel, a pílula de estado tem **três** valores, não dois:
+
+| Pílula | O que aconteceu | Onde olhar |
+|---|---|---|
+| `borda: <transporte>` (verde) | operando | — |
+| `câmera sem resposta` (vermelho) | Raspberry vivo, câmera muda | rede/energia da câmera |
+| `borda: offline` (âmbar) | sem telemetria nenhuma | Raspberry: energia, rede, serviço |
+
+Passe o mouse na pílula para ver o motivo exato. Isso resolve um erro de
+diagnóstico caro: antes, câmera desligada mostrava `borda: offline`, e quem
+lia ia conferir o Raspberry — que estava perfeito.
+
 ### Movimentação PTZ
 
 Os botões usam **ContinuousMove**: a câmera move enquanto o botão está
@@ -1614,6 +1655,46 @@ Se precisar forçar à mão, é só apagar:
 ```bash
 rm -rf /opt/oiticica/dashboard_oiticica_test/server/.cache-npm
 ```
+
+**O agente reinicia sem parar e o equipamento some do painel** — no
+`systemctl status agente-borda` aparece `activating (auto-restart)` e no
+journal um traceback terminando em `PTZController(...)` /
+`onvif.exceptions.ONVIFError` / `No route to host`. **Era a câmera derrubando
+o agente inteiro**, e foi corrigido: hoje o agente sobe sem câmera e
+reconecta sozinho (§8, “O agente sobrevive à câmera”). Se você ainda vê isso,
+o Raspberry está em versão anterior a setembro/2026:
+
+```bash
+cd ~/Projetos/dashboard_oiticica_test && git pull origin main
+sudo systemctl restart agente-borda
+sudo journalctl -u agente-borda -n 30 --no-pager | grep -E "\[camera\]|\[ws\]|\[video\]"
+```
+
+Sem câmera, o esperado passa a ser: `[camera] ONVIF (cmd) fora do ar: ... --
+nova tentativa em 5s`, `[video] RTSP indisponivel; nova tentativa em 2s` e,
+apesar disso, `[ws] canal de comandos aberto em wss://…`.
+
+**Quero testar se o Raspberry alcança o servidor, mas a câmera está fora** —
+o canal de comandos não passa pela câmera. A prova é esta linha no journal do
+Pi:
+
+```bash
+sudo journalctl -u agente-borda -n 60 --no-pager | grep "\[ws\]"
+```
+
+`[ws] canal de comandos aberto em wss://…` só aparece se DNS, certificado,
+nginx **e** o token do dispositivo estiverem todos certos. Confirme do outro
+lado com `journalctl -u dashboard-oiticica | grep "\[ws\]"`, que deve mostrar
+`conectado (descida ativa)` no mesmo horário.
+
+Para separar as camadas, rodando **no Raspberry**:
+
+```bash
+curl -sS -o /dev/null -w "HTTP %{http_code} | TLS %{ssl_verify_result}\n" \
+     https://SEU.DOMINIO/login
+```
+
+`HTTP 200 | TLS 0` = DNS, certificado e servidor corretos.
 
 **O modelo dá `erro` dizendo que o Node é antigo demais** (`SyntaxError:
 Unexpected token 'with'`, ou a mensagem “este servidor tem o Node 18…”) — é o
