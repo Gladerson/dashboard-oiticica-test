@@ -1272,6 +1272,51 @@ sensor físico falhou (problema do instrumento); `on` = medindo.
 | Resposta Modbus: só CRC e endereço | Também função e contagem de bytes | uma resposta de exceção do sensor podia ser lida como medida |
 | `esp_task_wdt_init()` sem `deinit()` no controlador | `deinit()` antes | num core que já inicializou o watchdog, o init falhava calado: ficava-se **sem watchdog achando que tinha** |
 
+### Escolher o transporte do gateway: Wi-Fi ou 4G
+
+No topo de `firmware/gateway_lora/gateway_lora.ino` há **um** interruptor. Os
+dois primeiros `#define` são apenas rótulos (0 e 1) e **não** devem ser
+mexidos; muda-se só a terceira linha:
+
+```cpp
+#define TIPO_CONEXAO_WIFI   0     // rotulo -- nao mexer
+#define TIPO_CONEXAO_4G     1     // rotulo -- nao mexer
+#define TIPO_CONEXAO        TIPO_CONEXAO_WIFI   // <-- e aqui que se escolhe
+```
+
+Depois de escolher **Wi-Fi**:
+
+- preencha `WIFI_SSID` e `WIFI_PASS` logo abaixo;
+- `APN`, `APN_USER` e `APN_PASS` passam a ser ignorados;
+- a TinyGSM **não** precisa mais estar instalada — o `#include` dela está
+  dentro do `#if` do 4G;
+- o TLS passa a ser feito pelo **ESP32**, conferindo a cadeia contra a raiz
+  ISRG Root X1 embutida no sketch (no 4G quem cifra é o modem, e ele não
+  confere nada — ver *Limitações conhecidas*).
+
+### O relógio: por que o Wi-Fi precisa dele e o 4G não
+
+O ESP32 acorda achando que é 1970. Conferir um certificado é, entre outras
+coisas, comparar a data de hoje com a validade dele — com o relógio em 1970
+**todo** handshake falha, com um erro genérico que parece problema de rede.
+
+- **4G:** quem faz o TLS é o SIM7600, que pega a hora da própria operadora.
+  Ainda assim o sketch chama `modem.getNetworkTime()` e acerta o relógio do
+  ESP32, para que os logs tenham hora de verdade.
+- **Wi-Fi:** quem faz o TLS é o ESP32. `sincronizarRelogio()` chama NTP
+  (`pool.ntp.org`) e espera até 20 s, alimentando o watchdog durante a espera.
+
+Se o gateway ligar sem sinal, o relógio não é acertado no `setup()` — e por
+isso `garantirRelogio()` roda **antes de cada envio**: assim que a rede voltar,
+a hora é acertada e os POSTs passam a fechar. No log:
+
+```text
+[hora] 2026-09-10 14:03 UTC
+```
+
+Se aparecer `[hora] NAO sincronizada`, o problema é a saída UDP/123 da rede
+(firewall de Wi-Fi corporativo costuma bloquear NTP), não o certificado.
+
 ### Disponibilidade: o que garante que não trava
 
 - **Watchdog cobre o setup inteiro** (180 s no gateway, 30 s no controlador).
