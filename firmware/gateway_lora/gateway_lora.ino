@@ -91,6 +91,10 @@ static const int  FALHAS_ATE_RECONECTAR = 4;               // POSTs seguidos
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+// Estes tres vem de firmware/libraries/HydroConecta/. Se der
+// "fatal error: ProtocoloLoRa.h: No such file or directory", a pasta
+// HydroConecta nao foi instalada -- ver "Instalar a biblioteca compartilhada"
+// em firmware/README.md. Nao e erro de codigo, e um passo de instalacao.
 #include <ProtocoloLoRa.h>
 #include <MontadorJson.h>
 #include <RegrasNivel.h>

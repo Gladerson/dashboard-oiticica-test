@@ -11,17 +11,60 @@ Dois equipamentos, dois papéis:
 Arduino de propósito**, para que a suíte em `testes/` possa exercitá-lo num PC
 com `g++`, sem hardware.
 
-## Abrir na Arduino IDE
+## Instalar a biblioteca compartilhada (faça isto ANTES de compilar)
 
-O jeito mais simples é apontar o *sketchbook* para esta pasta — assim a IDE
-acha `libraries/HydroConecta` sozinha:
+Abrir o `.ino` direto da pasta descompactada **não funciona**. A Arduino IDE
+não procura cabeçalhos ao lado do sketch: ela procura na pasta `libraries` do
+*sketchbook*. Sem esse passo o erro é sempre este:
 
-**Arquivo → Preferências → Local do sketchbook** → `.../dashboard_oiticica_test/firmware`
+```text
+fatal error: ProtocoloLoRa.h: No such file or directory
+```
 
-Depois **Arquivo → Sketchbook → gateway_lora** (ou `sensor_nivel`).
+Não é erro de código — é a biblioteca que ainda não foi instalada. Escolha
+**um** dos dois caminhos.
 
-Placa: **ESP32 Dev Module**. Core: **ESP32 Arduino 3.x**.
-Biblioteca externa (só o gateway, e só no modo 4G): **TinyGSM**.
+### Caminho A — copiar a pasta (recomendado, não mexe em nada)
+
+Copie a pasta **`firmware/libraries/HydroConecta`** inteira para dentro da
+pasta `libraries` do seu sketchbook:
+
+| Sistema | Destino |
+|---|---|
+| Windows | `C:\Users\<seu-usuario>\Documents\Arduino\libraries\HydroConecta` |
+| macOS | `~/Documents/Arduino/libraries/HydroConecta` |
+| Linux | `~/Arduino/libraries/HydroConecta` |
+
+No fim tem de existir o arquivo
+`...\Arduino\libraries\HydroConecta\ProtocoloLoRa.h` — se o caminho ficou
+`...\libraries\HydroConecta\HydroConecta\ProtocoloLoRa.h`, você copiou um
+nível a mais. **Feche e reabra a IDE**; ela só varre `libraries` na abertura.
+
+Se você atualizar o repositório depois, copie de novo — essa cópia não se
+atualiza sozinha.
+
+### Caminho B — apontar o sketchbook para `firmware/`
+
+**Arquivo → Preferências → Local do sketchbook** → a pasta `firmware` deste
+repositório. A IDE passa a achar `libraries/HydroConecta` sozinha, e atualizar
+o repositório atualiza a biblioteca junto.
+
+O preço: o sketchbook é **também** onde a IDE guarda as bibliotecas que você
+instalou pelo Gerenciador. Trocando de sketchbook, elas somem da lista (não
+são apagadas — voltam quando você voltar o caminho antigo). Se você usa o modo
+4G, a TinyGSM é uma delas: instale-a de novo com o sketchbook já apontado
+para cá.
+
+Depois: **Arquivo → Sketchbook → gateway_lora** (ou `sensor_nivel`).
+
+## Compilar
+
+Placa: **ESP32 Dev Module**. Core: **ESP32 Arduino 3.x**
+(*Ferramentas → Placa → Gerenciador de placas* → `esp32` da Espressif).
+
+Biblioteca externa: **TinyGSM** — só o gateway, e só se `TIPO_CONEXAO` for
+`TIPO_CONEXAO_4G`. No modo Wi-Fi ela não é necessária, porque o `#include`
+dela está dentro do `#if` do 4G.
 
 ## Rodar os testes
 

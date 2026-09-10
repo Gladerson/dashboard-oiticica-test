@@ -1205,8 +1205,14 @@ polling de 60 s como rede de segurança.
 ## 9-sexies. Firmware dos ESP32 (controlador e gateway)
 
 Os dois firmwares estão em **`firmware/`**, com uma biblioteca compartilhada e
-uma suíte de testes que roda no PC. Ver `firmware/README.md` para abrir na
-Arduino IDE.
+uma suíte de testes que roda no PC.
+
+> **Antes de compilar qualquer um dos dois:** a pasta
+> `firmware/libraries/HydroConecta` precisa ser instalada como biblioteca da
+> Arduino IDE. Abrir o `.ino` direto da pasta baixada falha com
+> `fatal error: ProtocoloLoRa.h: No such file or directory`. O passo a passo
+> está em **`firmware/README.md`**, seção *Instalar a biblioteca
+> compartilhada*.
 
 ### Quem faz o quê
 
@@ -1770,6 +1776,16 @@ tabela sem precisar de agendador.
 ## 13. Resolução de problemas
 
 Casos reais da implantação, com a causa e não apenas a solução.
+
+**`fatal error: ProtocoloLoRa.h: No such file or directory` ao compilar o
+firmware** — não é erro de código, é a biblioteca compartilhada que não foi
+instalada. A Arduino IDE **não** procura cabeçalhos ao lado do `.ino`; ela
+procura em `libraries/` do sketchbook. Copie `firmware/libraries/HydroConecta`
+para `Documentos\Arduino\libraries\` (o arquivo
+`...\libraries\HydroConecta\ProtocoloLoRa.h` tem de existir ao final) e
+**reabra a IDE** — ela só varre `libraries` na abertura. A alternativa, e as
+consequências dela para as bibliotecas já instaladas, estão em
+`firmware/README.md`.
 
 **A câmera e as detecções caem em pontos diferentes do modelo** — quase
 sempre é offset UTM trocado: o `.glb` foi substituído por outro recorte da
