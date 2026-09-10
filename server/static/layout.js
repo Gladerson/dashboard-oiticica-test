@@ -201,6 +201,22 @@
 
   var ROTULO_CONDICAO = { maior: ">", menor: "<", igual: "=" };
 
+  /** Numero curto o bastante para caber. 742000000 -> "742 M". Sem isto, um
+   *  volume de reservatorio estourava a largura do painel do sininho e do
+   *  card, empurrando o resto do layout. */
+  function resumirNumero(v) {
+    if (v == null || v === "") return "—";
+    var n = Number(v);
+    if (!isFinite(n)) return String(v);
+    var abs = Math.abs(n);
+    if (abs >= 1e12) return (n / 1e12).toFixed(2).replace(/\.?0+$/, "") + " T";
+    if (abs >= 1e9)  return (n / 1e9).toFixed(2).replace(/\.?0+$/, "") + " G";
+    if (abs >= 1e6)  return (n / 1e6).toFixed(2).replace(/\.?0+$/, "") + " M";
+    if (abs >= 1e4)  return (n / 1e3).toFixed(1).replace(/\.?0+$/, "") + " k";
+    // Abaixo de 10 mil o numero inteiro cabe e e mais informativo que "9,9 k".
+    return String(Math.round(n * 100) / 100);
+  }
+
   async function atualizarSino() {
     var conta = document.getElementById("layout-sino-conta");
     var lista = document.getElementById("layout-sino-lista");
@@ -214,14 +230,25 @@
         return;
       }
       lista.innerHTML = j.eventos.map(function (e) {
-        var onde = e.sub_id ? escapar(e.sub_id) + " · " : "";
         var quando = new Date(e.em).toLocaleString("pt-BR");
         var classe = e.estado === "disparado" ? "disparado" : "normal";
-        return '<li class="' + classe + (e.lido ? "" : " novo") + '">' +
+        // Dois tipos de evento no mesmo feed. O de VISAO nao tem regra por
+        // tras -- nao ha chave, condicao nem limite para mostrar --, entao
+        // tentar desenha-lo como alarme produzia "undefined > null".
+        var detalhe;
+        if (e.origem === "visao") {
+          detalhe = escapar(e.dispositivo_nome || "") + " · visão computacional";
+        } else {
+          var onde = e.sub_id ? escapar(e.sub_id) + " · " : "";
+          detalhe = escapar(e.dispositivo_nome || "") + " · " + onde +
+            escapar(e.chave || "") + " " + (ROTULO_CONDICAO[e.condicao] || "") + " " +
+            resumirNumero(e.limite) + " (leu " +
+            (e.valor == null ? "—" : resumirNumero(e.valor)) + ")";
+        }
+        return '<li class="' + classe + (e.lido ? "" : " novo") +
+          (e.origem === "visao" ? " visao" : "") + '">' +
           "<b>" + escapar(e.titulo) + "</b>" +
-          '<span class="det">' + escapar(e.dispositivo_nome) + " · " + onde +
-          escapar(e.chave) + " " + (ROTULO_CONDICAO[e.condicao] || "") + " " +
-          e.limite + " (leu " + (e.valor == null ? "—" : e.valor) + ")</span>" +
+          '<span class="det">' + detalhe + "</span>" +
           '<span class="quando">' + quando +
           (e.estado === "normalizado" ? " · normalizou" : "") + "</span></li>";
       }).join("");
@@ -236,7 +263,9 @@
       ws.onmessage = function (ev) {
         try {
           var msg = JSON.parse(ev.data);
-          if (msg.type === "alarme") atualizarSino();
+          // "detection" tambem: o servidor manda um "alarme" junto, mas se o
+          // envio de um falhar o outro ainda atualiza o sininho.
+          if (msg.type === "alarme" || msg.type === "detection") atualizarSino();
         } catch (e) { /* mensagem de outro tipo */ }
       };
       // Se cair, o setInterval de 60s continua cobrindo. Reconecta sem
@@ -397,6 +426,7 @@
 
   global.Layout = {
     montar: montar,
+    resumirNumero: resumirNumero,
     aplicarTema: aplicarTema,
     escapar: escapar,
     CHAVE_TEMA: CHAVE_TEMA,

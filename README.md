@@ -1124,6 +1124,65 @@ oferecem o que aquele equipamento já enviou — o operador escolhe, não digita
 Todos os gráficos são **SVG desenhado pelo próprio código**, sem CDN: o painel
 precisa abrir numa rede sem internet.
 
+### Manipular os widgets
+
+Cada widget pode ser **redimensionado, movido e editado** direto na tela:
+
+| Ação | Como |
+|---|---|
+| Redimensionar | arraste a **alça** do canto inferior direito. O tamanho aparece durante o arrasto (`2 × 2`) e é salvo ao soltar |
+| Mover | arraste pelo **cabeçalho** e solte sobre outro widget |
+| Editar | botão **editar** — abre o mesmo formulário da criação, já preenchido |
+| Remover | botão **remover** |
+
+O tamanho vive em `config.cols` / `config.rows` (1 a 4 células). A grade tem
+células de tamanho fixo — com colunas elásticas, o mesmo "2 × 2" daria
+tamanhos diferentes em cada tela. Em telas estreitas o número de colunas cai
+(3, 2 e 1), e o `span` de um widget nunca passa do total disponível.
+
+A ordem vive em `ordem`, gravada com um `PATCH` por widget afetado.
+
+### Números grandes nunca estouram a caixa
+
+Um volume de reservatório tem nove dígitos: `742.000.000,00` atravessava a
+borda do card e empurrava o eixo do gráfico para fora da área visível. Agora
+tudo que é exibido em espaço apertado passa por `resumir()`:
+
+| Valor | Mostrado |
+|---|---|
+| 742 000 000 | `742 M` |
+| 1 500 000 000 000 | `1.5 T` |
+| 12 500 | `12.5 k` |
+| 9 999 | `9.999` (abaixo de 10 mil não se resume — ali o número inteiro cabe e diz mais) |
+
+O valor exato continua acessível: fica na **dica do mouse** (`title`) do card,
+do medidor radial e das barras. O sininho usa a mesma regra.
+
+### A tela não pisca mais
+
+Antes, `desenharTudo()` fazia `grade.innerHTML = ""` e reconstruía todos os
+widgets a cada mensagem de telemetria — com um gateway mandando dados a cada
+15 s, a página inteira piscava.
+
+Agora cada widget é um elemento **vivo**, guardado num `Map` por id. A cada
+atualização:
+
+1. some quem foi removido, nasce quem é novo;
+2. a ordem só é mexida se estiver fora de lugar;
+3. calcula-se uma **assinatura** do que aquele widget mostra (valores,
+   config, tamanho). Se não mudou, ele **não é tocado**.
+
+Medido com um `MutationObserver` na grade: duas telemetrias seguidas
+produzem **zero** adições ou remoções de filhos, e os mesmos elementos
+continuam lá. Só o conteúdo de quem realmente mudou é redesenhado.
+
+Uma armadilha que apareceu nesse caminho e vale conhecer: os manipuladores
+de evento nascem uma vez, com o objeto de widget daquele momento — mas
+`recarregarTudo()` **substitui** o array `widgets` por objetos novos vindos
+do servidor. Guardar a referência antiga fazia o redimensionamento gravar
+certo no banco e mesmo assim voltar ao tamanho anterior na tela. Por isso
+existe `widgetVivo(id)`: busca por id a cada uso.
+
 ### Alarmes e o sininho
 
 Uma regra é (equipamento, deviceID, telemetria, condição, valor):
@@ -1282,6 +1341,37 @@ estouro de buffer, NaN, texto que quebraria o documento) e regras de nível
   testado de verdade: os três cabeçalhos compartilhados com `g++`, e o payload
   real do gateway enviado ao servidor real, conferindo a separação em
   `sub_id`/chave no banco.
+
+---
+
+### Detecções da visão computacional no mesmo feed
+
+Uma fissura detectada entra no **sininho**, no **histórico de alertas** e na
+**tabela de alarmes** do Monitoramento — junto com os alarmes de telemetria.
+Antes, a visão computacional só aparecia no painel 3D: quem estivesse
+olhando a tela de telemetria não ficava sabendo de uma detecção nova.
+
+Em vez de uma segunda tabela — que obrigaria a unir duas fontes na consulta,
+no contador de não lidos e no "marcar como lido" —, `alarmes_eventos` passou
+a aceitar um evento **sem regra de alarme**:
+
+| Coluna | Para quê |
+|---|---|
+| `origem` | `alarme` (regra de telemetria) ou `visao` (detecção) |
+| `alarme_id` | agora **opcional**: a detecção não tem regra por trás |
+| `dispositivo_id` | de qual câmera veio, quando não há regra |
+| `titulo`, `severidade` | idem |
+| `detalhe` (JSONB) | o `det_id` no histórico, para levar o operador à evidência |
+
+Só a detecção **nova** gera evento. Repetição no mesmo ponto e período de
+rearme não geram — o sininho viraria ruído e ninguém mais leria.
+
+Uma reincidência em ponto já julgado falso positivo recebe título próprio
+("Detecção em ponto já marcado como falso positivo") e severidade `atencao`:
+é informação para quem julga, não um alerta igual aos outros.
+
+Falha ao registrar o evento **nunca** derruba a ingestão da detecção — a
+detecção em si é o dado crítico; o aviso é conveniência.
 
 ---
 

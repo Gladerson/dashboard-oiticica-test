@@ -30,31 +30,69 @@
   table.alarmes button:hover { color: var(--danger); border-color: var(--danger); }
   .barra .espaco { flex: 1; }
 
+  /* Grade de tamanho fixo por celula: e o que permite ao operador dizer
+     "este widget ocupa 2 colunas por 2 linhas" e o resultado ser previsivel.
+     Com colunas elasticas (auto-fill/1fr) o mesmo span daria tamanhos
+     diferentes em cada tela. */
   .grade {
     display: grid; gap: 14px;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    grid-template-columns: repeat(var(--colunas, 4), 1fr);
+    grid-auto-rows: 172px;
   }
+  @media (max-width: 1180px) { .grade { --colunas: 3; } }
+  @media (max-width:  900px) { .grade { --colunas: 2; } }
+  @media (max-width:  620px) { .grade { --colunas: 1; } }
+
   .widget {
+    position: relative;
     background: var(--panel); border: 1px solid var(--border);
     border-radius: var(--raio); box-shadow: var(--sombra); padding: 12px 14px;
-    display: flex; flex-direction: column; min-height: 150px;
+    display: flex; flex-direction: column; overflow: hidden;
+    grid-column: span min(var(--cols, 1), var(--colunas, 4));
+    grid-row: span var(--rows, 1);
   }
-  .widget.largo { grid-column: span 2; }
-  @media (max-width: 780px) { .widget.largo { grid-column: span 1; } }
+  .widget.arrastando { opacity: .45; }
+  .widget.alvo-solta { outline: 2px dashed var(--accent); outline-offset: -3px; }
   .widget header {
     display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;
+    cursor: grab;
   }
+  .widget header:active { cursor: grabbing; }
   .widget header h3 {
     margin: 0; font-size: 12px; font-weight: 600; flex: 1;
     text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  .widget header .acoes { display: flex; gap: 2px; flex: 0 0 auto; }
   .widget header .acoes button {
     background: transparent; border: none; color: var(--muted);
     cursor: pointer; font-size: 11px; padding: 2px 4px;
   }
-  .widget header .acoes button:hover { color: var(--danger); }
-  .widget .corpo { flex: 1; display: flex; align-items: center; justify-content: center; }
-  .widget svg { width: 100%; height: auto; display: block; }
+  .widget header .acoes button:hover { color: var(--text); }
+  .widget header .acoes button.remover:hover { color: var(--danger); }
+  .widget .corpo {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    min-height: 0; overflow: hidden;   /* nada escapa da moldura do widget */
+  }
+  .widget svg { width: 100%; height: 100%; display: block; }
+
+  /* Alca de redimensionamento, no canto inferior direito. */
+  .widget .alca {
+    position: absolute; right: 2px; bottom: 2px; width: 16px; height: 16px;
+    cursor: nwse-resize; opacity: .35; touch-action: none;
+  }
+  .widget .alca:hover { opacity: .9; }
+  .widget .alca::after {
+    content: ""; position: absolute; right: 3px; bottom: 3px;
+    width: 8px; height: 8px;
+    border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+  }
+  .widget .medida {
+    position: absolute; right: 6px; top: 6px; font-size: 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 1px 5px; color: var(--muted); display: none;
+  }
+  .widget.redimensionando .medida { display: block; }
 
   .cartao-valor { text-align: center; }
   .cartao-valor .n { font-size: 34px; font-weight: 700; line-height: 1.1; }
@@ -134,7 +172,7 @@
 <!-- ------------------------------------------------------------------ -->
 <div class="modal" id="modal-widget">
   <div class="box">
-    <h3>Novo widget</h3>
+    <h3 id="titulo-modal-widget">Novo widget</h3>
     <p class="sub" id="sub-widget"></p>
     <div class="campo">
       <label for="w-tipo">Tipo</label>
@@ -185,7 +223,7 @@
     <div class="msg" id="msg-widget"></div>
     <div class="acoes">
       <button type="button" id="w-cancelar">Cancelar</button>
-      <button type="button" class="acao" id="w-salvar">Adicionar</button>
+      <button type="button" class="acao" id="w-salvar">Criar</button>
     </div>
   </div>
 </div>
@@ -277,6 +315,27 @@ function fmt(v, casas, unidade) {
   return unidade ? `${n} ${unidade}` : n;
 }
 
+/** Numero curto o bastante para caber na caixa. 742.000.000 -> "742 M".
+ *
+ *  Um volume de reservatorio tem nove digitos; escrito por extenso, ele
+ *  atravessava a borda do card e empurrava o eixo do grafico para fora da
+ *  area visivel. Abaixo de 10 mil nada e resumido: ali o numero inteiro
+ *  cabe e diz mais que "9,9 k". O valor exato continua acessivel na dica
+ *  (atributo title) de quem mostra o resumo. */
+function resumir(v, unidade) {
+  if (v == null || Number.isNaN(v)) return "—";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  let txt;
+  if (abs >= 1e12)      txt = (n / 1e12).toFixed(2).replace(/\.?0+$/, "") + " T";
+  else if (abs >= 1e9)  txt = (n / 1e9).toFixed(2).replace(/\.?0+$/, "") + " G";
+  else if (abs >= 1e6)  txt = (n / 1e6).toFixed(2).replace(/\.?0+$/, "") + " M";
+  else if (abs >= 1e4)  txt = (n / 1e3).toFixed(1).replace(/\.?0+$/, "") + " k";
+  else txt = n.toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+  return unidade ? `${txt} ${unidade}` : txt;
+}
+
 // ---------------------------------------------------------------------
 // Carga
 // ---------------------------------------------------------------------
@@ -329,26 +388,224 @@ async function recarregarTudo() {
 // ---------------------------------------------------------------------
 // Desenho dos widgets (SVG na mão — sem biblioteca externa)
 // ---------------------------------------------------------------------
+// Elementos vivos, um por widget. A tela NAO e reconstruida a cada
+// telemetria: antes, `grade.innerHTML = ""` apagava e refazia tudo a cada
+// mensagem do WebSocket, e o resultado era a pagina inteira piscando de
+// segundo em segundo. Agora cada widget so e redesenhado quando o QUE ELE
+// MOSTRA muda -- e os que nao mudaram nem sao tocados.
+const nos = new Map();   // widget.id -> { el, corpo, assinatura }
+
+// Tamanhos padrao por tipo, em celulas da grade. Um grafico de area precisa
+// de largura; um card, nao.
+const TAMANHO_PADRAO = {
+  area:    { cols: 2, rows: 2 },
+  barras:  { cols: 2, rows: 2 },
+  alarmes: { cols: 2, rows: 2 },
+  card:    { cols: 1, rows: 1 },
+  radial:  { cols: 1, rows: 2 },
+  status:  { cols: 1, rows: 1 },
+};
+function tamanhoDe(w) {
+  const p = TAMANHO_PADRAO[w.tipo] || { cols: 1, rows: 1 };
+  const cfg = w.config || {};
+  return {
+    cols: Math.min(4, Math.max(1, parseInt(cfg.cols, 10) || p.cols)),
+    rows: Math.min(4, Math.max(1, parseInt(cfg.rows, 10) || p.rows)),
+  };
+}
+
+/** O que este widget desenha, resumido. Se nao mudou, nao se redesenha. */
+function assinaturaDe(w) {
+  const dados = (w.chaves || []).map(c => {
+    const i = valorDe(w, c);
+    return i ? `${c}=${i.num}|${i.txt}|${i.visto_em}` : `${c}=-`;
+  });
+  if (w.tipo === "alarmes") {
+    dados.push(eventos.map(e => e.id + e.lido).join(","));
+    dados.push(alarmes.map(a => a.id + a.disparado).join(","));
+  }
+  const t = tamanhoDe(w);
+  return JSON.stringify([w.tipo, w.titulo, w.sub_id, w.chaves, w.config,
+                         t.cols, t.rows, dados]);
+}
+
 async function desenharTudo() {
   const grade = $("grade");
-  grade.innerHTML = "";
   $("sem-widgets").hidden = widgets.length > 0;
+
+  // Some quem foi removido.
+  const vivos = new Set(widgets.map(w => w.id));
+  for (const [id, no] of [...nos]) {
+    if (!vivos.has(id)) { no.el.remove(); nos.delete(id); }
+  }
+
   for (const w of widgets) {
-    const el = document.createElement("section");
-    el.className = "widget" + (["area", "barras", "alarmes"].includes(w.tipo) ? " largo" : "");
-    el.innerHTML =
-      `<header><h3>${escapar(w.titulo || tituloPadrao(w))}</h3>`
-      + `<div class="acoes"><button type="button" title="Remover">remover</button></div></header>`
-      + `<div class="corpo"></div>`;
-    el.querySelector("button").addEventListener("click", () => removerWidget(w));
-    grade.appendChild(el);
+    let no = nos.get(w.id);
+    if (!no) {
+      no = criarNo(w);
+      nos.set(w.id, no);
+    }
+    // Ordem: so mexe no DOM se estiver fora de lugar. appendChild de um
+    // elemento que ja e o ultimo filho ainda assim o remove e reinsere --
+    // o suficiente para piscar num grafico grande.
+    if (grade.children[widgets.indexOf(w)] !== no.el) grade.appendChild(no.el);
+
+    aplicarTamanho(w, no.el);
+    const titulo = w.titulo || tituloPadrao(w);
+    if (no.el.querySelector("h3").textContent !== titulo)
+      no.el.querySelector("h3").textContent = titulo;
+
+    const assinatura = assinaturaDe(w);
+    if (no.assinatura === assinatura) continue;   // nada mudou: nao redesenha
+    no.assinatura = assinatura;
     try {
-      await desenharWidget(w, el.querySelector(".corpo"));
+      await desenharWidget(w, no.corpo);
     } catch (e) {
-      el.querySelector(".corpo").innerHTML =
+      no.corpo.innerHTML =
         `<div class="vazio">Não consegui desenhar: ${escapar(e.message || e)}</div>`;
     }
   }
+}
+
+/** O widget VIVO com este id.
+ *
+ *  Os manipuladores de evento sao criados uma vez, com o objeto daquele
+ *  momento -- mas `recarregarTudo()` substitui o array `widgets` por objetos
+ *  novos vindos do servidor. Guardar a referencia antiga fazia o
+ *  redimensionamento gravar certo no banco e mesmo assim voltar ao tamanho
+ *  anterior na tela: o desenho usava o objeto novo, ainda com a config
+ *  velha. Buscar por id a cada uso resolve de vez. */
+function widgetVivo(id, alternativa) {
+  return widgets.find(x => x.id === id) || alternativa;
+}
+
+function criarNo(w) {
+  const el = document.createElement("section");
+  el.className = "widget";
+  el.dataset.id = w.id;
+  el.innerHTML =
+    `<header draggable="true"><h3></h3><div class="acoes">`
+    + `<button type="button" class="editar" title="Editar">editar</button>`
+    + `<button type="button" class="remover" title="Remover">remover</button>`
+    + `</div></header>`
+    + `<div class="corpo"></div>`
+    + `<span class="medida"></span>`
+    + `<div class="alca" title="Arraste para redimensionar"></div>`;
+
+  const id = w.id;
+  el.querySelector(".editar").addEventListener("click",
+    () => abrirEdicaoWidget(widgetVivo(id, w)));
+  el.querySelector(".remover").addEventListener("click",
+    () => removerWidget(widgetVivo(id, w)));
+  el.querySelector(".alca").addEventListener("pointerdown",
+    (ev) => iniciarRedimensionar(ev, widgetVivo(id, w), el));
+  ligarArrastar(w, el);
+  return { el, corpo: el.querySelector(".corpo"), assinatura: null };
+}
+
+function aplicarTamanho(w, el) {
+  const t = tamanhoDe(w);
+  el.style.setProperty("--cols", t.cols);
+  el.style.setProperty("--rows", t.rows);
+}
+
+// ---------------------------------------------------------------------
+// Redimensionar (arrastar a alça do canto)
+// ---------------------------------------------------------------------
+function iniciarRedimensionar(ev, w, el) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const grade = $("grade");
+  const estilo = getComputedStyle(grade);
+  const vao = parseFloat(estilo.columnGap) || 14;
+  const nColunas = estilo.gridTemplateColumns.split(" ").filter(Boolean).length || 1;
+  const larguraCel = (grade.clientWidth - vao * (nColunas - 1)) / nColunas;
+  const alturaCel = parseFloat(estilo.gridAutoRows) || 172;
+  const r0 = el.getBoundingClientRect();
+  const x0 = ev.clientX, y0 = ev.clientY;
+  const medida = el.querySelector(".medida");
+  let atualCols = tamanhoDe(w).cols, atualRows = tamanhoDe(w).rows;
+
+  el.classList.add("redimensionando");
+  el.setPointerCapture(ev.pointerId);
+
+  const mover = (e) => {
+    const larg = r0.width + (e.clientX - x0);
+    const alt = r0.height + (e.clientY - y0);
+    atualCols = Math.min(nColunas, Math.max(1, Math.round((larg + vao) / (larguraCel + vao))));
+    atualRows = Math.min(4, Math.max(1, Math.round((alt + vao) / (alturaCel + vao))));
+    el.style.setProperty("--cols", atualCols);
+    el.style.setProperty("--rows", atualRows);
+    medida.textContent = `${atualCols} × ${atualRows}`;
+  };
+  const soltar = async () => {
+    el.removeEventListener("pointermove", mover);
+    el.removeEventListener("pointerup", soltar);
+    el.removeEventListener("pointercancel", soltar);
+    el.classList.remove("redimensionando");
+    const cfg = { ...(w.config || {}), cols: atualCols, rows: atualRows };
+    // No objeto VIVO: entre o inicio do arrasto e agora, uma telemetria pode
+    // ter trocado o array `widgets` inteiro.
+    widgetVivo(w.id, w).config = cfg;
+    // A assinatura muda com o tamanho: o SVG e redesenhado para a nova caixa.
+    await salvarConfigWidget(w, { config: cfg });
+    await desenharTudo();
+  };
+  el.addEventListener("pointermove", mover);
+  el.addEventListener("pointerup", soltar);
+  el.addEventListener("pointercancel", soltar);
+}
+
+// ---------------------------------------------------------------------
+// Reordenar (arrastar pelo cabeçalho)
+// ---------------------------------------------------------------------
+let arrastandoId = null;
+
+function ligarArrastar(w, el) {
+  const cab = el.querySelector("header");
+  cab.addEventListener("dragstart", (ev) => {
+    arrastandoId = w.id;
+    el.classList.add("arrastando");
+    ev.dataTransfer.effectAllowed = "move";
+    // Firefox só inicia o arrasto se algo for escrito aqui.
+    ev.dataTransfer.setData("text/plain", w.id);
+  });
+  cab.addEventListener("dragend", () => {
+    arrastandoId = null;
+    el.classList.remove("arrastando");
+    document.querySelectorAll(".widget.alvo-solta")
+            .forEach(n => n.classList.remove("alvo-solta"));
+  });
+  el.addEventListener("dragover", (ev) => {
+    if (!arrastandoId || arrastandoId === w.id) return;
+    ev.preventDefault();
+    el.classList.add("alvo-solta");
+  });
+  el.addEventListener("dragleave", () => el.classList.remove("alvo-solta"));
+  el.addEventListener("drop", async (ev) => {
+    ev.preventDefault();
+    el.classList.remove("alvo-solta");
+    if (!arrastandoId || arrastandoId === w.id) return;
+    const de = widgets.findIndex(x => x.id === arrastandoId);
+    const para = widgets.findIndex(x => x.id === w.id);
+    if (de < 0 || para < 0) return;
+    widgets.splice(para, 0, widgets.splice(de, 1)[0]);
+    await desenharTudo();                 // reordena na tela na hora
+    // Persiste a ordem nova. Falha aqui nao desfaz o que o operador ja ve:
+    // o proximo recarregamento traz a ordem do servidor.
+    await Promise.all(widgets.map((x, i) =>
+      x.ordem === i ? null : salvarConfigWidget(x, { ordem: i })));
+    widgets.forEach((x, i) => { x.ordem = i; });
+  });
+}
+
+async function salvarConfigWidget(w, campos) {
+  try {
+    await fetch(`${SERVER_BASE}/api/widgets/${w.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(campos),
+    });
+  } catch (e) { /* offline: a tela ja mostra o novo estado */ }
 }
 
 function tituloPadrao(w) {
@@ -380,9 +637,14 @@ function valorDe(w, chave) {
 function desenharCard(w, alvo, cfg, casas) {
   const i = valorDe(w, w.chaves[0]);
   const quando = i ? new Date(i.visto_em).toLocaleString("pt-BR") : "sem leitura";
-  const valor = i && i.num != null ? fmt(i.num, casas, "") : (i && i.txt) || "—";
+  // Resumido para caber; o valor exato fica na dica do mouse. Um card de
+  // volume mostrava "742.000.000,00" e atravessava a borda do widget.
+  const numerico = i && i.num != null;
+  const valor = numerico ? resumir(i.num, "") : (i && i.txt) || "—";
+  const exato = numerico ? fmt(i.num, casas, cfg.unidade || "") : "";
   alvo.innerHTML =
-    `<div class="cartao-valor"><div class="n">${escapar(valor)}`
+    `<div class="cartao-valor"${exato ? ` title="${escapar(exato)}"` : ""}>`
+    + `<div class="n">${escapar(valor)}`
     + (cfg.unidade ? `<span class="u">${escapar(cfg.unidade)}</span>` : "")
     + `</div><div class="quando">${escapar(quando)}</div></div>`;
 }
@@ -408,13 +670,14 @@ function desenharRadial(w, alvo, cfg, casas) {
       <path d="${arco(1)}" fill="none" stroke="var(--border)" stroke-width="12" stroke-linecap="round"/>
       ${t > 0 ? `<path d="${arco(t)}" fill="none" stroke="${CORES[0]}" stroke-width="12" stroke-linecap="round"/>` : ""}
       <text x="70" y="66" text-anchor="middle" fill="var(--text)" font-size="21" font-weight="700">
-        ${escapar(v == null ? "—" : fmt(v, casas, ""))}
+        ${escapar(v == null ? "—" : resumir(v, ""))}
+        <title>${escapar(v == null ? "sem leitura" : fmt(v, casas, cfg.unidade || ""))}</title>
       </text>
       <text x="70" y="82" text-anchor="middle" fill="var(--muted)" font-size="10">
         ${escapar(cfg.unidade || "")}
       </text>
-      <text x="14" y="100" fill="var(--muted)" font-size="9">${escapar(fmt(min, 0, ""))}</text>
-      <text x="126" y="100" text-anchor="end" fill="var(--muted)" font-size="9">${escapar(fmt(max, 0, ""))}</text>
+      <text x="14" y="100" fill="var(--muted)" font-size="9">${escapar(resumir(min, ""))}</text>
+      <text x="126" y="100" text-anchor="end" fill="var(--muted)" font-size="9">${escapar(resumir(max, ""))}</text>
     </svg>`;
 }
 
@@ -450,7 +713,8 @@ function desenharBarras(w, alvo, cfg, casas) {
     const l = Math.max(1, (larg - x0 - 56) * (d.v / max));
     return `<text x="${x0 - 8}" y="${y + 12}" text-anchor="end" fill="var(--muted)" font-size="10">${escapar(d.rotulo)}</text>`
          + `<rect x="${x0}" y="${y}" width="${l.toFixed(1)}" height="16" rx="3" fill="${CORES[k % CORES.length]}"/>`
-         + `<text x="${x0 + l + 6}" y="${y + 12}" fill="var(--text)" font-size="10">${escapar(fmt(d.v, casas, cfg.unidade || ""))}</text>`;
+         + `<text x="${x0 + l + 6}" y="${y + 12}" fill="var(--text)" font-size="10">${escapar(resumir(d.v, cfg.unidade || ""))}`
+         + `<title>${escapar(fmt(d.v, casas, cfg.unidade || ""))}</title></text>`;
   }).join("");
   alvo.innerHTML = `<svg viewBox="0 0 ${larg} ${alt}" role="img">${barras}</svg>`;
 }
@@ -503,7 +767,7 @@ async function desenharArea(w, alvo, cfg, casas) {
     return `<line x1="${m.e}" y1="${y.toFixed(1)}" x2="${L - m.d}" y2="${y.toFixed(1)}" `
          + `stroke="var(--border)" stroke-width="1"/>`
          + `<text x="${m.e - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" `
-         + `fill="var(--muted)" font-size="9">${escapar(fmt(v, casas, ""))}</text>`;
+         + `fill="var(--muted)" font-size="9">${escapar(resumir(v, ""))}</text>`;
   }).join("");
 
   const hora = (t) => new Date(t).toLocaleString("pt-BR",
@@ -531,12 +795,21 @@ function desenharTabelaAlarmes(alvo) {
       <td><button data-alarme="${a.id}" style="font-size:10px;padding:2px 6px">excluir</button></td>
     </tr>`;
   }).join("");
-  const hist = eventos.slice(0, 12).map(e => `<tr class="${e.estado}">
+  // O historico mistura duas origens: alarme de telemetria e deteccao da
+  // visao computacional. A de visao nao tem chave nem limite -- desenha-la
+  // como alarme produzia "undefined = —".
+  const hist = eventos.slice(0, 12).map(e => {
+    const detalhe = e.origem === "visao"
+      ? "visão computacional"
+      : `${escapar(e.sub_id ? e.sub_id + " · " : "")}${escapar(e.chave || "")}`
+        + ` = ${e.valor == null ? "—" : escapar(resumir(e.valor, ""))}`;
+    return `<tr class="${e.estado}">
       <td>${escapar(e.titulo)}</td>
-      <td>${escapar(e.sub_id ? e.sub_id + " · " : "")}${escapar(e.chave)} = ${e.valor ?? "—"}</td>
+      <td>${detalhe}</td>
       <td>${e.estado}</td>
       <td>${new Date(e.em).toLocaleString("pt-BR")}</td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
 
   alvo.innerHTML =
     `<table class="alarmes"><thead><tr><th>Regra</th><th>Condição</th><th>Estado</th><th></th></tr></thead>`
@@ -584,6 +857,38 @@ function atualizarChavesWidget() {
   $("campos-escala").style.display = ["radial", "area", "barras"].includes(tipo) ? "" : "none";
 }
 
+// Widget em edicao. null = o formulario esta criando um novo. E o mesmo
+// formulario nos dois casos: duplicar a tela de "editar" so criaria dois
+// lugares para manter em sincronia quando um tipo de widget novo aparecer.
+let editando = null;
+
+function abrirEdicaoWidget(w) {
+  editando = w;
+  $("msg-widget").textContent = "";
+  $("titulo-modal-widget").textContent = "Editar widget";
+  $("w-salvar").textContent = "Salvar";
+  $("sub-widget").textContent = "Alterando um widget que já existe.";
+
+  $("w-tipo").value = w.tipo;
+  preencherSeletoresWidget();
+  if (catalogo.e_gateway) {
+    $("w-sub").value = w.sub_id || "";
+    atualizarChavesWidget();
+  }
+  // As chaves precisam ser marcadas DEPOIS de atualizarChavesWidget(), que e
+  // quem repovoa a lista de opcoes.
+  const escolhidas = new Set(w.chaves || []);
+  [...$("w-chaves").options].forEach(o => { o.selected = escolhidas.has(o.value); });
+
+  const cfg = w.config || {};
+  $("w-titulo").value = w.titulo || "";
+  $("w-unidade").value = cfg.unidade || "";
+  $("w-casas").value = Number.isFinite(+cfg.casas) ? cfg.casas : 2;
+  $("w-min").value = Number.isFinite(+cfg.min) ? cfg.min : "";
+  $("w-max").value = Number.isFinite(+cfg.max) ? cfg.max : "";
+  $("modal-widget").classList.add("open");
+}
+
 async function salvarWidget() {
   const tipo = $("w-tipo").value;
   const escolhidas = [...$("w-chaves").selectedOptions].map(o => o.value);
@@ -598,23 +903,35 @@ async function salvarWidget() {
   };
   if ($("w-min").value !== "") cfg.min = parseFloat($("w-min").value);
   if ($("w-max").value !== "") cfg.max = parseFloat($("w-max").value);
+  // Tamanho: preserva o que o operador ja tinha arrastado, em vez de
+  // devolver o widget ao padrao a cada edicao.
+  if (editando) {
+    const antigo = editando.config || {};
+    if (antigo.cols) cfg.cols = antigo.cols;
+    if (antigo.rows) cfg.rows = antigo.rows;
+  }
   const corpo = {
-    device_id: atual.id, tipo,
+    tipo,
     titulo: $("w-titulo").value.trim(),
     sub_id: catalogo.e_gateway ? $("w-sub").value : "",
-    chaves: escolhidas, config: cfg, ordem: widgets.length,
+    chaves: escolhidas, config: cfg,
   };
-  const r = await fetch(`${SERVER_BASE}/api/widgets`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(corpo),
-  });
+  const editar = editando !== null;
+  const r = await fetch(
+    editar ? `${SERVER_BASE}/api/widgets/${editando.id}` : `${SERVER_BASE}/api/widgets`,
+    { method: editar ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(editar ? corpo
+                                  : { ...corpo, device_id: atual.id, ordem: widgets.length }) });
   const j = await r.json();
   if (!r.ok) {
     $("msg-widget").className = "msg erro";
-    $("msg-widget").textContent = j.error || "Não consegui criar.";
+    $("msg-widget").textContent = j.error || (editar ? "Não consegui salvar."
+                                                     : "Não consegui criar.");
     return;
   }
   $("modal-widget").classList.remove("open");
+  editando = null;
   await recarregarTudo();
 }
 
@@ -692,6 +1009,9 @@ $("sel-dispositivo").addEventListener("change", async (e) => {
 });
 
 $("btn-widget").addEventListener("click", () => {
+  editando = null;
+  $("titulo-modal-widget").textContent = "Novo widget";
+  $("w-salvar").textContent = "Criar";
   $("msg-widget").textContent = "";
   $("sub-widget").textContent = catalogo.e_gateway
     ? "Este equipamento é um gateway: escolha primeiro de qual deviceID é a telemetria."
@@ -701,7 +1021,10 @@ $("btn-widget").addEventListener("click", () => {
 });
 $("w-tipo").addEventListener("change", atualizarChavesWidget);
 $("w-sub").addEventListener("change", atualizarChavesWidget);
-$("w-cancelar").addEventListener("click", () => $("modal-widget").classList.remove("open"));
+$("w-cancelar").addEventListener("click", () => {
+  editando = null;
+  $("modal-widget").classList.remove("open");
+});
 $("w-salvar").addEventListener("click", salvarWidget);
 
 $("btn-alarme").addEventListener("click", () => {

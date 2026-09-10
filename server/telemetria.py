@@ -457,6 +457,12 @@ def instalar(app, manager=None):
             "nao_lidos": db.contar_eventos_nao_lidos(),
             "eventos": [{
                 "id": str(e["id"]), "em": e["em"].isoformat(),
+                # `origem` diz se o evento veio de uma regra de telemetria
+                # ('alarme') ou da visao computacional ('visao'). Sem ele o
+                # sininho desenhava a deteccao como se fosse alarme, com
+                # "chave — (leu —)" no lugar do que importa.
+                "origem": e.get("origem") or "alarme",
+                "detalhe": e.get("detalhe") or {},
                 "valor": e["valor"], "estado": e["estado"], "lido": e["lido"],
                 "titulo": e["titulo"] or e["chave"], "chave": e["chave"],
                 "sub_id": e["sub_id"], "condicao": e["condicao"],
