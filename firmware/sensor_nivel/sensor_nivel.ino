@@ -68,6 +68,11 @@ static const uint16_t MEDIDA_MAX_MM = 60000;
 
 #include <esp_task_wdt.h>
 #include <HardwareSerial.h>
+
+// Este vem de firmware/libraries/HydroConecta/. Se der
+// "fatal error: ProtocoloLoRa.h: No such file or directory", a pasta
+// HydroConecta nao foi instalada -- ver "Instalar a biblioteca compartilhada"
+// em firmware/README.md. Nao e erro de codigo, e um passo de instalacao.
 #include <ProtocoloLoRa.h>
 
 HardwareSerial rs485Serial(2);
