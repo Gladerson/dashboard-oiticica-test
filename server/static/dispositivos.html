@@ -176,9 +176,9 @@
       <div>
         <label for="dev-tipo">Tipo de equipamento</label>
         <select id="dev-tipo">
-          <option value="camera">Câmera (Raspberry + PTZ)</option>
-          <option value="sensor">Sensor (ESP32 que fala por si)</option>
-          <option value="gateway">Gateway (ESP32 que fala por N sensores)</option>
+          <option value="camera">Câmera PTZ fixa</option>
+          <option value="sensor">Sensor</option>
+          <option value="gateway">Gateway</option>
         </select>
       </div>
       <div>
@@ -298,9 +298,9 @@
       <div>
         <label for="ed-tipo">Tipo de equipamento</label>
         <select id="ed-tipo">
-          <option value="camera">Câmera (Raspberry + PTZ)</option>
-          <option value="sensor">Sensor (ESP32 que fala por si)</option>
-          <option value="gateway">Gateway (ESP32 que fala por N sensores)</option>
+          <option value="camera">Câmera PTZ fixa</option>
+          <option value="sensor">Sensor</option>
+          <option value="gateway">Gateway</option>
         </select>
         <p class="ajuda" id="ajuda-tipo"></p>
 
@@ -729,7 +729,7 @@ async function carregarDispositivos() {
     // lugar onde a pessoa pode consertar (botao "Editar" ao lado).
     // Sensor e gateway nao tem visao 3D -- e isso nao e um defeito a
     // reportar. Para eles o que interessa e o painel de telemetria.
-    const rotuloTipo = { camera: "Câmera", sensor: "Sensor", gateway: "Gateway" };
+    const rotuloTipo = { camera: "Câmera PTZ fixa", sensor: "Sensor", gateway: "Gateway" };
     const tipo = dev.tipo || "camera";
     const aviso = tipo !== "camera"
       ? `<span class="motivo-3d ok">${escapar(rotuloTipo[tipo])} — sem visão 3D</span>`
@@ -783,10 +783,11 @@ let editandoId = null;
 const AJUDA_TIPO = {
   camera: "Tem visão 3D, PTZ e detecção de rachaduras. Precisa de localidade "
         + "com modelo .glb e de latitude/longitude.",
-  sensor: "Manda as próprias telemetrias (ex.: distancia, bateria_v). Os "
-        + "widgets dele são escolhidos só pela telemetria.",
-  gateway: "Fala por vários equipamentos remotos (LoRa) numa mensagem só. "
-         + "Cada widget é escolhido pelo equipamento (deviceID) E pela telemetria.",
+  sensor: "Equipamento que mede e fala por si mesmo (ex.: distância, "
+        + "bateria_v). Os widgets dele são escolhidos só pela telemetria.",
+  gateway: "Recebe de vários equipamentos remotos (rádio) e reenvia tudo numa "
+         + "mensagem só. Cada widget é escolhido pelo equipamento (deviceID) "
+         + "E pela telemetria.",
 };
 
 function descreverTipo() {

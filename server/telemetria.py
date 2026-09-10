@@ -33,7 +33,6 @@ que passa 10 minutos acima do limite geraria um evento por leitura e
 afogaria o sininho de notificacoes.
 """
 import os
-import time
 
 from fastapi import Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -273,7 +272,7 @@ def instalar(app, manager=None):
         amostras = separar(valores, e_gateway, conhecidos)
         amostras = [a for a in amostras if a[1]]      # descarta chave vazia
         db.gravar_telemetria(device.id, amostras)
-        device.estado.ultimo_visto = time.time()
+        rd.marcar_visto(device)
 
         eventos = avaliar_alarmes(device.id, amostras)
         if ctx_manager is not None:
