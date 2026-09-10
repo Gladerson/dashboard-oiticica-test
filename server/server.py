@@ -490,9 +490,51 @@ async def detection_core(device_id, payload: DetectionPayload):
             evento = {"type": "detection", "cone": result["cone"], **entrada_nova}
             resposta = {"status": "ok", "id": det_id, "hit_point": hit}
 
+    # Uma deteccao NOVA entra no mesmo feed dos alarmes: sininho, histórico de
+    # alertas e a tabela de alarmes do Monitoramento. Antes, a visao
+    # computacional so aparecia no painel 3D -- quem estivesse olhando a tela
+    # de telemetria nao ficava sabendo de uma fissura nova.
+    #
+    # So a deteccao NOVA. Repeticao no mesmo ponto e rearme nao geram evento:
+    # o sininho viraria ruido e ninguem mais leria.
+    if entrada_nova is not None:
+        await _avisar_deteccao(device, entrada_nova)
+
     if evento is not None:
         await manager.broadcast(evento)
     return resposta
+
+
+async def _avisar_deteccao(device, entrada):
+    """Registra a deteccao como evento e avisa os dashboards na hora."""
+    if device is None:
+        return
+    try:
+        titulo = "Fissura detectada"
+        if entrada.get("reincide_falso_positivo"):
+            # Reincidencia em ponto ja julgado falso positivo merece um rotulo
+            # proprio: e informacao para quem julga, nao um alerta igual aos
+            # outros.
+            titulo = "Detecção em ponto já marcado como falso positivo"
+        ev = await run_in_threadpool(
+            db.registrar_evento_visao, device.id, titulo,
+            {"det_id": entrada["id"], "hit_point": entrada.get("hit_point"),
+             "coord_p": entrada.get("coord_p"), "coord_t": entrada.get("coord_t")},
+            "atencao" if entrada.get("reincide_falso_positivo") else "alerta")
+    except Exception as e:
+        # Nunca derrubar a ingestao de deteccao por causa do sininho.
+        print(f"[deteccao] nao consegui registrar o evento: {e}")
+        return
+    await manager.broadcast({
+        "type": "alarme",                 # o sininho ja escuta este tipo
+        "origem": "visao",
+        "device_id": device.id,
+        "dispositivo_nome": device.nome,
+        "titulo": titulo,
+        "estado": "disparado",
+        "severidade": ev["severidade"],
+        "det_id": entrada["id"],
+    })
 
 
 @app.post("/api/detection")

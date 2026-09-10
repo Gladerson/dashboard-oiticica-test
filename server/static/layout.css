@@ -314,3 +314,7 @@ td button:hover { border-color: var(--accent); }
   background: var(--accent); color: #fff; font-family: inherit;
 }
 .aviso-sessao button:hover { filter: brightness(1.08); }
+
+/* Evento vindo da visao computacional, no sininho: barra lateral propria
+   para o operador distinguir de um alarme de telemetria sem ler o texto. */
+.sino-painel li.visao { border-left: 3px solid var(--accent); padding-left: 9px; }

@@ -227,6 +227,20 @@ CREATE TABLE IF NOT EXISTS alarmes_eventos (
     em              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_alarmes_eventos_em ON alarmes_eventos(em DESC);
+
+-- O feed do sininho deixou de ser so de alarmes de telemetria: as deteccoes
+-- da visao computacional entram aqui tambem. Em vez de uma segunda tabela --
+-- que obrigaria a unir duas fontes na consulta, no contador de nao lidos e no
+-- "marcar como lido" --, a mesma tabela passa a aceitar um evento SEM regra
+-- de alarme: `alarme_id` vira opcional e `origem` diz de onde veio.
+ALTER TABLE alarmes_eventos ALTER COLUMN alarme_id DROP NOT NULL;
+ALTER TABLE alarmes_eventos ADD COLUMN IF NOT EXISTS origem TEXT NOT NULL DEFAULT 'alarme';
+ALTER TABLE alarmes_eventos ADD COLUMN IF NOT EXISTS dispositivo_id UUID
+    REFERENCES dispositivos(id) ON DELETE CASCADE;
+ALTER TABLE alarmes_eventos ADD COLUMN IF NOT EXISTS titulo TEXT;
+ALTER TABLE alarmes_eventos ADD COLUMN IF NOT EXISTS severidade TEXT;
+ALTER TABLE alarmes_eventos ADD COLUMN IF NOT EXISTS detalhe JSONB;
+CREATE INDEX IF NOT EXISTS ix_alarmes_eventos_origem ON alarmes_eventos(origem, em DESC);
 """
 
 
@@ -807,15 +821,39 @@ def registrar_evento_alarme(alarme_id, valor, estado):
         ).fetchone()
 
 
+def registrar_evento_visao(dispositivo_id, titulo, detalhe=None, severidade="alerta"):
+    """Uma deteccao da visao computacional no mesmo feed dos alarmes.
+
+    Sem `alarme_id`: nao ha regra de limiar por tras, e o evento existe por si.
+    `detalhe` carrega o id da deteccao no historico, para o sininho poder
+    levar o operador direto a evidencia."""
+    with pool.connection() as conn:
+        return conn.execute(
+            "INSERT INTO alarmes_eventos "
+            "  (origem, dispositivo_id, titulo, severidade, estado, detalhe) "
+            "VALUES ('visao', %s, %s, %s, 'disparado', %s) RETURNING *",
+            (dispositivo_id, titulo, severidade, Jsonb(detalhe or {})),
+        ).fetchone()
+
+
 def listar_eventos_alarme(limite=50, apenas_nao_lidos=False):
+    """Alarmes de telemetria E deteccoes de visao, na mesma ordem cronologica.
+
+    LEFT JOIN porque o evento de visao nao tem regra: os campos de alarme
+    (chave, condicao, limite) vem nulos, e quem desenha usa `origem` para
+    saber o que mostrar. O dispositivo vem da regra quando ha uma, e da
+    propria linha quando nao ha."""
     filtro = "WHERE NOT e.lido" if apenas_nao_lidos else ""
     with pool.connection() as conn:
         return conn.execute(
-            "SELECT e.*, a.titulo, a.chave, a.sub_id, a.condicao, a.limite, "
-            "       a.severidade, d.nome AS dispositivo_nome, d.id AS dispositivo_id "
+            "SELECT e.*, "
+            "       COALESCE(a.titulo, e.titulo) AS titulo, "
+            "       a.chave, a.sub_id, a.condicao, a.limite, "
+            "       COALESCE(a.severidade, e.severidade, 'alerta') AS severidade, "
+            "       d.nome AS dispositivo_nome, d.id AS dispositivo_id "
             "FROM alarmes_eventos e "
-            "JOIN alarmes a ON a.id = e.alarme_id "
-            "JOIN dispositivos d ON d.id = a.dispositivo_id "
+            "LEFT JOIN alarmes a ON a.id = e.alarme_id "
+            "LEFT JOIN dispositivos d ON d.id = COALESCE(a.dispositivo_id, e.dispositivo_id) "
             f"{filtro} ORDER BY e.em DESC LIMIT %s", (int(limite),)
         ).fetchall()
 
