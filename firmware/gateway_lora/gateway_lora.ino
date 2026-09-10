@@ -45,10 +45,13 @@
 // CONFIGURACAO (EDITE AQUI)
 // ===========================================================================
 
-// "WIFI" ou "4G"
+// Transporte do gateway. As duas linhas de cima sao apenas ROTULOS (0 e 1) e
+// nao devem ser trocadas -- quem escolhe e a terceira linha.
+// No Wi-Fi quem faz o TLS e o ESP32 (confere a cadeia, mas precisa de relogio
+// certo -- ver sincronizarRelogio()); no 4G quem faz e o modem.
 #define TIPO_CONEXAO_WIFI   0
 #define TIPO_CONEXAO_4G     1
-#define TIPO_CONEXAO        TIPO_CONEXAO_4G
+#define TIPO_CONEXAO        TIPO_CONEXAO_4G   // <-- troque so esta linha
 
 // --- Servidor HydroConecta ---
 // TEM de ser o dominio, nao o IP: o certificado e emitido para o nome, e a
@@ -62,8 +65,8 @@ static const char* SERVIDOR_ROTA  = "/api/edge/dados";
 static const char* DEVICE_TOKEN = "COLE-AQUI-O-TOKEN-DO-GATEWAY";
 
 // --- Wi-Fi (se TIPO_CONEXAO for WIFI) ---
-static const char* WIFI_SSID = "ADM";
-static const char* WIFI_PASS = "G@b!#2023";
+static const char* WIFI_SSID = "COLE-AQUI-O-SSID";
+static const char* WIFI_PASS = "COLE-AQUI-A-SENHA";
 
 // --- 4G (se TIPO_CONEXAO for 4G) ---
 // Vivo: zap.vivo.com.br (vivo/vivo) | Claro: java.claro.com.br (claro/claro)
@@ -82,6 +85,8 @@ static const int  FALHAS_ATE_RECONECTAR = 4;               // POSTs seguidos
 
 #include <esp_task_wdt.h>
 #include <HardwareSerial.h>
+#include <time.h>
+#include <sys/time.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -246,6 +251,7 @@ void setup() {
   }
 
   conectarRede();
+  sincronizarRelogio();
   configurarTLS();
 
   Serial.println("=== GATEWAY PRONTO ===");
@@ -275,7 +281,10 @@ void loop() {
   if (millis() - ultimoEnvio >= INTERVALO_ENVIO_MS) {
     ultimoEnvio = millis();
     marcarSensoresSilenciosos();
-    if (rede) enviarTelemetria();
+    if (rede) {
+      garantirRelogio();
+      enviarTelemetria();
+    }
   }
 }
 
@@ -583,6 +592,15 @@ void tentarReconectar() {
 #endif
 }
 
+// Chamado quando a rede volta: se o boot aconteceu sem hora (sem sinal, por
+// exemplo), e aqui que ela e finalmente acertada -- senao o equipamento
+// passaria a vida sem conseguir fechar o TLS.
+void garantirRelogio() {
+  time_t agora = 0;
+  time(&agora);
+  if (agora < 1700000000) sincronizarRelogio();
+}
+
 void reconectarRede() {
 #if TIPO_CONEXAO == TIPO_CONEXAO_4G
   modem.gprsDisconnect();
@@ -593,6 +611,53 @@ void reconectarRede() {
   esperarComWatchdog(500);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 #endif
+}
+
+// ===========================================================================
+// RELOGIO
+//
+// Conferir um certificado exige saber a data: o TLS recusa um certificado
+// "ainda nao valido" se o relogio estiver antes do notBefore dele. E o ESP32
+// acorda em 1970.
+//
+// No caminho 4G isso nao aparecia, porque quem faz o TLS e o modem -- e ele
+// pega a hora da propria rede da operadora. No Wi-Fi, quem faz o TLS e o
+// ESP32: sem acertar o relogio, TODO envio falha com um erro generico de
+// handshake, e se perde tempo procurando problema de rede que nao existe.
+// ===========================================================================
+void sincronizarRelogio() {
+  time_t agora = 0;
+
+#if TIPO_CONEXAO == TIPO_CONEXAO_4G
+  // O NTP do lwIP nao atravessa o modem; a hora vem do proprio SIM7600.
+  int ano = 0, mes = 0, dia = 0, h = 0, m = 0, seg = 0; float fuso = 0;
+  if (modem.getNetworkTime(&ano, &mes, &dia, &h, &m, &seg, &fuso) && ano > 2020) {
+    struct tm t = {};
+    t.tm_year = ano - 1900; t.tm_mon = mes - 1; t.tm_mday = dia;
+    t.tm_hour = h; t.tm_min = m; t.tm_sec = seg;
+    time_t utc = mktime(&t) - (time_t)(fuso * 900);   // fuso vem em 1/4 de hora
+    struct timeval tv = { .tv_sec = utc, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    agora = utc;
+  }
+#else
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  const unsigned long inicio = millis();
+  while (agora < 1700000000 && millis() - inicio < 20000) {
+    esperarComWatchdog(500);
+    time(&agora);
+  }
+#endif
+
+  if (agora < 1700000000) {
+    Serial.println("[hora] NAO sincronizada -- o TLS provavelmente vai recusar "
+                   "o certificado. O envio sera retentado a cada ciclo.");
+    return;
+  }
+  struct tm t;
+  gmtime_r(&agora, &t);
+  Serial.printf("[hora] %04d-%02d-%02d %02d:%02d UTC\n",
+                t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min);
 }
 
 // ===========================================================================

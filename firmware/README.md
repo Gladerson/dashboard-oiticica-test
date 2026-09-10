@@ -35,6 +35,20 @@ de JSON (inclusive estouro de buffer e NaN) e as regras de nível (inclusive
 calibração incoerente). Se mexer nos cabeçalhos, rode isto antes de gravar
 qualquer coisa em campo.
 
+## Wi-Fi ou 4G no gateway
+
+Só a terceira linha muda; as duas de cima são rótulos:
+
+```cpp
+#define TIPO_CONEXAO        TIPO_CONEXAO_WIFI   // ou TIPO_CONEXAO_4G
+```
+
+No Wi-Fi, preencha `WIFI_SSID`/`WIFI_PASS`, a TinyGSM deixa de ser necessária
+e o TLS passa a ser feito pelo ESP32 — que **confere** a cadeia (o modem do
+caminho 4G não confere). Por isso o Wi-Fi depende do relógio: o sketch acerta
+a hora por NTP antes do primeiro envio e a cada envio se ela ainda não estiver
+acertada. Detalhes no README principal, seção **9-sexies**.
+
 ## Antes de gravar
 
 1. **`DEVICE_TOKEN`** no gateway: crie o dispositivo no painel
