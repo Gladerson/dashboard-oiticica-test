@@ -1,0 +1,61 @@
+/* ==========================================================================
+   widgets.css - Aparencia do CONTEUDO de um widget de telemetria.
+
+   Par de widgets.js: as duas telas que desenham widgets (Telemetrias e os
+   graficos flutuantes do Painel SHM) carregam este arquivo, e a moldura
+   (fundo, borda, cabecalho, alca) fica com cada tela -- num quadro solido
+   ali, numa janela translucida sobre o 3D aqui.
+
+   Tudo esta preso a `.wgt-corpo` de proposito. O dashboard ja tem `.ponto`
+   (a bolinha do "AO VIVO") e `.vazio`; sem o escopo, incluir este arquivo la
+   mudaria elementos que nada tem a ver com widgets.
+   ========================================================================== */
+
+.wgt-corpo {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  min-height: 0; overflow: hidden;   /* nada escapa da moldura do widget */
+}
+.wgt-corpo svg { width: 100%; height: 100%; display: block; }
+
+.wgt-corpo .cartao-valor { text-align: center; }
+.wgt-corpo .cartao-valor .n { font-size: 34px; font-weight: 700; line-height: 1.1; }
+.wgt-corpo .cartao-valor .u { font-size: 14px; color: var(--muted); margin-left: 4px; }
+.wgt-corpo .cartao-valor .quando { font-size: 10px; color: var(--muted); margin-top: 6px; }
+
+.wgt-corpo .status-linha {
+  display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0;
+}
+.wgt-corpo .status-linha .v { color: var(--muted); }
+.wgt-corpo .ponto { width: 10px; height: 10px; border-radius: 999px; flex: none; }
+.wgt-corpo .ponto.ok { background: var(--ok); }
+.wgt-corpo .ponto.ruim { background: var(--danger); }
+.wgt-corpo .ponto.aviso { background: var(--warn); }
+.wgt-corpo .ponto.desconhecido { background: var(--muted); }
+
+.wgt-corpo table.alarmes { width: 100%; border-collapse: collapse; font-size: 11px; }
+.wgt-corpo table.alarmes th, .wgt-corpo table.alarmes td {
+  text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--border);
+}
+.wgt-corpo table.alarmes th {
+  color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 10px;
+}
+.wgt-corpo table.alarmes tr.disparado td:first-child { color: var(--danger); font-weight: 600; }
+.wgt-corpo table.alarmes tr.normalizado td:first-child { color: var(--ok); }
+.wgt-corpo table.alarmes button {
+  font-size: 10px; padding: 2px 6px; border-radius: 6px; cursor: pointer;
+  background: transparent; color: var(--muted); border: 1px solid var(--border);
+}
+.wgt-corpo table.alarmes button:hover { color: var(--danger); border-color: var(--danger); }
+.wgt-corpo .sub-titulo { font-size: 11px; color: var(--muted); margin: 14px 0 4px; }
+
+.wgt-corpo .vazio {
+  color: var(--muted); font-size: 12px; text-align: center; padding: 26px 10px;
+  line-height: 1.6;
+}
+.wgt-corpo .legenda {
+  display: flex; gap: 10px; flex-wrap: wrap; font-size: 10px;
+  color: var(--muted); margin-top: 6px;
+}
+.wgt-corpo .legenda i {
+  width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 4px;
+}

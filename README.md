@@ -11,7 +11,7 @@ Duas frentes, no mesmo painel:
   câmera PTZ, inferência em borda (Raspberry Pi 5 + Hailo-8L) e visualização
   3D georreferenciada. É o **Painel SHM** do menu;
 - **Telemetria de sensores** — nível, piezômetros e afins, por ESP32 (direto
-  ou via gateway), com widgets e alarmes. É o **Monitoramento** do menu.
+  ou via gateway), com widgets e alarmes. É a tela **Telemetrias** do menu.
 
 O Raspberry executa a inferência localmente e envia ao servidor **apenas
 metadados**. O vídeo sobe unicamente quando o operador pede, e por tempo
@@ -119,8 +119,12 @@ dashboard_oiticica_test/
 │   ├── migrar_dispositivo_legado.py  # cadastra o dispositivo/localidade que antes eram hardcoded (§9-bis)
 │   ├── prepare_model.sh            # remove compressão Draco do .glb (rodar uma vez, uso manual)
 │   ├── static/layout.css           # casca visual comum: menu lateral, barra de título, cartões, tabelas
-│   ├── static/layout.js            # monta o menu/barra nas três telas (um lugar só para a navegação)
+│   ├── static/layout.js            # monta o menu/barra nas telas (um lugar só para a navegação)
+│   ├── static/widgets.js           # motor de desenho dos widgets (usado por Telemetrias E pelo Painel SHM)
+│   ├── static/widgets.css          # aparência do conteúdo do widget (escopada em .wgt-corpo)
+│   ├── static/quadro.js            # arrastar/redimensionar caixas, com ou sem regra de sobreposição
 │   ├── static/dashboard.html       # Three.js: modelo, cone, telinha, histórico, marcações 3D
+│   ├── static/monitoramento.html   # Telemetrias: quadro de widgets e alarmes por equipamento
 │   ├── static/login.html           # tela de entrada (marca embutida: /estatico exige sessão)
 │   ├── static/logo-hydroconecta.svg # assinatura da marca, em vetor
 │   ├── static/config.html          # tema, própria senha, administração de usuários (admin)
@@ -163,6 +167,8 @@ dashboard_oiticica_test/
 | raycasting, cone, coordenadas 3D | `server/glb_geo.py` (`GeoModel`, um por localidade) |
 | histórico, dedup, WebSocket | `server/server.py` |
 | interface, marcações 3D, telinha | `server/static/dashboard.html` |
+| desenho dos widgets (as duas telas) | `server/static/widgets.js` + `widgets.css` |
+| arrastar/redimensionar caixas | `server/static/quadro.js` |
 | menu lateral, barra de título, tema | `server/static/layout.css` + `layout.js` |
 | login, sessão, usuários | `server/auth.py` + `server/db.py` |
 | localidades, modelos 3D, dispositivos | `server/dispositivos.py` |
@@ -665,16 +671,110 @@ recolher o menu não redimensiona a janela).
 
 Duas decisões de layout que vieram de problemas reais de operação:
 
-- **A navegação não flutua mais sobre o vídeo.** Antes era uma barra
-  `position:fixed` no canto superior direito, que passava por cima do widget
-  da câmera e cobria o nome dela. Agora ocupa espaço próprio (menu + barra
-  de título), então nada fica escondido.
+- **A navegação não flutua sobre o vídeo.** Houve uma barra `position:fixed`
+  no canto superior direito que passava por cima do widget da câmera e cobria
+  o nome dela. Menu e barra de título ocupam espaço próprio, e o que voltou a
+  flutuar sobre a cena (miniaturas, lista de equipamentos, gráficos) fica
+  **dentro do viewport 3D**, nunca sobre a coluna da câmera.
 - **As pastilhas de estado da borda são uma grade 2×2 fixa.** Antes eram
   flex com quebra de linha: quando o fps passava de um dígito
   (`24.5 fps`), a pastilha `vídeo: X KB` caía para uma terceira linha e
   **empurrava o controle PTZ para baixo** — o operador clicava onde o botão
   estava um segundo antes. Com duas linhas sempre, a altura do bloco não
   depende do texto e o PTZ não se move.
+
+### Painel SHM: escolher a câmera, ver os equipamentos
+
+O viewport 3D carrega três coisas por cima da cena. Todas são **controles**,
+por isso ficam acima das janelas flutuantes na ordem de empilhamento: se um
+gráfico as cobrisse, não haveria como desligar o gráfico.
+
+**1. Miniaturas das câmeras (rodapé, centralizado).** Escolher qual câmera
+olhar é a ação mais frequente do painel, e estava escondida num `<select>` da
+barra de título — no canto oposto ao modelo. Agora são oito ladrilhos:
+
+| Estado | O que aparece |
+|---|---|
+| Lugar vago | **None**, em traço pontilhado, **sem clique** |
+| Câmera online | nome + **bolinha verde** no canto |
+| Câmera offline | nome + **bolinha vermelha**, e a dica do mouse diz há quanto tempo está sem contato |
+
+São **oito lugares sempre**, mesmo com uma câmera só. Uma grade que muda de
+tamanho a cada cadastro obriga o operador a reprocurar o botão da câmera dele;
+com os vagos desenhados, o painel tem uma forma fixa desde o primeiro dia.
+
+Uma câmera **sem modelo 3D** continua na grade (marcada "sem visão 3D"):
+escondê-la deixaria aquele dispositivo sem nenhuma forma de ser aberto, agora
+que o `<select>` não existe mais.
+
+Sensor e gateway **não** aparecem aqui. Esta tela é a da visão computacional —
+eles não têm cone, modelo 3D nem PTZ, e oferecê-los levava a uma tela que não
+funciona para eles.
+
+**2. Equipamentos da localidade (canto superior direito).** Os sensores e
+gateways da **mesma localidade** daquela câmera, cada um com bolinha de
+presença e uma **chave liga/desliga**. Sem localidade cadastrada a lista não
+aparece: não há como dizer quem pertence à mesma barragem, e listar todos
+faria o operador acreditar que aquele sensor está ali.
+
+**3. Gráficos flutuantes.** Ligar a chave de um equipamento traz os widgets
+**já configurados em Telemetrias** para cima da cena — os mesmos, desenhados
+pelo mesmo código (`widgets.js`). Eles são translúcidos de propósito: convivem
+com o modelo, não o substituem. Arraste pelo cabeçalho, redimensione pela alça
+do canto; a posição fica salva **no navegador** (`localStorage`), não no banco
+— é o arranjo daquela pessoa naquela tela, e não pode mexer no layout que ela
+montou em Telemetrias.
+
+A camada das janelas tem `pointer-events: none` e só as janelas em si
+recebem o ponteiro. Sem isso, girar o modelo com o mouse deixaria de
+funcionar em metade do viewport.
+
+Três detalhes que só apareceram testando, e que valem para qualquer coisa que
+flutue sobre outra:
+
+- **tocar numa janela a traz para a frente** — e o ouvinte tem de ser de
+  **captura**. `quadro.js` chama `stopPropagation()` no cabeçalho e na alça
+  (para o arrasto não virar clique no que está atrás), então um ouvinte de
+  bolha nunca seria chamado. Sem isso, a janela de baixo ficava com a alça
+  coberta pela de cima e simplesmente não redimensionava;
+- **as janelas nascem menores** que o padrão de Telemetrias (62%). A área útil
+  aqui é o viewport menos a lista de equipamentos e a faixa de miniaturas;
+  quatro janelas do tamanho cheio faziam uma cobrir o cabeçalho da outra;
+- **quando o espaço acaba mesmo**, a próxima volta ao topo em cascata,
+  deslocada. Sobrepor é inevitável (quatro janelas somam mais altura que a
+  tela tem), mas cair exatamente por cima da primeira esconderia o cabeçalho e
+  a alça dela — e uma janela sem cabeçalho visível não pode nem ser arrastada
+  para fora do caminho.
+
+### O PTZ mora dentro da telinha
+
+Os controles de pan/tilt/zoom ficam **sobre a imagem da câmera**, na faixa de
+baixo, translúcidos (55% de opacidade, 100% quando o ponteiro entra na
+telinha).
+
+Antes eles ficavam **entre** a telinha e o histórico de detecções. Como as
+duas áreas são redimensionáveis pelo divisor horizontal, bastava o operador
+dar mais espaço ao histórico para os botões ficarem espremidos — ou sumirem no
+rolamento do painel. Dentro do vídeo eles têm lugar garantido, e ficam onde a
+mão já está quando se olha a imagem. De quebra, libera espaço no centro da
+coluna.
+
+Um detalhe que essa mudança criou e precisou de conserto: a telinha inteira é
+um botão ("clique para ligar/desligar o vídeo"). Sem barrar a propagação do
+clique no `#ptz-overlay`, cada seta movia a câmera **e** desligava o stream no
+mesmo clique.
+
+O que continua embaixo da telinha, sem mudança: as pastilhas de estado da
+borda, o limiar de confiança, `Comandos: <estado>`, `Pan/Tilt/Zoom` e as duas
+linhas de ajuda (segurar os botões, `Shift` + arrastar).
+
+### A malha do 3D é discreta
+
+A malha do chão existe para dar **noção de escala**, não para ser olhada. Com
+40 divisões e linhas cheias ela competia com a textura da barragem — e num
+modelo fotogramétrico a textura **é o dado**. Agora são 20 divisões, cores
+mais suaves, material transparente com opacidade 0,18 e `depthWrite: false`
+(a malha não "arranha" o modelo por cima).
 
 ### O agente sobrevive à câmera
 
@@ -943,13 +1043,17 @@ ficar completo (sem *fallback* para a geometria de outro dispositivo, ver
 
 ### No dashboard
 
-`server/static/dashboard.html` agora mostra um seletor de dispositivo no
-canto superior direito (populado por `/api/dispositivos`, respeitando o
-mesmo filtro "só os próprios, admin vê todos" do cadastro). A escolha fica
-salva por navegador (`localStorage`) e também na URL (`?device_id=...`, para
-favoritar/compartilhar um link direto de uma câmera específica). Sem nenhum
-dispositivo cadastrado para o usuário logado, a tela mostra um aviso e não
-tenta carregar modelo 3D nem vídeo.
+`server/static/dashboard.html` escolhe a câmera pela **grade de miniaturas**
+no rodapé do viewport 3D (§8), populada por `/api/dispositivos` e filtrada
+para `tipo = camera`, respeitando o mesmo "só os próprios, admin vê todos" do
+cadastro. A escolha fica salva por navegador (`localStorage`) e também na URL
+(`?device_id=...`, para favoritar/compartilhar um link direto de uma câmera
+específica). Sem nenhuma câmera cadastrada para o usuário logado, a tela
+mostra um aviso e não tenta carregar modelo 3D nem vídeo.
+
+Trocar de câmera **recarrega a página** com o novo `?device_id=`, em vez de
+remontar a cena Three.js em memória — mais simples e mais confiável do que
+descartar e reconstruir modelo + rig + cone na hora.
 
 ---
 
@@ -1037,14 +1141,68 @@ câmera. Agora:
 
 O cadastro em **Dispositivos** ganhou o campo **Tipo**:
 
-| Tipo | O que é | Precisa de modelo 3D? |
-|---|---|---|
-| `camera` | Raspberry + PTZ: visão 3D, stream, detecção de rachaduras | sim |
-| `sensor` | ESP32 que manda as próprias telemetrias | não |
-| `gateway` | ESP32 que recebe de N controladores (LoRa) e reenvia tudo junto | não |
+| Tipo | Rótulo na tela | O que é | Precisa de modelo 3D? |
+|---|---|---|---|
+| `camera` | **Câmera PTZ fixa** | Raspberry + PTZ: visão 3D, stream, detecção de rachaduras | sim |
+| `sensor` | **Sensor** | equipamento que mede e fala por si mesmo | não |
+| `gateway` | **Gateway** | recebe de N equipamentos remotos (rádio) e reenvia tudo junto | não |
+
+Os rótulos não citam mais ESP32 nem Raspberry. Quem opera a barragem escolhe
+pelo **papel** do equipamento; a placa que está lá dentro pode mudar sem que a
+tela minta. O valor gravado no banco continua o mesmo (`camera`, `sensor`,
+`gateway`), então nada precisa ser migrado — e a explicação de cada tipo
+segue logo abaixo do seletor, na tela de edição.
 
 Sensor e gateway não cobram mais "sem visão 3D" na listagem — isso não é
 defeito neles.
+
+O ícone de **Dispositivos** no menu lateral é um **chip**, não uma câmera:
+esta tela cadastra qualquer equipamento, e o ícone de câmera fazia parecer que
+sensores e gateways moravam em outro lugar.
+
+### Online ou offline: quem responde é o servidor
+
+Nenhum equipamento deste projeto aceita conexão de fora — todos falam **de
+saída** (ver §9-quater). Não há como "pingar" um sensor: a única evidência de
+que ele está vivo é **ter falado há pouco**.
+
+Por isso a presença é um fato gravado no banco. A coluna
+`dispositivos.visto_em` é carimbada em **todo** caminho por onde um
+equipamento fala com o servidor:
+
+| Caminho | Quem |
+|---|---|
+| `POST /api/edge/telemetria` | câmera (Raspberry) |
+| `POST /api/edge/deteccao` | câmera |
+| `POST /api/edge/dados` | sensor e gateway |
+
+E `/api/dispositivos` devolve, para cada um:
+
+```json
+{"online": true, "visto_em": "2026-09-10T18:00:00+00:00",
+ "silencio_s": 2.0, "offline_apos_s": 180}
+```
+
+**Offline = silêncio maior que `DISPOSITIVO_OFFLINE_S`** (padrão 180 s). O
+padrão cobre com folga as duas cadências reais do projeto — a câmera reporta a
+cada 3 s, o gateway a cada 15 s — sem piscar vermelho a cada POST perdido. Um
+equipamento que **nunca** falou aparece como offline, que é a resposta honesta
+para um cadastro recém-criado cujo equipamento ainda não foi ligado.
+
+Duas escolhas de implementação que valem registro:
+
+- **a escrita é estrangulada** (`INTERVALO_VISTO_S = 30 s`, em
+  `registro_dispositivos.py`). Uma câmera reporta a cada 3 s; um `UPDATE` por
+  reporte seria uma escrita por segundo, por câmera, o dia inteiro, para
+  sustentar um dado que ninguém lê com essa resolução;
+- **falha de banco aqui não derruba a ingestão.** Perder um carimbo de
+  presença é menos grave que recusar a telemetria que veio junto.
+
+Isto **não substitui** a pastilha `borda: online` da coluna da câmera, que
+continua sendo o estado vivo em memória (janela de 5 s) e é o que distingue
+"Raspberry mudo" de "câmera sem resposta". A presença do banco é o que
+sobrevive a um reinício do servidor e o que as **listas** consultam — as
+miniaturas e os equipamentos da localidade.
 
 ### Como os dados sobem
 
@@ -1103,9 +1261,9 @@ a adivinhação.
 Booleano é gravado como número **e** texto (`1`/`"true"`): assim o mesmo dado
 serve para um alarme numérico e para um indicador de status.
 
-### Tela de Monitoramento
+### Tela de Telemetrias
 
-Menu lateral → **Monitoramento** (ou o botão **Painel** na linha do
+Menu lateral → **Telemetrias** (ou o botão **Painel** na linha do
 equipamento em Dispositivos). Widgets por equipamento:
 
 | Widget | Para quê |
@@ -1124,23 +1282,74 @@ oferecem o que aquele equipamento já enviou — o operador escolhe, não digita
 Todos os gráficos são **SVG desenhado pelo próprio código**, sem CDN: o painel
 precisa abrir numa rede sem internet.
 
-### Manipular os widgets
+> A tela chamava-se **Monitoramento**. O nome era vago — o sistema inteiro é
+> monitoramento — e não dizia o que ali se faz: configurar telemetria.
 
-Cada widget pode ser **redimensionado, movido e editado** direto na tela:
+### O motor de desenho é compartilhado
+
+O código que desenha os widgets mora em **`server/static/widgets.js`**
+(aparência em `widgets.css`), e não dentro da tela de Telemetrias. O motivo é
+concreto: **os mesmos gráficos aparecem em dois lugares** — aqui, onde são
+configurados, e flutuando sobre o modelo 3D no Painel SHM (ver §8). Duas
+cópias divergiriam, e a divergência apareceria do pior jeito: "no painel está
+certo, no 3D está velho".
+
+`widgets.js` não tem estado global. Tudo que o desenho precisa chega num
+contexto:
+
+```js
+Widgets.desenhar(widget, elementoAlvo, {
+  deviceId, base, ultimos, alarmes, eventos,
+  aoExcluirAlarme,   // opcional -- sem ela a tabela nem mostra "excluir"
+});
+```
+
+É por isso que o Painel SHM consegue ter vários equipamentos abertos ao mesmo
+tempo, cada um com os seus valores. E é por isso que a tabela de alarmes é
+**somente leitura** lá: sem `aoExcluirAlarme`, o botão não existe. Mexer em
+regra é aqui, onde estão todos os controles.
+
+O CSS é todo escopado em `.wgt-corpo`. Sem isso, incluir `widgets.css` no
+dashboard mudaria elementos que nada têm a ver com widgets — o painel já tem
+uma classe `.ponto` (a bolinha do "AO VIVO") e uma `.vazio`.
+
+### Manipular os widgets: quadro livre
+
+Cada widget tem **posição e tamanho próprios**, arrastáveis livremente. A
+única regra é que **não podem se sobrepor**.
 
 | Ação | Como |
 |---|---|
-| Redimensionar | arraste a **alça** do canto inferior direito. O tamanho aparece durante o arrasto (`2 × 2`) e é salvo ao soltar |
-| Mover | arraste pelo **cabeçalho** e solte sobre outro widget |
+| Mover | arraste pelo **cabeçalho** |
+| Redimensionar | arraste a **alça** do canto inferior direito |
 | Editar | botão **editar** — abre o mesmo formulário da criação, já preenchido |
 | Remover | botão **remover** |
 
-O tamanho vive em `config.cols` / `config.rows` (1 a 4 células). A grade tem
-células de tamanho fixo — com colunas elásticas, o mesmo "2 × 2" daria
-tamanhos diferentes em cada tela. Em telas estreitas o número de colunas cai
-(3, 2 e 1), e o `span` de um widget nunca passa do total disponível.
+Antes isto era uma **grade de células fixas**: o widget só podia ocupar de 1 a
+4 colunas por 1 a 4 linhas, e "mover" era trocar a **ordem na fila**. Não dava
+para, por exemplo, pôr o medidor de nível ao lado do gráfico e deixar o resto
+do espaço livre.
 
-A ordem vive em `ordem`, gravada com um `PATCH` por widget afetado.
+Como funciona por dentro (`server/static/quadro.js`):
+
+- enquanto arrasta, a caixa **segue o ponteiro** de verdade. Prendê-la no
+  último lugar válido faz o arrasto parecer travado;
+- a cada quadro, o retângulo proposto é testado. Se invade outro widget, ele
+  fica **marcado em vermelho** e não vira o estado gravado;
+- ao soltar, vale o **último retângulo válido**. Soltar num lugar proibido
+  devolve a caixa para onde ela cabia, em vez de gravar uma sobreposição;
+- há um ímã de 8 px, só para as bordas encostarem alinhadas — não é uma grade:
+  qualquer largura múltipla de 8 vale.
+
+**Onde a geometria é guardada:** `config.qx` e `config.qw` em **porcentagem**
+da largura do quadro; `config.qy` e `config.qh` em **pixels**. A mistura é
+deliberada. Tudo em pixels faria o painel montado num monitor de 27" abrir com
+metade dos widgets fora da tela num notebook; tudo em porcentagem faria um
+card de valor virar uma tira fina numa tela alta.
+
+Quem já tinha widgets na grade antiga não perde nada: na primeira abertura, o
+`cols`/`rows` de cada um vira largura e altura equivalentes, e eles são
+distribuídos no primeiro lugar livre, de cima para baixo.
 
 ### Números grandes nunca estouram a caixa
 
@@ -1168,13 +1377,17 @@ Agora cada widget é um elemento **vivo**, guardado num `Map` por id. A cada
 atualização:
 
 1. some quem foi removido, nasce quem é novo;
-2. a ordem só é mexida se estiver fora de lugar;
-3. calcula-se uma **assinatura** do que aquele widget mostra (valores,
-   config, tamanho). Se não mudou, ele **não é tocado**.
+2. quem está sendo arrastado naquele instante **não é reposicionado** (senão
+   uma telemetria chegando no meio do caminho faria a caixa pular de volta);
+3. calcula-se uma **assinatura** do que aquele widget mostra (valores e
+   config). Se não mudou, ele **não é tocado**.
 
-Medido com um `MutationObserver` na grade: duas telemetrias seguidas
+Medido com um `MutationObserver` no quadro: duas telemetrias seguidas
 produzem **zero** adições ou remoções de filhos, e os mesmos elementos
 continuam lá. Só o conteúdo de quem realmente mudou é redesenhado.
+
+O mesmo vale para as janelas flutuantes do Painel SHM: elas usam
+`Widgets.assinatura()` exatamente igual.
 
 Uma armadilha que apareceu nesse caminho e vale conhecer: os manipuladores
 de evento nascem uma vez, com o objeto de widget daquele momento — mas
@@ -1250,7 +1463,7 @@ O payload é **aninhado**, um objeto por equipamento:
 
 Cada chave de primeiro nível dentro de `values` vira um **`sub_id`** no
 servidor; cada chave de dentro, uma **telemetria** daquele `sub_id`. É o que
-alimenta os widgets e os alarmes do **Monitoramento** (§9-quinquies).
+alimenta os widgets e os alarmes de **Telemetrias** (§9-quinquies).
 
 A forma achatada com prefixo (`nivel-rd01_distancia`) continua aceita, mas a
 aninhada é melhor: o servidor não precisa adivinhar onde termina o `sub_id` e
@@ -1398,7 +1611,7 @@ estouro de buffer, NaN, texto que quebraria o documento) e regras de nível
 ### Detecções da visão computacional no mesmo feed
 
 Uma fissura detectada entra no **sininho**, no **histórico de alertas** e na
-**tabela de alarmes** do Monitoramento — junto com os alarmes de telemetria.
+**tabela de alarmes** de Telemetrias — junto com os alarmes de telemetria.
 Antes, a visão computacional só aparecia no painel 3D: quem estivesse
 olhando a tela de telemetria não ficava sabendo de uma detecção nova.
 
@@ -1455,7 +1668,7 @@ Colunas **Autenticação**: rotas de dispositivo (Pi/`controller.py`) exigem
 | `/api/edge/frame` | POST | token | quadro JPEG cru (não base64) |
 | `/api/edge/imagem` | POST | token | evidência completa pedida pelo operador |
 | `/api/telemetry`, `/api/detection` | POST | token | mesma função acima, usadas pelo `controller.py` |
-| `/api/dispositivos` | GET/POST | sessão | listar (próprios; todos se admin) / criar dispositivo |
+| `/api/dispositivos` | GET/POST | sessão | listar (próprios; todos se admin) / criar dispositivo. Cada item traz `online`, `visto_em`, `silencio_s` e `offline_apos_s` (§9-quinquies) |
 | `/api/dispositivos/{id}` | PATCH | sessão | editar o cadastro (localidade, lat/lon, altura, transporte, controller); **não** troca o token |
 | `/api/dispositivos/{id}` | DELETE | sessão | excluir (só o dono ou admin); o token para de valer na hora |
 | `/api/camera_info` \| `/api/view` | GET | sessão | pose/geometria e cone sob demanda -- exige `?device_id=` |
@@ -1649,6 +1862,7 @@ Obrigatórias: `CAMERA_IP`, `ONVIF_USER`, `ONVIF_PASSWORD`, `RTSP_URL`,
 | `CONTROLLER_URL` | `http://127.0.0.1:8090` | **opcional** (§9-quater). Só alimenta o *fallback* HTTP servidor → Pi, que exige os dois na mesma rede. Com o WebSocket no ar nada a consulta; com o servidor na nuvem, pode ser apagada |
 | `CONTROLLER_PUBLIC_URL` | = acima | **opcional.** Endereço que o navegador tenta no modo LAN. Apagada — ou apontando para loopback — o modo LAN não é oferecido e tudo passa pelo servidor |
 | `TIMEOUT_PTZ_S` | 3 | espera máxima por um comando de PTZ (§9-quater). Curto de propósito: o dashboard repete o comando a cada 300 ms |
+| `DISPOSITIVO_OFFLINE_S` | 180 | segundos de silêncio até um equipamento ser dado como **offline** nas listas (§9-quinquies). A câmera reporta a cada 3 s e o gateway a cada 15 s, então o padrão não pisca vermelho por um POST perdido |
 | `TELEMETRIA_JANELA_MIN` | 1440 | janela padrão dos gráficos de área, em minutos |
 | `STREAM_JANELA_S` | 60 | duração do pedido de vídeo |
 | `STREAM_FPS` / `STREAM_LARGURA` / `STREAM_QUALIDADE` | 4 / 640 / 60 | parâmetros pedidos ao Pi |
@@ -2314,6 +2528,17 @@ Pontos de atenção:
   servidor herdar o valor que o Pi reporta na primeira telemetria.
 - **`REARME_SEGUNDOS` e a janela de 60 s do stream não conversam:** um alerta em
   rearme pode reabrir enquanto o operador assiste.
+- **Miniaturas de câmera não têm imagem.** O ladrilho mostra ícone, nome e
+  presença, não um quadro da cena. Não existe rota de "última imagem" por
+  dispositivo, e criar uma esbarraria na regra que rege a telinha: **imagem só
+  sobe enquanto há pedido vivo** (§8). Uma miniatura ao vivo furaria isso para
+  todas as câmeras ao mesmo tempo.
+- **A posição das janelas flutuantes do Painel SHM vive no `localStorage`.**
+  É por navegador: o operador que arruma o painel na sala de controle não
+  encontra o mesmo arranjo no notebook. Foi escolha deliberada (é o arranjo
+  daquela pessoa, e não pode mexer no layout de Telemetrias, que usa as mesmas
+  chaves de `config`), mas se um dia isso tiver de ser compartilhado, o lugar
+  é uma tabela própria — não o `config` do widget.
 - **`onvif_ptz.py` é compartilhado via `sys.path.insert`**, o que esconde a
   dependência de `edge/` em `controller/`. Um diretório `comum/` na raiz tornaria
   a relação explícita.
@@ -2442,7 +2667,7 @@ funciona igual pelo servidor.
   copie o `DEVICE_TOKEN`.
 - O firmware manda `POST /api/edge/dados` com
   `Authorization: Bearer <token>` e o JSON das leituras (§9-quinquies).
-- Em **Monitoramento**, escolha o equipamento e monte os widgets. As
+- Em **Telemetrias**, escolha o equipamento e monte os widgets. As
   telemetrias só aparecem nos seletores **depois** da primeira mensagem.
 
 ---

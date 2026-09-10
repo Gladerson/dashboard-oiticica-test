@@ -3,8 +3,9 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Monitoramento - HydroConecta</title>
+<title>Telemetrias - HydroConecta</title>
 <link rel="stylesheet" href="/estatico/layout.css" />
+<link rel="stylesheet" href="/estatico/widgets.css" />
 <style>
   /* Tokens e casca vem de /estatico/layout.css. Todos os graficos aqui sao
      SVG desenhado a mao, sem CDN: o painel precisa abrir numa rede sem
@@ -14,7 +15,9 @@
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     margin-bottom: 16px;
   }
-  .barra select { font-size: 12px; }
+  /* Sem limite, o <select> esticava e empurrava os botoes para uma
+     segunda linha da barra. */
+  .barra select { font-size: 12px; max-width: 340px; }
   /* layout.css so estiliza .acao e os botoes dentro de tabela; os
      secundarios desta tela pegam o visual aqui. */
   .barra button:not(.acao), .modal .acoes button:not(.acao) {
@@ -30,34 +33,34 @@
   table.alarmes button:hover { color: var(--danger); border-color: var(--danger); }
   .barra .espaco { flex: 1; }
 
-  /* Grade de tamanho fixo por celula: e o que permite ao operador dizer
-     "este widget ocupa 2 colunas por 2 linhas" e o resultado ser previsivel.
-     Com colunas elasticas (auto-fill/1fr) o mesmo span daria tamanhos
-     diferentes em cada tela. */
-  .grade {
-    display: grid; gap: 14px;
-    grid-template-columns: repeat(var(--colunas, 4), 1fr);
-    grid-auto-rows: 172px;
+  /* Quadro livre.
+     Antes isto era uma grade de celulas fixas: o widget so podia ocupar
+     1..4 colunas por 1..4 linhas, e "mudar de lugar" era trocar a ORDEM na
+     fila. O operador nao conseguia, por exemplo, por o medidor de nivel ao
+     lado do grafico e deixar o resto do espaco livre.
+     Agora cada widget tem posicao e tamanho proprios, com uma unica regra:
+     nao pode invadir o espaco de outro (ver quadro.js). */
+  .quadro { position: relative; min-height: 320px; }
+  .quadro-vazio-dica {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; pointer-events: none;
   }
-  @media (max-width: 1180px) { .grade { --colunas: 3; } }
-  @media (max-width:  900px) { .grade { --colunas: 2; } }
-  @media (max-width:  620px) { .grade { --colunas: 1; } }
 
   .widget {
-    position: relative;
+    position: absolute; box-sizing: border-box;
     background: var(--panel); border: 1px solid var(--border);
-    border-radius: var(--raio); box-shadow: var(--sombra); padding: 12px 14px;
+    border-radius: var(--raio); box-shadow: var(--sombra); padding: 10px 12px;
     display: flex; flex-direction: column; overflow: hidden;
-    grid-column: span min(var(--cols, 1), var(--colunas, 4));
-    grid-row: span var(--rows, 1);
   }
-  .widget.arrastando { opacity: .45; }
-  .widget.alvo-solta { outline: 2px dashed var(--accent); outline-offset: -3px; }
+  /* Sem transicao enquanto arrasta: a caixa tem de seguir o ponteiro, nao
+     persegui-lo com atraso. */
+  .widget.movendo, .widget.redimensionando { transition: none; z-index: 5; opacity: .92; }
+  .widget.invalido { outline: 2px solid var(--danger); outline-offset: -2px; }
   .widget header {
     display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;
-    cursor: grab;
+    cursor: grab; touch-action: none; flex: 0 0 auto;
   }
-  .widget header:active { cursor: grabbing; }
+  .widget.movendo header { cursor: grabbing; }
   .widget header h3 {
     margin: 0; font-size: 12px; font-weight: 600; flex: 1;
     text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
@@ -70,21 +73,16 @@
   }
   .widget header .acoes button:hover { color: var(--text); }
   .widget header .acoes button.remover:hover { color: var(--danger); }
-  .widget .corpo {
-    flex: 1; display: flex; align-items: center; justify-content: center;
-    min-height: 0; overflow: hidden;   /* nada escapa da moldura do widget */
-  }
-  .widget svg { width: 100%; height: 100%; display: block; }
 
   /* Alca de redimensionamento, no canto inferior direito. */
   .widget .alca {
-    position: absolute; right: 2px; bottom: 2px; width: 16px; height: 16px;
+    position: absolute; right: 2px; bottom: 2px; width: 18px; height: 18px;
     cursor: nwse-resize; opacity: .35; touch-action: none;
   }
   .widget .alca:hover { opacity: .9; }
   .widget .alca::after {
     content: ""; position: absolute; right: 3px; bottom: 3px;
-    width: 8px; height: 8px;
+    width: 9px; height: 9px;
     border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
   }
   .widget .medida {
@@ -92,37 +90,14 @@
     background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
     padding: 1px 5px; color: var(--muted); display: none;
   }
-  .widget.redimensionando .medida { display: block; }
+  .widget.redimensionando .medida, .widget.movendo .medida { display: block; }
 
-  .cartao-valor { text-align: center; }
-  .cartao-valor .n { font-size: 34px; font-weight: 700; line-height: 1.1; }
-  .cartao-valor .u { font-size: 14px; color: var(--muted); margin-left: 4px; }
-  .cartao-valor .quando { font-size: 10px; color: var(--muted); margin-top: 6px; }
-
-  .status-linha {
-    display: flex; align-items: center; gap: 8px; font-size: 13px;
-    padding: 4px 0;
-  }
-  .ponto { width: 10px; height: 10px; border-radius: 999px; flex: none; }
-  .ponto.ok { background: var(--ok); }
-  .ponto.ruim { background: var(--danger); }
-  .ponto.aviso { background: var(--warn); }
-  .ponto.desconhecido { background: var(--muted); }
-
-  table.alarmes { width: 100%; border-collapse: collapse; font-size: 11px; }
-  table.alarmes th, table.alarmes td {
-    text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--border);
-  }
-  table.alarmes th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 10px; }
-  table.alarmes tr.disparado td:first-child { color: var(--danger); font-weight: 600; }
-  table.alarmes tr.normalizado td:first-child { color: var(--ok); }
-
+  /* Fora do corpo do widget (a dica de "nenhum widget"), entao nao vem do
+     widgets.css, que e todo escopado em .wgt-corpo. */
   .vazio {
     color: var(--muted); font-size: 12px; text-align: center; padding: 26px 10px;
     line-height: 1.6;
   }
-  .legenda { display: flex; gap: 10px; flex-wrap: wrap; font-size: 10px; color: var(--muted); margin-top: 6px; }
-  .legenda i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 4px; }
 
   /* modal (mesmo visual dos modais de dispositivos.html) */
   .modal {
@@ -161,7 +136,7 @@
     <button id="btn-alarme" type="button">Novo alarme</button>
   </div>
 
-  <div class="grade" id="grade"></div>
+  <div class="quadro" id="quadro"></div>
   <div class="vazio" id="sem-widgets" hidden>
     Nenhum widget configurado para este equipamento.<br />
     Clique em <b>Adicionar widget</b> — as telemetrias oferecidas são as que
@@ -284,11 +259,12 @@
 </div>
 
 <script src="/estatico/layout.js"></script>
+<script src="/estatico/widgets.js"></script>
+<script src="/estatico/quadro.js"></script>
 <script>
-Layout.montar({ ativo: "monitoramento", titulo: "Monitoramento" });
+Layout.montar({ ativo: "monitoramento", titulo: "Telemetrias" });
 
 const SERVER_BASE = "";
-const CORES = ["#4fa3ff", "#ffb347", "#5ad1a5", "#ff7a90", "#c39bff", "#7fd3ff"];
 
 let dispositivos = [];
 let atual = null;          // dispositivo selecionado
@@ -299,42 +275,10 @@ let alarmes = [];
 let eventos = [];
 
 const $ = (id) => document.getElementById(id);
-const chaveDe = (sub, chave) => `${sub || ""}|${chave}`;
-
-function escapar(t) {
-  const d = document.createElement("div");
-  d.textContent = t == null ? "" : String(t);
-  return d.innerHTML;
-}
-
-function fmt(v, casas, unidade) {
-  if (v == null || Number.isNaN(v)) return "—";
-  const n = Number(v).toLocaleString("pt-BR", {
-    minimumFractionDigits: casas, maximumFractionDigits: casas,
-  });
-  return unidade ? `${n} ${unidade}` : n;
-}
-
-/** Numero curto o bastante para caber na caixa. 742.000.000 -> "742 M".
- *
- *  Um volume de reservatorio tem nove digitos; escrito por extenso, ele
- *  atravessava a borda do card e empurrava o eixo do grafico para fora da
- *  area visivel. Abaixo de 10 mil nada e resumido: ali o numero inteiro
- *  cabe e diz mais que "9,9 k". O valor exato continua acessivel na dica
- *  (atributo title) de quem mostra o resumo. */
-function resumir(v, unidade) {
-  if (v == null || Number.isNaN(v)) return "—";
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "—";
-  const abs = Math.abs(n);
-  let txt;
-  if (abs >= 1e12)      txt = (n / 1e12).toFixed(2).replace(/\.?0+$/, "") + " T";
-  else if (abs >= 1e9)  txt = (n / 1e9).toFixed(2).replace(/\.?0+$/, "") + " G";
-  else if (abs >= 1e6)  txt = (n / 1e6).toFixed(2).replace(/\.?0+$/, "") + " M";
-  else if (abs >= 1e4)  txt = (n / 1e3).toFixed(1).replace(/\.?0+$/, "") + " k";
-  else txt = n.toLocaleString("pt-BR", { maximumFractionDigits: 2 });
-  return unidade ? `${txt} ${unidade}` : txt;
-}
+// Vem de /estatico/widgets.js -- os mesmos ajudantes que o desenho usa, para
+// nao existirem duas versoes de "como se escreve um numero grande" no
+// projeto.
+const { escapar, chaveDe } = Widgets;
 
 // ---------------------------------------------------------------------
 // Carga
@@ -380,13 +324,18 @@ async function recarregarTudo() {
   ultimos = {};
   (ult.itens || []).forEach(i => { ultimos[chaveDe(i.sub_id, i.chave)] = i; });
 
-  const rot = { camera: "Câmera", sensor: "Sensor", gateway: "Gateway" };
+  const rot = { camera: "Câmera PTZ fixa", sensor: "Sensor", gateway: "Gateway" };
   $("rotulo-tipo").textContent = rot[catalogo.tipo] || catalogo.tipo;
   await desenharTudo();
 }
 
 // ---------------------------------------------------------------------
-// Desenho dos widgets (SVG na mão — sem biblioteca externa)
+// Desenho e posicionamento dos widgets
+//
+// O DESENHO em si mora em /estatico/widgets.js -- os mesmos graficos
+// aparecem flutuando sobre o modelo 3D no Painel SHM, e manter duas copias
+// significaria ve-las divergir. Aqui fica so o que e desta tela: onde cada
+// widget esta, de que tamanho, e como o operador muda isso.
 // ---------------------------------------------------------------------
 // Elementos vivos, um por widget. A tela NAO e reconstruida a cada
 // telemetria: antes, `grade.innerHTML = ""` apagava e refazia tudo a cada
@@ -395,43 +344,112 @@ async function recarregarTudo() {
 // MOSTRA muda -- e os que nao mudaram nem sao tocados.
 const nos = new Map();   // widget.id -> { el, corpo, assinatura }
 
-// Tamanhos padrao por tipo, em celulas da grade. Um grafico de area precisa
-// de largura; um card, nao.
-const TAMANHO_PADRAO = {
-  area:    { cols: 2, rows: 2 },
-  barras:  { cols: 2, rows: 2 },
-  alarmes: { cols: 2, rows: 2 },
-  card:    { cols: 1, rows: 1 },
-  radial:  { cols: 1, rows: 2 },
-  status:  { cols: 1, rows: 1 },
-};
-function tamanhoDe(w) {
-  const p = TAMANHO_PADRAO[w.tipo] || { cols: 1, rows: 1 };
-  const cfg = w.config || {};
+const MIN_LARG = 180, MIN_ALT = 120;
+const GRADE_ANTIGA_COLS = 4, GRADE_ANTIGA_ALT = 172, GRADE_ANTIGA_VAO = 14;
+
+function larguraQuadro() { return $("quadro").clientWidth || 1; }
+
+function ctxWidgets() {
   return {
-    cols: Math.min(4, Math.max(1, parseInt(cfg.cols, 10) || p.cols)),
-    rows: Math.min(4, Math.max(1, parseInt(cfg.rows, 10) || p.rows)),
+    deviceId: atual ? atual.id : null,
+    base: SERVER_BASE,
+    ultimos, alarmes, eventos,
+    aoExcluirAlarme: excluirAlarme,
   };
 }
 
-/** O que este widget desenha, resumido. Se nao mudou, nao se redesenha. */
-function assinaturaDe(w) {
-  const dados = (w.chaves || []).map(c => {
-    const i = valorDe(w, c);
-    return i ? `${c}=${i.num}|${i.txt}|${i.visto_em}` : `${c}=-`;
-  });
-  if (w.tipo === "alarmes") {
-    dados.push(eventos.map(e => e.id + e.lido).join(","));
-    dados.push(alarmes.map(a => a.id + a.disparado).join(","));
+/** Posicao e tamanho em PIXELS, ou null se este widget ainda nao tem lugar.
+ *
+ *  No banco a largura e o X ficam em PORCENTAGEM da largura do quadro, e a
+ *  altura e o Y em pixels. Guardar tudo em pixels faria o painel montado num
+ *  monitor de 27" abrir com metade dos widgets fora da tela num notebook;
+ *  guardar tudo em porcentagem faria um card de valor virar uma tira fina
+ *  numa tela alta. A mistura e o que mantem o painel reconhecivel nos dois. */
+function retDe(w) {
+  const cfg = w.config || {};
+  if (!Number.isFinite(+cfg.qw)) return null;
+  const L = larguraQuadro();
+  return {
+    x: Math.round(+cfg.qx / 100 * L),
+    y: Math.round(+cfg.qy),
+    w: Math.round(+cfg.qw / 100 * L),
+    h: Math.round(+cfg.qh),
+  };
+}
+
+function configComRet(w, r) {
+  const L = larguraQuadro();
+  return {
+    ...(w.config || {}),
+    qx: +(r.x / L * 100).toFixed(3),
+    qy: Math.max(0, Math.round(r.y)),
+    qw: +(r.w / L * 100).toFixed(3),
+    qh: Math.max(MIN_ALT, Math.round(r.h)),
+  };
+}
+
+/** Retangulos de todos os widgets, menos o que estiver sendo mexido. */
+function outrosRetangulos(idIgnorado) {
+  return widgets.filter(x => x.id !== idIgnorado).map(retDe).filter(Boolean);
+}
+
+/** O primeiro lugar livre, varrendo de cima para baixo e da esquerda para a
+ *  direita. O passo e o mesmo ima do arrasto, entao o resultado ja sai
+ *  alinhado com o que o operador vai encostar depois. */
+function primeiroLugarLivre(larg, alt, ocupados, L) {
+  larg = Math.min(larg, L);
+  const fundo = ocupados.reduce((m, o) => Math.max(m, o.y + o.h), 0);
+  for (let y = 0; y <= fundo + alt; y += Quadro.PASSO) {
+    for (let x = 0; x + larg <= L + 1; x += Quadro.PASSO) {
+      const r = { x, y, w: larg, h: alt };
+      if (!ocupados.some(o => Quadro.colidem(r, o))) return r;
+    }
   }
-  const t = tamanhoDe(w);
-  return JSON.stringify([w.tipo, w.titulo, w.sub_id, w.chaves, w.config,
-                         t.cols, t.rows, dados]);
+  return { x: 0, y: fundo + Quadro.PASSO, w: larg, h: alt };
+}
+
+/** Da lugar a quem ainda nao tem: widget recem-criado e -- uma vez so, na
+ *  primeira abertura depois desta versao -- os que foram configurados na
+ *  grade antiga, cujo tamanho vinha em colunas/linhas. */
+async function posicionarFaltantes() {
+  const L = larguraQuadro();
+  const ocupados = widgets.map(retDe).filter(Boolean);
+  const gravar = [];
+  for (const w of widgets) {
+    if (retDe(w)) continue;
+    const cfg = w.config || {};
+    let larg, alt;
+    if (cfg.cols || cfg.rows) {
+      const cols = Math.min(GRADE_ANTIGA_COLS, Math.max(1, +cfg.cols || 1));
+      const rows = Math.max(1, +cfg.rows || 1);
+      larg = cols / GRADE_ANTIGA_COLS * L - GRADE_ANTIGA_VAO;
+      alt = rows * GRADE_ANTIGA_ALT + (rows - 1) * GRADE_ANTIGA_VAO;
+    } else {
+      const p = Widgets.tamanhoPadrao(w);
+      larg = p.w; alt = p.h;
+    }
+    larg = Math.max(MIN_LARG, Math.min(L, larg));
+    alt = Math.max(MIN_ALT, alt);
+    const r = primeiroLugarLivre(larg, alt, ocupados, L);
+    ocupados.push(r);
+    w.config = configComRet(w, r);
+    gravar.push(salvarConfigWidget(w, { config: w.config }));
+  }
+  await Promise.all(gravar);
+}
+
+/** O quadro cresce com o widget mais baixo. Sem isto, arrastar um widget
+ *  para baixo o esconderia atras do fim da pagina. */
+function ajustarAlturaQuadro() {
+  const fundo = widgets.map(retDe).filter(Boolean)
+                       .reduce((m, r) => Math.max(m, r.y + r.h), 0);
+  $("quadro").style.height = Math.max(320, fundo + 40) + "px";
 }
 
 async function desenharTudo() {
-  const grade = $("grade");
+  const quadro = $("quadro");
   $("sem-widgets").hidden = widgets.length > 0;
+  await posicionarFaltantes();
 
   // Some quem foi removido.
   const vivos = new Set(widgets.map(w => w.id));
@@ -439,32 +457,38 @@ async function desenharTudo() {
     if (!vivos.has(id)) { no.el.remove(); nos.delete(id); }
   }
 
+  const ctx = ctxWidgets();
   for (const w of widgets) {
     let no = nos.get(w.id);
     if (!no) {
       no = criarNo(w);
       nos.set(w.id, no);
+      quadro.appendChild(no.el);
     }
-    // Ordem: so mexe no DOM se estiver fora de lugar. appendChild de um
-    // elemento que ja e o ultimo filho ainda assim o remove e reinsere --
-    // o suficiente para piscar num grafico grande.
-    if (grade.children[widgets.indexOf(w)] !== no.el) grade.appendChild(no.el);
+    // Nao reposiciona uma caixa que esta na mao do operador: o arrasto ja
+    // esta escrevendo left/top, e uma telemetria chegando no meio do
+    // caminho faria a caixa pular de volta.
+    if (!no.el.classList.contains("movendo") &&
+        !no.el.classList.contains("redimensionando")) {
+      const r = retDe(w);
+      if (r) Quadro.aplicar(no.el, r);
+    }
 
-    aplicarTamanho(w, no.el);
-    const titulo = w.titulo || tituloPadrao(w);
+    const titulo = w.titulo || Widgets.tituloPadrao(w);
     if (no.el.querySelector("h3").textContent !== titulo)
       no.el.querySelector("h3").textContent = titulo;
 
-    const assinatura = assinaturaDe(w);
+    const assinatura = Widgets.assinatura(w, ctx);
     if (no.assinatura === assinatura) continue;   // nada mudou: nao redesenha
     no.assinatura = assinatura;
     try {
-      await desenharWidget(w, no.corpo);
+      await Widgets.desenhar(w, no.corpo, ctx);
     } catch (e) {
       no.corpo.innerHTML =
         `<div class="vazio">Não consegui desenhar: ${escapar(e.message || e)}</div>`;
     }
   }
+  ajustarAlturaQuadro();
 }
 
 /** O widget VIVO com este id.
@@ -484,11 +508,11 @@ function criarNo(w) {
   el.className = "widget";
   el.dataset.id = w.id;
   el.innerHTML =
-    `<header draggable="true"><h3></h3><div class="acoes">`
+    `<header><h3></h3><div class="acoes">`
     + `<button type="button" class="editar" title="Editar">editar</button>`
     + `<button type="button" class="remover" title="Remover">remover</button>`
     + `</div></header>`
-    + `<div class="corpo"></div>`
+    + `<div class="corpo wgt-corpo"></div>`
     + `<span class="medida"></span>`
     + `<div class="alca" title="Arraste para redimensionar"></div>`;
 
@@ -497,107 +521,47 @@ function criarNo(w) {
     () => abrirEdicaoWidget(widgetVivo(id, w)));
   el.querySelector(".remover").addEventListener("click",
     () => removerWidget(widgetVivo(id, w)));
-  el.querySelector(".alca").addEventListener("pointerdown",
-    (ev) => iniciarRedimensionar(ev, widgetVivo(id, w), el));
-  ligarArrastar(w, el);
+
+  const medida = el.querySelector(".medida");
+  const opcoes = (rotulo) => ({
+    area: $("quadro"),
+    minW: MIN_LARG, minH: MIN_ALT,
+    // A unica regra do quadro: nao invadir o espaco de outro widget.
+    valido: (r) => !outrosRetangulos(id).some(o => Quadro.colidem(r, o)),
+    aoMover: (r, ok) => {
+      medida.textContent = ok ? rotulo(r) : "não cabe aqui";
+    },
+    aoSoltar: async (r) => {
+      const vivo = widgetVivo(id, w);
+      vivo.config = configComRet(vivo, r);
+      await salvarConfigWidget(vivo, { config: vivo.config });
+      ajustarAlturaQuadro();
+    },
+  });
+  Quadro.ligarMover(el, el.querySelector("header"),
+    opcoes((r) => `${Math.round(r.x)} , ${Math.round(r.y)}`));
+  Quadro.ligarRedimensionar(el, el.querySelector(".alca"),
+    opcoes((r) => `${Math.round(r.w)} × ${Math.round(r.h)}`));
+
   return { el, corpo: el.querySelector(".corpo"), assinatura: null };
 }
 
-function aplicarTamanho(w, el) {
-  const t = tamanhoDe(w);
-  el.style.setProperty("--cols", t.cols);
-  el.style.setProperty("--rows", t.rows);
+// A largura do quadro muda quando o menu lateral recolhe ou a janela e
+// redimensionada. Como X e largura sao guardados em porcentagem, basta
+// reaplicar -- os widgets acompanham sem gravar nada.
+let reflowPendente = null;
+function reaplicarPosicoes() {
+  clearTimeout(reflowPendente);
+  reflowPendente = setTimeout(() => {
+    for (const w of widgets) {
+      const no = nos.get(w.id), r = retDe(w);
+      if (no && r) Quadro.aplicar(no.el, r);
+    }
+    ajustarAlturaQuadro();
+  }, 120);
 }
-
-// ---------------------------------------------------------------------
-// Redimensionar (arrastar a alça do canto)
-// ---------------------------------------------------------------------
-function iniciarRedimensionar(ev, w, el) {
-  ev.preventDefault();
-  ev.stopPropagation();
-  const grade = $("grade");
-  const estilo = getComputedStyle(grade);
-  const vao = parseFloat(estilo.columnGap) || 14;
-  const nColunas = estilo.gridTemplateColumns.split(" ").filter(Boolean).length || 1;
-  const larguraCel = (grade.clientWidth - vao * (nColunas - 1)) / nColunas;
-  const alturaCel = parseFloat(estilo.gridAutoRows) || 172;
-  const r0 = el.getBoundingClientRect();
-  const x0 = ev.clientX, y0 = ev.clientY;
-  const medida = el.querySelector(".medida");
-  let atualCols = tamanhoDe(w).cols, atualRows = tamanhoDe(w).rows;
-
-  el.classList.add("redimensionando");
-  el.setPointerCapture(ev.pointerId);
-
-  const mover = (e) => {
-    const larg = r0.width + (e.clientX - x0);
-    const alt = r0.height + (e.clientY - y0);
-    atualCols = Math.min(nColunas, Math.max(1, Math.round((larg + vao) / (larguraCel + vao))));
-    atualRows = Math.min(4, Math.max(1, Math.round((alt + vao) / (alturaCel + vao))));
-    el.style.setProperty("--cols", atualCols);
-    el.style.setProperty("--rows", atualRows);
-    medida.textContent = `${atualCols} × ${atualRows}`;
-  };
-  const soltar = async () => {
-    el.removeEventListener("pointermove", mover);
-    el.removeEventListener("pointerup", soltar);
-    el.removeEventListener("pointercancel", soltar);
-    el.classList.remove("redimensionando");
-    const cfg = { ...(w.config || {}), cols: atualCols, rows: atualRows };
-    // No objeto VIVO: entre o inicio do arrasto e agora, uma telemetria pode
-    // ter trocado o array `widgets` inteiro.
-    widgetVivo(w.id, w).config = cfg;
-    // A assinatura muda com o tamanho: o SVG e redesenhado para a nova caixa.
-    await salvarConfigWidget(w, { config: cfg });
-    await desenharTudo();
-  };
-  el.addEventListener("pointermove", mover);
-  el.addEventListener("pointerup", soltar);
-  el.addEventListener("pointercancel", soltar);
-}
-
-// ---------------------------------------------------------------------
-// Reordenar (arrastar pelo cabeçalho)
-// ---------------------------------------------------------------------
-let arrastandoId = null;
-
-function ligarArrastar(w, el) {
-  const cab = el.querySelector("header");
-  cab.addEventListener("dragstart", (ev) => {
-    arrastandoId = w.id;
-    el.classList.add("arrastando");
-    ev.dataTransfer.effectAllowed = "move";
-    // Firefox só inicia o arrasto se algo for escrito aqui.
-    ev.dataTransfer.setData("text/plain", w.id);
-  });
-  cab.addEventListener("dragend", () => {
-    arrastandoId = null;
-    el.classList.remove("arrastando");
-    document.querySelectorAll(".widget.alvo-solta")
-            .forEach(n => n.classList.remove("alvo-solta"));
-  });
-  el.addEventListener("dragover", (ev) => {
-    if (!arrastandoId || arrastandoId === w.id) return;
-    ev.preventDefault();
-    el.classList.add("alvo-solta");
-  });
-  el.addEventListener("dragleave", () => el.classList.remove("alvo-solta"));
-  el.addEventListener("drop", async (ev) => {
-    ev.preventDefault();
-    el.classList.remove("alvo-solta");
-    if (!arrastandoId || arrastandoId === w.id) return;
-    const de = widgets.findIndex(x => x.id === arrastandoId);
-    const para = widgets.findIndex(x => x.id === w.id);
-    if (de < 0 || para < 0) return;
-    widgets.splice(para, 0, widgets.splice(de, 1)[0]);
-    await desenharTudo();                 // reordena na tela na hora
-    // Persiste a ordem nova. Falha aqui nao desfaz o que o operador ja ve:
-    // o proximo recarregamento traz a ordem do servidor.
-    await Promise.all(widgets.map((x, i) =>
-      x.ordem === i ? null : salvarConfigWidget(x, { ordem: i })));
-    widgets.forEach((x, i) => { x.ordem = i; });
-  });
-}
+window.addEventListener("resize", reaplicarPosicoes);
+window.addEventListener("layout:menu", reaplicarPosicoes);
 
 async function salvarConfigWidget(w, campos) {
   try {
@@ -607,220 +571,6 @@ async function salvarConfigWidget(w, campos) {
     });
   } catch (e) { /* offline: a tela ja mostra o novo estado */ }
 }
-
-function tituloPadrao(w) {
-  if (w.tipo === "alarmes") return "Alarmes";
-  const onde = w.sub_id ? `${w.sub_id} · ` : "";
-  return onde + (w.chaves || []).join(", ");
-}
-
-async function desenharWidget(w, alvo) {
-  const cfg = w.config || {};
-  const casas = Number.isFinite(+cfg.casas) ? +cfg.casas : 2;
-  if (w.tipo === "alarmes") return desenharTabelaAlarmes(alvo);
-  if (!w.chaves || !w.chaves.length) {
-    alvo.innerHTML = '<div class="vazio">Widget sem telemetria escolhida.</div>';
-    return;
-  }
-  if (w.tipo === "card") return desenharCard(w, alvo, cfg, casas);
-  if (w.tipo === "radial") return desenharRadial(w, alvo, cfg, casas);
-  if (w.tipo === "status") return desenharStatus(w, alvo);
-  if (w.tipo === "barras") return desenharBarras(w, alvo, cfg, casas);
-  if (w.tipo === "area") return desenharArea(w, alvo, cfg, casas);
-}
-
-function valorDe(w, chave) {
-  const i = ultimos[chaveDe(w.sub_id, chave)];
-  return i || null;
-}
-
-function desenharCard(w, alvo, cfg, casas) {
-  const i = valorDe(w, w.chaves[0]);
-  const quando = i ? new Date(i.visto_em).toLocaleString("pt-BR") : "sem leitura";
-  // Resumido para caber; o valor exato fica na dica do mouse. Um card de
-  // volume mostrava "742.000.000,00" e atravessava a borda do widget.
-  const numerico = i && i.num != null;
-  const valor = numerico ? resumir(i.num, "") : (i && i.txt) || "—";
-  const exato = numerico ? fmt(i.num, casas, cfg.unidade || "") : "";
-  alvo.innerHTML =
-    `<div class="cartao-valor"${exato ? ` title="${escapar(exato)}"` : ""}>`
-    + `<div class="n">${escapar(valor)}`
-    + (cfg.unidade ? `<span class="u">${escapar(cfg.unidade)}</span>` : "")
-    + `</div><div class="quando">${escapar(quando)}</div></div>`;
-}
-
-function desenharRadial(w, alvo, cfg, casas) {
-  const i = valorDe(w, w.chaves[0]);
-  const min = Number.isFinite(+cfg.min) ? +cfg.min : 0;
-  const max = Number.isFinite(+cfg.max) ? +cfg.max : 100;
-  const v = i && i.num != null ? i.num : null;
-  // Arco de 240 graus (de -210 a 30): a abertura embaixo e o que faz o
-  // desenho ser lido como "medidor" e nao como "pizza".
-  const t = v == null ? 0 : Math.min(1, Math.max(0, (v - min) / (max - min || 1)));
-  const R = 52, cx = 70, cy = 68;
-  const arco = (frac) => {
-    const a0 = -210 * Math.PI / 180, a1 = (-210 + 240 * frac) * Math.PI / 180;
-    const x0 = cx + R * Math.cos(a0), y0 = cy + R * Math.sin(a0);
-    const x1 = cx + R * Math.cos(a1), y1 = cy + R * Math.sin(a1);
-    const grande = 240 * frac > 180 ? 1 : 0;
-    return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${R} ${R} 0 ${grande} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
-  };
-  alvo.innerHTML = `
-    <svg viewBox="0 0 140 108" role="img" aria-label="medidor">
-      <path d="${arco(1)}" fill="none" stroke="var(--border)" stroke-width="12" stroke-linecap="round"/>
-      ${t > 0 ? `<path d="${arco(t)}" fill="none" stroke="${CORES[0]}" stroke-width="12" stroke-linecap="round"/>` : ""}
-      <text x="70" y="66" text-anchor="middle" fill="var(--text)" font-size="21" font-weight="700">
-        ${escapar(v == null ? "—" : resumir(v, ""))}
-        <title>${escapar(v == null ? "sem leitura" : fmt(v, casas, cfg.unidade || ""))}</title>
-      </text>
-      <text x="70" y="82" text-anchor="middle" fill="var(--muted)" font-size="10">
-        ${escapar(cfg.unidade || "")}
-      </text>
-      <text x="14" y="100" fill="var(--muted)" font-size="9">${escapar(resumir(min, ""))}</text>
-      <text x="126" y="100" text-anchor="end" fill="var(--muted)" font-size="9">${escapar(resumir(max, ""))}</text>
-    </svg>`;
-}
-
-function classeStatus(i) {
-  if (!i) return ["desconhecido", "sem leitura"];
-  const t = (i.txt || "").toLowerCase();
-  if (["on", "online", "ok", "true"].includes(t)) return ["ok", i.txt];
-  if (["off", "offline", "false"].includes(t)) return ["ruim", i.txt];
-  if (["erro", "falha"].includes(t)) return ["aviso", i.txt];
-  if (i.num != null) return [i.num ? "ok" : "ruim", String(i.num)];
-  return ["desconhecido", i.txt || "—"];
-}
-
-function desenharStatus(w, alvo) {
-  alvo.style.display = "block";
-  alvo.innerHTML = w.chaves.map(c => {
-    const i = valorDe(w, c);
-    const [cls, txt] = classeStatus(i);
-    return `<div class="status-linha"><span class="ponto ${cls}"></span>`
-         + `<b>${escapar(c)}</b><span style="color:var(--muted)">${escapar(txt)}</span></div>`;
-  }).join("");
-}
-
-function desenharBarras(w, alvo, cfg, casas) {
-  const dados = w.chaves.map(c => {
-    const i = valorDe(w, c);
-    return { rotulo: c, v: i && i.num != null ? i.num : 0 };
-  });
-  const max = Math.max(...dados.map(d => d.v), Number.isFinite(+cfg.max) ? +cfg.max : 0, 1);
-  const larg = 320, alt = 26 * dados.length + 16, x0 = 108;
-  const barras = dados.map((d, k) => {
-    const y = 8 + k * 26;
-    const l = Math.max(1, (larg - x0 - 56) * (d.v / max));
-    return `<text x="${x0 - 8}" y="${y + 12}" text-anchor="end" fill="var(--muted)" font-size="10">${escapar(d.rotulo)}</text>`
-         + `<rect x="${x0}" y="${y}" width="${l.toFixed(1)}" height="16" rx="3" fill="${CORES[k % CORES.length]}"/>`
-         + `<text x="${x0 + l + 6}" y="${y + 12}" fill="var(--text)" font-size="10">${escapar(resumir(d.v, cfg.unidade || ""))}`
-         + `<title>${escapar(fmt(d.v, casas, cfg.unidade || ""))}</title></text>`;
-  }).join("");
-  alvo.innerHTML = `<svg viewBox="0 0 ${larg} ${alt}" role="img">${barras}</svg>`;
-}
-
-async function desenharArea(w, alvo, cfg, casas) {
-  const minutos = Number.isFinite(+cfg.minutos) ? +cfg.minutos : 1440;
-  const series = [];
-  for (const c of w.chaves) {
-    const j = await fetch(`${SERVER_BASE}/api/telemetria/serie?device_id=`
-      + `${encodeURIComponent(atual.id)}&sub_id=${encodeURIComponent(w.sub_id || "")}`
-      + `&chave=${encodeURIComponent(c)}&minutos=${minutos}`).then(r => r.json());
-    series.push({ chave: c, pontos: (j.pontos || []).filter(p => p.v != null) });
-  }
-  const todos = series.flatMap(s => s.pontos);
-  if (!todos.length) {
-    alvo.innerHTML = '<div class="vazio">Ainda não há leituras para o período.</div>';
-    return;
-  }
-  const t0 = Math.min(...todos.map(p => Date.parse(p.em)));
-  const t1 = Math.max(...todos.map(p => Date.parse(p.em)));
-  let vmin = Math.min(...todos.map(p => p.v));
-  let vmax = Math.max(...todos.map(p => p.v));
-  if (Number.isFinite(+cfg.min)) vmin = +cfg.min;
-  if (Number.isFinite(+cfg.max)) vmax = +cfg.max;
-  if (vmax === vmin) { vmax = vmin + 1; vmin -= 1; }   // serie constante
-
-  const L = 560, A = 200, m = { e: 46, d: 10, c: 10, b: 24 };
-  const px = (t) => m.e + (L - m.e - m.d) * ((t - t0) / (t1 - t0 || 1));
-  const py = (v) => m.c + (A - m.c - m.b) * (1 - (v - vmin) / (vmax - vmin));
-
-  const traco = (s) => s.pontos.map((p, i) =>
-    `${i ? "L" : "M"} ${px(Date.parse(p.em)).toFixed(1)} ${py(p.v).toFixed(1)}`).join(" ");
-
-  // As areas vao TODAS antes das linhas: desenhando por série, a área de uma
-  // cobria a linha da outra quando as escalas eram muito diferentes (uma
-  // telemetria perto de 100 e outra perto de 12, por exemplo).
-  const areas = series.filter(s => s.pontos.length).map((s, k) => {
-    const d = traco(s);
-    const base = `L ${px(Date.parse(s.pontos[s.pontos.length - 1].em)).toFixed(1)} ${py(vmin).toFixed(1)} `
-               + `L ${px(Date.parse(s.pontos[0].em)).toFixed(1)} ${py(vmin).toFixed(1)} Z`;
-    return `<path d="${d} ${base}" fill="${CORES[k % CORES.length]}" opacity=".12"/>`;
-  }).join("");
-  const linhasSerie = series.filter(s => s.pontos.length).map((s, k) =>
-    `<path d="${traco(s)}" fill="none" stroke="${CORES[k % CORES.length]}" `
-    + `stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>`).join("");
-  const camadas = areas + linhasSerie;
-
-  const linhas = [0, 0.5, 1].map(f => {
-    const v = vmin + (vmax - vmin) * f, y = py(v);
-    return `<line x1="${m.e}" y1="${y.toFixed(1)}" x2="${L - m.d}" y2="${y.toFixed(1)}" `
-         + `stroke="var(--border)" stroke-width="1"/>`
-         + `<text x="${m.e - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" `
-         + `fill="var(--muted)" font-size="9">${escapar(resumir(v, ""))}</text>`;
-  }).join("");
-
-  const hora = (t) => new Date(t).toLocaleString("pt-BR",
-    { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-
-  alvo.style.display = "block";
-  alvo.innerHTML = `<svg viewBox="0 0 ${L} ${A}" role="img">${linhas}${camadas}
-      <text x="${m.e}" y="${A - 6}" fill="var(--muted)" font-size="9">${escapar(hora(t0))}</text>
-      <text x="${L - m.d}" y="${A - 6}" text-anchor="end" fill="var(--muted)" font-size="9">${escapar(hora(t1))}</text>
-    </svg>`
-    + `<div class="legenda">` + series.map((s, k) =>
-        `<span><i style="background:${CORES[k % CORES.length]}"></i>${escapar(s.chave)}</span>`).join("")
-    + `</div>`;
-}
-
-function desenharTabelaAlarmes(alvo) {
-  alvo.style.display = "block";
-  const regras = alarmes.map(a => {
-    const cond = { maior: ">", menor: "<", igual: "=" }[a.condicao] || a.condicao;
-    const onde = a.sub_id ? `${escapar(a.sub_id)} · ` : "";
-    return `<tr class="${a.disparado ? "disparado" : ""}">
-      <td>${escapar(a.titulo || a.chave)}</td>
-      <td>${onde}${escapar(a.chave)} ${cond} ${a.limite}</td>
-      <td>${a.disparado ? "disparado" : "normal"}</td>
-      <td><button data-alarme="${a.id}" style="font-size:10px;padding:2px 6px">excluir</button></td>
-    </tr>`;
-  }).join("");
-  // O historico mistura duas origens: alarme de telemetria e deteccao da
-  // visao computacional. A de visao nao tem chave nem limite -- desenha-la
-  // como alarme produzia "undefined = —".
-  const hist = eventos.slice(0, 12).map(e => {
-    const detalhe = e.origem === "visao"
-      ? "visão computacional"
-      : `${escapar(e.sub_id ? e.sub_id + " · " : "")}${escapar(e.chave || "")}`
-        + ` = ${e.valor == null ? "—" : escapar(resumir(e.valor, ""))}`;
-    return `<tr class="${e.estado}">
-      <td>${escapar(e.titulo)}</td>
-      <td>${detalhe}</td>
-      <td>${e.estado}</td>
-      <td>${new Date(e.em).toLocaleString("pt-BR")}</td>
-    </tr>`;
-  }).join("");
-
-  alvo.innerHTML =
-    `<table class="alarmes"><thead><tr><th>Regra</th><th>Condição</th><th>Estado</th><th></th></tr></thead>`
-    + `<tbody>${regras || '<tr><td colspan="4" class="vazio">Nenhuma regra. Use “Novo alarme”.</td></tr>'}</tbody></table>`
-    + `<h4 style="font-size:11px;color:var(--muted);margin:14px 0 4px">Histórico</h4>`
-    + `<table class="alarmes"><tbody>${hist || '<tr><td class="vazio">Sem eventos.</td></tr>'}</tbody></table>`;
-
-  alvo.querySelectorAll("button[data-alarme]").forEach(b =>
-    b.addEventListener("click", () => excluirAlarme(b.dataset.alarme)));
-}
-
 // ---------------------------------------------------------------------
 // Widgets: criar e remover
 // ---------------------------------------------------------------------
@@ -903,12 +653,13 @@ async function salvarWidget() {
   };
   if ($("w-min").value !== "") cfg.min = parseFloat($("w-min").value);
   if ($("w-max").value !== "") cfg.max = parseFloat($("w-max").value);
-  // Tamanho: preserva o que o operador ja tinha arrastado, em vez de
-  // devolver o widget ao padrao a cada edicao.
+  // Posicao e tamanho: preserva o que o operador ja arrastou, em vez de
+  // devolver o widget ao canto e ao tamanho padrao a cada edicao.
   if (editando) {
     const antigo = editando.config || {};
-    if (antigo.cols) cfg.cols = antigo.cols;
-    if (antigo.rows) cfg.rows = antigo.rows;
+    ["qx", "qy", "qw", "qh"].forEach(k => {
+      if (Number.isFinite(+antigo[k])) cfg[k] = antigo[k];
+    });
   }
   const corpo = {
     tipo,

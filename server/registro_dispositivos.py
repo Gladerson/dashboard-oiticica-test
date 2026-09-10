@@ -272,6 +272,11 @@ class DispositivoRuntime:
         self.localidade_nome = linha.get("localidade_nome")
         self.localidade_modelo_3d_path = linha.get("localidade_modelo_3d_path")
 
+        # Ultima vez que o visto_em deste dispositivo foi gravado no banco.
+        # Ver marcar_visto(): a camera reporta a cada 3 s e nao ha razao para
+        # um UPDATE a cada reporte.
+        self._visto_gravado_em = 0.0
+
         self.estado = EstadoDesejado(empurrar_para=empurrador(self.id, self.controller_url))
         self.quadro = Quadro()
         self.mapa_det = {}   # det_id da borda -> id no historico do servidor
@@ -407,6 +412,36 @@ def por_id(device_id):
     if linha is None:
         return None
     return _construir(linha)
+
+
+# Com que folga o visto_em vai ao banco. A tela mede presenca em minutos
+# (DISPOSITIVO_OFFLINE_S), entao gravar mais de uma vez por meio minuto e so
+# escrita a toa: uma camera reporta a cada 3 s, tres cameras dariam uma
+# escrita por segundo o dia inteiro para sustentar um dado que ninguem le
+# com essa resolucao.
+INTERVALO_VISTO_S = 30.0
+
+
+def marcar_visto(device):
+    """Registra que este equipamento acabou de falar com o servidor.
+
+    Atualiza o estado em memoria (que o /api/borda usa para o "borda: online"
+    de 5 s) e, com parcimonia, o visto_em do banco -- que e o que sobrevive a
+    um reinicio e o que as listas de equipamento consultam.
+
+    Falha de banco aqui NAO pode derrubar a ingestao: perder um carimbo de
+    presenca e menos grave que recusar a telemetria que veio junto."""
+    if device is None:
+        return
+    agora = time.time()
+    device.estado.ultimo_visto = agora
+    if agora - device._visto_gravado_em < INTERVALO_VISTO_S:
+        return
+    device._visto_gravado_em = agora
+    try:
+        db.marcar_dispositivo_visto(device.id)
+    except Exception as e:
+        print(f"[registro] nao consegui gravar visto_em de '{device.nome}': {e}")
 
 
 def _esquecer(device_id):

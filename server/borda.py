@@ -154,8 +154,8 @@ async def _processar_valores(device, v):
 
 async def _registrar_telemetria(device, v):
     with device.estado.lock:
-        device.estado.ultimo_visto = time.time()
         device.estado.relatado = dict(v)
+    rd.marcar_visto(device)
     if "pan" not in v:
         return {"status": "ok"}
     await ctx.telemetry_core(device.id, ctx.TelemetryPayload(
@@ -168,6 +168,7 @@ async def _registrar_telemetria(device, v):
 
 
 async def _registrar_deteccao(device, v):
+    rd.marcar_visto(device)
     resposta = await ctx.detection_core(device.id, ctx.DetectionPayload(
         coord_p=float(v.get("pan", 0.0)),
         coord_t=float(v.get("tilt", 0.0)),

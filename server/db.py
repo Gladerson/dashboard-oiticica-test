@@ -153,6 +153,15 @@ ALTER TABLE dispositivos DROP CONSTRAINT IF EXISTS dispositivos_tipo_check;
 ALTER TABLE dispositivos ADD CONSTRAINT dispositivos_tipo_check
     CHECK (tipo IN ('camera', 'sensor', 'gateway'));
 
+-- Ultima vez que ESTE dispositivo falou com o servidor -- qualquer que seja o
+-- caminho (telemetria da camera, deteccao, POST do gateway). Antes a resposta
+-- para "esta online?" vivia so na memoria do processo (DispositivoRuntime),
+-- e por isso: sumia a cada reinicio do servidor, e nao existia para quem
+-- apenas LISTA os dispositivos. Agora ha um fato no banco, e "offline" e
+-- uma conta simples sobre ele (ver DISPOSITIVO_OFFLINE_S em dispositivos.py).
+-- NULL = nunca falou desde que a coluna existe.
+ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS visto_em TIMESTAMPTZ;
+
 -- Serie historica. sub_id = '' quer dizer "o proprio dispositivo" (sensor
 -- direto); num gateway e o identificador do equipamento remoto
 -- ("nivel-rd01"). Guardamos numero E texto porque o gateway manda os dois
@@ -583,6 +592,19 @@ def dispositivo_por_id_com_localidade(dispositivo_id):
         return conn.execute(
             _SELECT_DISPOSITIVO_COM_LOCALIDADE + " WHERE d.id = %s", (dispositivo_id,)
         ).fetchone()
+
+
+def marcar_dispositivo_visto(dispositivo_id):
+    """Carimba visto_em = now(). Chamada em TODO caminho por onde um
+    equipamento fala com o servidor.
+
+    Quem chama deve estrangular a frequencia (ver _visto_recente em
+    server/registro_dispositivos.py): a camera reporta a cada 3 s, e um
+    UPDATE por reporte seria uma escrita por segundo por camera para
+    sustentar uma informacao que so precisa de precisao de minutos."""
+    with pool.connection() as conn:
+        conn.execute("UPDATE dispositivos SET visto_em = now() WHERE id = %s",
+                     (dispositivo_id,))
 
 
 def criar_dispositivo(entity_id, entity_type, nome, proprietario, localidade_id,

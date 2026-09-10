@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <title>Painel SHM - HydroConecta</title>
 <link rel="stylesheet" href="/estatico/layout.css" />
+<link rel="stylesheet" href="/estatico/widgets.css" />
 <style>
   /* Tokens de cor, casca (menu lateral + barra de titulo) e componentes
      comuns vem de /estatico/layout.css. Aqui fica o que e do painel. */
@@ -45,15 +46,6 @@
 
   h2 { font-size:14px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 8px; }
   #video-feed { width:100%; border-radius:8px; border:1px solid var(--border); background:#000; }
-  #ptz-controls { display:grid; grid-template-columns: repeat(3, 44px); grid-gap:6px; margin-top:12px; justify-content:center; }
-  #ptz-controls button, #zoom-row button {
-    background:var(--panel); border:1px solid var(--border); color:var(--text);
-    border-radius:6px; padding:10px 0; cursor:pointer; font-size:16px;
-    user-select:none; -webkit-user-select:none; touch-action:none;
-  }
-  #ptz-controls button:hover, #zoom-row button:hover { background:#1a2740; border-color:var(--accent); }
-  #ptz-controls button.active, #zoom-row button.active { background:#1e3a5f; border-color:var(--accent); }
-  #zoom-row { display:flex; gap:8px; justify-content:center; margin-top:8px; }
   #conexao-linha { margin-top:10px; text-align:center; font-size:11px; color:var(--muted); }
   #selo-conexao {
     display:inline-block; padding:2px 8px; border-radius:999px; font-weight:600;
@@ -75,7 +67,6 @@
     border-radius:6px;
   }
   #ptz-aviso button:hover { border-color:var(--accent); }
-  #zoom-row button { padding:10px 14px; font-size:13px; }
   #telemetry { margin-top:12px; font-size:12px; color:var(--muted); line-height:1.6; }
   #telemetry b { color:var(--text); }
   #hint { margin-top:10px; font-size:11px; color:var(--muted); line-height:1.5; border-top:1px solid var(--border); padding-top:8px; }
@@ -191,11 +182,7 @@
 
   /* Elementos com fundo escuro fixo: precisam de par claro explicito,
      senao ficam texto escuro sobre fundo escuro no tema claro. */
-  body.tema-claro #ptz-controls button:hover,
-  body.tema-claro #zoom-row button:hover,
   body.tema-claro .history-actions button:hover  { background:#e8eef7; }
-  body.tema-claro #ptz-controls button.active,
-  body.tema-claro #zoom-row button.active        { background:#d6e6fb; }
   body.tema-claro #hint kbd,
   body.tema-claro #modal button                  { background:#eef2f8; }
   body.tema-claro #status-toast                  { background:rgba(255,255,255,.94); }
@@ -214,6 +201,9 @@
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     text-align: center; padding: 24px; color: var(--muted); font-size: 13px; line-height: 1.6;
     background: rgba(11, 18, 32, 0.55); z-index: 5;
+    /* Espaco para a faixa de miniaturas: sem isto o aviso cai atras dela e
+       fica pela metade. */
+    padding-bottom: 110px;
   }
   /* OBRIGATORIO por causa da linha acima: `display` num seletor de ID vence
      a regra `[hidden] { display: none }` do navegador, entao o atributo
@@ -282,6 +272,175 @@
       border:1px solid #1f5c34; transform:translate(-50%,-50%); pointer-events:none; z-index:0; }
   body.tema-claro #video-off {
       background:repeating-linear-gradient(45deg,#eef2f8,#eef2f8 10px,#e4eaf3 10px,#e4eaf3 20px); }
+
+  /* ================= Miniaturas das câmeras (rodapé do 3D) =================
+     O seletor de dispositivo era um <select> na barra de título. Numa sala
+     de controle, escolher "qual câmera" é a ação mais frequente do painel, e
+     ela estava escondida num menu suspenso do canto oposto ao modelo. As
+     miniaturas põem essa escolha onde o olho já está, e mostram de uma vez o
+     que o <select> não mostrava: quantas câmeras existem e quais respondem.
+
+     Oito lugares SEMPRE, mesmo com uma câmera só. Uma grade que muda de
+     tamanho a cada cadastro faz o operador reprocurar o botão; com os vagos
+     desenhados, o painel tem uma forma fixa desde o primeiro dia. */
+  #miniaturas {
+    position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
+    display:grid; grid-template-columns:repeat(8, 92px); gap:8px;
+    /* Acima das janelas flutuantes: a escolha da camera e a lista de
+       equipamentos sao CONTROLES -- se um grafico as cobrisse, nao
+       haveria como desligar o grafico. */
+    z-index:10; max-width:calc(100% - 24px);
+  }
+  .mini {
+    position:relative; height:62px; border-radius:10px; padding:6px 7px;
+    border:1px solid rgba(255,255,255,.14); background:rgba(12,20,34,.42);
+    backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+    color:var(--text); font-size:10px; line-height:1.25; text-align:left;
+    display:flex; flex-direction:column; justify-content:flex-end;
+    cursor:pointer; overflow:hidden; transition:background .15s, border-color .15s;
+  }
+  .mini:hover { background:rgba(20,34,56,.62); border-color:rgba(255,255,255,.3); }
+  .mini.ativa { border-color:var(--accent); background:rgba(30,58,95,.6); }
+  .mini .nome {
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600;
+  }
+  .mini .obs { color:var(--muted); font-size:9px;
+               white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .mini .icone {
+    position:absolute; top:6px; left:7px; width:16px; height:16px;
+    opacity:.5; color:var(--muted);
+  }
+  .mini .icone svg { width:100%; height:100%; }
+  .mini .luz {
+    position:absolute; top:7px; right:7px; width:8px; height:8px;
+    border-radius:999px; box-shadow:0 0 0 2px rgba(0,0,0,.35);
+  }
+  .mini .luz.on  { background:var(--ok); }
+  .mini .luz.off { background:var(--danger); }
+  /* Vazia: existe para a grade ter forma, mas não é um botão. */
+  .mini.vaga {
+    cursor:default; border-style:dashed; border-color:rgba(255,255,255,.10);
+    background:rgba(12,20,34,.22); color:var(--muted);
+    align-items:center; justify-content:center; text-align:center;
+  }
+  .mini.vaga:hover { background:rgba(12,20,34,.22); border-color:rgba(255,255,255,.10); }
+  body.tema-claro .mini { background:rgba(255,255,255,.6); border-color:rgba(0,0,0,.10); }
+  body.tema-claro .mini:hover { background:rgba(255,255,255,.85); }
+  body.tema-claro .mini.vaga { background:rgba(255,255,255,.35); }
+
+  /* ================= Equipamentos da localidade (canto superior direito) ===
+     Sensor e gateway não têm lugar no modelo 3D, mas pertencem à MESMA
+     barragem que a câmera. Aqui eles ficam à mão: a bolinha diz se estão
+     falando com o servidor, e a chave liga os gráficos deles por cima da
+     cena, sem sair da tela. */
+  #equipamentos {
+    position:absolute; top:12px; right:12px; z-index:10; width:236px;
+    border-radius:12px; padding:10px 12px;
+    border:1px solid rgba(255,255,255,.14); background:rgba(12,20,34,.5);
+    backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px);
+    font-size:11px; max-height:44%; overflow:auto;
+  }
+  #equipamentos h4 {
+    margin:0 0 8px; font-size:10px; text-transform:uppercase; letter-spacing:.08em;
+    color:var(--muted); font-weight:600;
+  }
+  #equipamentos .linha {
+    display:flex; align-items:center; gap:7px; padding:5px 0;
+    border-top:1px solid rgba(255,255,255,.07);
+  }
+  #equipamentos .linha:first-of-type { border-top:0; }
+  #equipamentos .luz { width:8px; height:8px; border-radius:999px; flex:none; }
+  #equipamentos .luz.on  { background:var(--ok); }
+  #equipamentos .luz.off { background:var(--danger); }
+  #equipamentos .nome {
+    flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  #equipamentos .vazio-eq { color:var(--muted); line-height:1.5; }
+  /* Chave liga/desliga. Um <button> com aria-pressed, e não um checkbox:
+     o estado precisa ser lido por leitor de tela como "ligado/desligado". */
+  .chave {
+    flex:none; width:34px; height:18px; border-radius:999px; cursor:pointer;
+    border:1px solid var(--border); background:rgba(0,0,0,.25); position:relative;
+    padding:0; transition:background .15s, border-color .15s;
+  }
+  .chave::after {
+    content:""; position:absolute; top:2px; left:2px; width:12px; height:12px;
+    border-radius:999px; background:var(--muted); transition:transform .15s, background .15s;
+  }
+  .chave[aria-pressed="true"] { background:rgba(79,163,255,.35); border-color:var(--accent); }
+  .chave[aria-pressed="true"]::after { transform:translateX(16px); background:var(--accent); }
+  body.tema-claro #equipamentos { background:rgba(255,255,255,.72); border-color:rgba(0,0,0,.10); }
+
+  /* ================= Gráficos flutuantes ==================================
+     Translúcidos de propósito: eles convivem com o modelo 3D, não o
+     substituem. A camada não intercepta o ponteiro (pointer-events:none) --
+     só as janelas em si --, senão girar o modelo com o mouse deixaria de
+     funcionar em metade do viewport. */
+  #flutuantes { position:absolute; inset:0; z-index:8; pointer-events:none; }
+  .flutuante {
+    position:absolute; pointer-events:auto; box-sizing:border-box;
+    display:flex; flex-direction:column; overflow:hidden;
+    border-radius:12px; padding:8px 10px;
+    border:1px solid rgba(255,255,255,.16); background:rgba(12,20,34,.62);
+    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    box-shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  .flutuante.movendo, .flutuante.redimensionando { opacity:.95; z-index:9; }
+  .flutuante header {
+    display:flex; align-items:center; gap:6px; margin-bottom:6px;
+    cursor:grab; touch-action:none; flex:0 0 auto;
+  }
+  .flutuante.movendo header { cursor:grabbing; }
+  .flutuante header h3 {
+    margin:0; flex:1; font-size:10px; font-weight:600; color:var(--muted);
+    text-transform:uppercase; letter-spacing:.05em;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .flutuante header .de { font-size:9px; color:var(--muted); opacity:.8; }
+  /* z-index explicito so para a alca ficar acima do conteudo do widget
+     dentro da PROPRIA janela. Entre janelas quem decide e o z-index de
+     .flutuante, ajustado por trazerParaFrente(). */
+  .flutuante .alca {
+    position:absolute; right:2px; bottom:2px; width:16px; height:16px;
+    cursor:nwse-resize; opacity:.4; touch-action:none; z-index:2;
+  }
+  .flutuante .alca:hover { opacity:.9; }
+  .flutuante .alca::after {
+    content:""; position:absolute; right:3px; bottom:3px; width:8px; height:8px;
+    border-right:2px solid var(--muted); border-bottom:2px solid var(--muted);
+  }
+  body.tema-claro .flutuante { background:rgba(255,255,255,.78); border-color:rgba(0,0,0,.10); }
+
+  /* ================= PTZ dentro da telinha =================================
+     O PTZ estava ENTRE a telinha e o histórico. Como as duas áreas são
+     redimensionáveis pelo divisor, bastava o operador dar mais espaço ao
+     histórico para os botões ficarem espremidos -- ou sumirem no scroll do
+     painel. Dentro do vídeo eles têm lugar garantido, e ficam onde a mão já
+     está quando se olha a imagem. */
+  #ptz-overlay {
+    position:absolute; left:0; right:0; bottom:0; z-index:3;
+    display:flex; align-items:flex-end; justify-content:center; gap:10px;
+    padding:8px 10px 9px;
+    background:linear-gradient(to top, rgba(0,0,0,.55), rgba(0,0,0,0));
+    opacity:.55; transition:opacity .15s;
+  }
+  #video-wrap:hover #ptz-overlay, #ptz-overlay:focus-within { opacity:1; }
+  #ptz-controls { display:grid; grid-template-columns:repeat(3, 26px);
+                  grid-gap:3px; margin:0; justify-content:center; }
+  #zoom-row { display:flex; flex-direction:column; gap:3px; margin:0; }
+  #ptz-controls button, #zoom-row button {
+    background:rgba(12,20,34,.62); border:1px solid rgba(255,255,255,.22);
+    color:#fff; border-radius:6px; padding:0; cursor:pointer;
+    font-size:12px; line-height:1; height:26px; min-width:26px;
+    user-select:none; -webkit-user-select:none; touch-action:none;
+    backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
+  }
+  #zoom-row button { min-width:34px; font-size:13px; font-weight:600; }
+  #ptz-controls button:hover, #zoom-row button:hover {
+    background:rgba(30,58,95,.85); border-color:var(--accent); }
+  #ptz-controls button.active, #zoom-row button.active {
+    background:var(--accent); border-color:var(--accent); color:#08111f; }
+  #ptz-controls span { display:block; }
   /* ============================================================= */
 
 </style>
@@ -297,6 +456,20 @@
     <div id="sel-box"></div>
     <div id="status-toast"></div>
     <div id="viewport-sem-3d" hidden></div>
+
+    <!-- Equipamentos (sensores e gateways) da MESMA localidade da câmera.
+         Ligar um deles traz os gráficos configurados em Telemetrias para
+         cima da cena, sem trocar de tela. -->
+    <aside id="equipamentos" hidden>
+      <h4>Equipamentos</h4>
+      <div id="equip-lista"></div>
+    </aside>
+
+    <!-- Camada dos gráficos flutuantes. -->
+    <div id="flutuantes"></div>
+
+    <!-- Seleção da câmera. Oito lugares fixos; os vagos mostram "None". -->
+    <div id="miniaturas"></div>
   </div>
 
   <div class="divisor" id="divisor-col" title="Arraste para alargar ou estreitar o painel"></div>
@@ -312,6 +485,19 @@
       </div>
       <div id="video-badge"><span class="ponto">&#9679;</span> AO VIVO
         <span id="video-restante">60</span>s</div>
+      <!-- PTZ sobre a imagem: some no meio da cena, aparece inteiro quando o
+           ponteiro entra na telinha (ver #ptz-overlay no CSS). -->
+      <div id="ptz-overlay">
+        <div id="ptz-controls">
+          <span></span><button data-axis="tilt" data-dir="1" title="Cima">&#9650;</button><span></span>
+          <button data-axis="pan" data-dir="-1" title="Esquerda">&#9664;</button><button id="btn-home" title="Posição inicial">&#8962;</button><button data-axis="pan" data-dir="1" title="Direita">&#9654;</button>
+          <span></span><button data-axis="tilt" data-dir="-1" title="Baixo">&#9660;</button><span></span>
+        </div>
+        <div id="zoom-row">
+          <button data-axis="zoom" data-dir="1" title="Aproximar">+</button>
+          <button data-axis="zoom" data-dir="-1" title="Afastar">&minus;</button>
+        </div>
+      </div>
     </div>
     <div id="borda-linha">
       <span class="pill" id="pill-online">borda: --</span>
@@ -328,15 +514,6 @@
         <input type="range" id="limiar-slider" min="0.05" max="0.95" step="0.01" value="0.45" />
         <div id="limiar-ponto-doce" title="Ponto de equilíbrio medido (F2): 0.45"></div>
       </div>
-    </div>
-    <div id="ptz-controls">
-      <span></span><button data-axis="tilt" data-dir="1">▲</button><span></span>
-      <button data-axis="pan" data-dir="-1">◀</button><button id="btn-home">⌂</button><button data-axis="pan" data-dir="1">▶</button>
-      <span></span><button data-axis="tilt" data-dir="-1">▼</button><span></span>
-    </div>
-    <div id="zoom-row">
-      <button data-axis="zoom" data-dir="-1">Zoom −</button>
-      <button data-axis="zoom" data-dir="1">Zoom +</button>
     </div>
     <div id="conexao-linha">
       Comandos: <span id="selo-conexao" class="ruim">verificando…</span>
@@ -396,21 +573,24 @@
 </div>
 
 <script src="/estatico/layout.js"></script>
+<script src="/estatico/widgets.js"></script>
+<script src="/estatico/quadro.js"></script>
 <script>
 // Menu lateral + barra de titulo (compartilhados com /dispositivos e
-// /config). O seletor de dispositivo e o marcador "sem dispositivo" vao
-// para a area de acoes da barra: antes eram uma barra FLUTUANTE por cima
-// do viewport, que cobria o cabecalho do widget de video.
+// /config).
+//
+// A escolha da camera NAO mora mais aqui. Era um <select> nesta barra; virou
+// a grade de miniaturas no rodape do viewport (ver #miniaturas), onde a
+// pessoa consegue ver de uma vez quantas cameras existem e quais respondem
+// -- coisa que um menu suspenso nunca mostrou. Fica so o aviso de "nenhuma
+// camera cadastrada", que precisa aparecer mesmo antes de existir grade.
 (function () {
   const { acoes } = Layout.montar({ ativo: "dashboard", titulo: "Painel SHM - Dispositivos de Visão Computacional" });
-  const sel = document.createElement("select");
-  sel.id = "sel-dispositivo";
-  sel.hidden = true;
   const semDispositivo = document.createElement("span");
   semDispositivo.id = "sem-dispositivo";
   semDispositivo.hidden = true;
-  semDispositivo.textContent = "Nenhum dispositivo cadastrado";
-  acoes.append(semDispositivo, sel);
+  semDispositivo.textContent = "Nenhuma câmera cadastrada";
+  acoes.append(semDispositivo);
 })();
 </script>
 
@@ -528,7 +708,19 @@ let ptzUltimoErro = 0;        // nao repetir o mesmo aviso a cada 300ms
 // confiavel do que descartar/reconstruir modelo+rig+cone na hora.
 // ---------------------------------------------------------------------
 let deviceId = null;
-let dispositivosDisponiveis = [];
+let dispositivosDisponiveis = [];   // so as cameras (esta tela)
+let todosDispositivos = [];         // tudo, para a lista de equipamentos
+
+// Quantos lugares a grade de miniaturas sempre desenha. Fixo de proposito:
+// uma grade que muda de tamanho a cada cadastro obriga o operador a
+// reprocurar o botao da camera dele.
+const LUGARES_CAMERA = 8;
+
+const ICONE_CAMERA =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
+  + 'stroke-linecap="round" stroke-linejoin="round">'
+  + '<rect x="2.5" y="6.5" width="13" height="11" rx="2"/>'
+  + '<path d="M15.5 11 21.5 8v8l-6-3z"/></svg>';
 
 async function resolverDispositivo() {
   let lista = [];
@@ -537,26 +729,21 @@ async function resolverDispositivo() {
   } catch (e) {
     console.error("Falha ao listar dispositivos:", e);
   }
-  dispositivosDisponiveis = Array.isArray(lista) ? lista : [];
+  todosDispositivos = Array.isArray(lista) ? lista : [];
+  // Esta tela e a da VISAO COMPUTACIONAL. Sensor e gateway nao tem cone,
+  // modelo 3D nem PTZ -- oferece-los aqui so levava a uma tela que nao
+  // funciona para eles (o lugar deles e Telemetrias, e a lista de
+  // equipamentos no canto superior direito).
+  dispositivosDisponiveis = todosDispositivos.filter(d => (d.tipo || "camera") === "camera");
 
-  const sel = document.getElementById("sel-dispositivo");
   const semDispositivo = document.getElementById("sem-dispositivo");
 
   if (!dispositivosDisponiveis.length) {
-    sel.hidden = true;
     semDispositivo.hidden = false;
+    desenharMiniaturas(null);
     return null;
   }
-
   semDispositivo.hidden = true;
-  sel.hidden = false;
-  sel.innerHTML = "";
-  for (const d of dispositivosDisponiveis) {
-    const opt = document.createElement("option");
-    opt.value = d.id;
-    opt.textContent = d.localidade_nome ? `${d.nome} — ${d.localidade_nome}` : d.nome;
-    sel.appendChild(opt);
-  }
 
   const existeNaLista = (id) => dispositivosDisponiveis.some(d => d.id === id);
 
@@ -574,15 +761,77 @@ async function resolverDispositivo() {
   novaUrl.searchParams.set("device_id", escolhido);
   history.replaceState(null, "", novaUrl);
 
-  sel.value = escolhido;
-  sel.addEventListener("change", () => {
-    try { localStorage.setItem("oiticica_device_id", sel.value); } catch (e) {}
-    const u = new URL(location.href);
-    u.searchParams.set("device_id", sel.value);
-    location.href = u.toString();
-  });
-
+  desenharMiniaturas(escolhido);
   return escolhido;
+}
+
+/** A grade de escolha da camera, no rodape do 3D.
+ *
+ *  Regras (vindas da operacao, nao da tela):
+ *    - lugar vago            -> "None", sem clique;
+ *    - camera cadastrada     -> nome + bolinha verde/vermelha, clicavel;
+ *    - a bolinha e o servidor quem responde (visto_em), nao o navegador:
+ *      um equipamento que so fala de saida nao tem como ser "pingado", e a
+ *      unica evidencia de que esta vivo e ter falado ha pouco. */
+function desenharMiniaturas(selecionado) {
+  const caixa = document.getElementById("miniaturas");
+  if (!caixa) return;
+  const partes = [];
+  for (let i = 0; i < LUGARES_CAMERA; i++) {
+    const d = dispositivosDisponiveis[i];
+    if (!d) {
+      partes.push('<div class="mini vaga" aria-hidden="true">None</div>');
+      continue;
+    }
+    // Uma camera sem modelo 3D continua selecionavel: escondê-la aqui
+    // deixaria o dispositivo sem NENHUMA forma de ser aberto, agora que o
+    // <select> da barra de titulo nao existe mais.
+    const obs = d.motivo_sem_3d ? "sem visão 3D"
+              : (d.localidade_nome || "sem localidade");
+    const luz = d.online ? "on" : "off";
+    const titulo = d.online
+      ? `${d.nome} — online`
+      : `${d.nome} — offline (sem contato há ${textoSilencio(d)})`;
+    partes.push(
+      `<button type="button" class="mini${d.id === selecionado ? " ativa" : ""}" `
+      + `data-id="${escaparAttr(d.id)}" title="${escaparAttr(titulo)}">`
+      + `<span class="icone">${ICONE_CAMERA}</span>`
+      + `<span class="luz ${luz}"></span>`
+      + `<span class="nome">${escapar(d.nome)}</span>`
+      + `<span class="obs">${escapar(obs)}</span></button>`);
+  }
+  caixa.innerHTML = partes.join("");
+  caixa.querySelectorAll("button[data-id]").forEach(b => {
+    b.addEventListener("click", () => trocarDispositivo(b.dataset.id));
+  });
+}
+
+/** Trocar de camera recarrega a pagina (?device_id=...) em vez de tentar
+ *  remontar a cena Three.js em memoria -- mais simples e mais confiavel do
+ *  que descartar/reconstruir modelo + rig + cone na hora. */
+function trocarDispositivo(id) {
+  if (!id || id === deviceId) return;
+  try { localStorage.setItem("oiticica_device_id", id); } catch (e) {}
+  const u = new URL(location.href);
+  u.searchParams.set("device_id", id);
+  location.href = u.toString();
+}
+
+function textoSilencio(d) {
+  if (d.silencio_s == null) return "sempre";
+  const s = d.silencio_s;
+  if (s < 90) return `${Math.round(s)} s`;
+  if (s < 5400) return `${Math.round(s / 60)} min`;
+  if (s < 172800) return `${Math.round(s / 3600)} h`;
+  return `${Math.round(s / 86400)} dias`;
+}
+
+// escapar() ja existe mais abaixo neste modulo (declaracao de funcao, entao
+// esta visivel aqui). Em ATRIBUTO ainda e preciso neutralizar as aspas:
+// textContent nao as escapa, e um nome de camera com aspas romperia o
+// atributo.
+function escaparAttr(t) {
+  return escapar(t).replace(/"/g, "&quot;");
 }
 
 function nomeDispositivo(entry) {
@@ -635,7 +884,28 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.85));
 const dirLight = new THREE.DirectionalLight(0xffffff, 1);
 dirLight.position.set(50, 80, 50);
 scene.add(dirLight);
-let groundGrid = new THREE.GridHelper(200, 40, 0x223049, 0x162138);
+// A malha do chao existe para dar NOCAO DE ESCALA, nao para ser olhada. Com
+// linhas cheias e 40 divisoes ela competia com a textura da barragem -- e num
+// modelo fotogrametrico a textura e o dado. Agora: menos divisoes, linhas
+// finas e material transparente de baixa opacidade.
+const GRADE_DIVISOES = 20;
+const GRADE_OPACIDADE = 0.18;
+
+function criarGrade(tamanho) {
+  const g = new THREE.GridHelper(tamanho, GRADE_DIVISOES, 0x3c5a7a, 0x2a3d55);
+  // GridHelper cria UM LineBasicMaterial (ou dois, conforme a versao). Vale
+  // para os dois casos sem supor qual.
+  const materiais = Array.isArray(g.material) ? g.material : [g.material];
+  materiais.forEach(m => {
+    m.transparent = true;
+    m.opacity = GRADE_OPACIDADE;
+    m.depthWrite = false;   // a malha nao "arranha" o modelo por cima
+  });
+  g.renderOrder = -1;
+  return g;
+}
+
+let groundGrid = criarGrade(200);
 scene.add(groundGrid);
 
 const camMarkerPos = new THREE.Vector3();
@@ -1014,7 +1284,7 @@ async function init() {
       const modelBox = new THREE.Box3().setFromObject(modelRoot);
       const size = new THREE.Vector3(); modelBox.getSize(size);
       const center = new THREE.Vector3(); modelBox.getCenter(center);
-      groundGrid = new THREE.GridHelper(Math.max(size.x, size.z, 10) * 1.6, 24, 0x223049, 0x162138);
+      groundGrid = criarGrade(Math.max(size.x, size.z, 10) * 1.6);
       groundGrid.position.set(center.x, modelBox.min.y, center.z);
       scene.add(groundGrid);
       frameOn(fullBox);
@@ -1071,6 +1341,9 @@ ws.onmessage = (ev) => {
   }
   if (msg.type === "detection_update") aplicarAtualizacao(msg);
   if (msg.type === "detection_repeat") aplicarRepeticao(msg);
+  // Telemetria de SENSOR/GATEWAY: nunca e do dispositivo desta tela (que e
+  // uma camera), e sim de um equipamento ligado na lista da direita.
+  if (msg.type === "telemetria") avisarTelemetria(msg.device_id);
   if (msg.type === "frame" && streamAtivo && mesmoDispositivo) {
     // O servidor so avisa "chegou o frame N"; o navegador busca a imagem.
     // O ?s= e o que impede o cache do navegador de congelar a telinha.
@@ -1295,6 +1568,13 @@ document.getElementById("btn-home").addEventListener("click", (ev) => {
   ev.target.disabled = true;
   ptzPost("/command/home", "/api/command/home", {})
     .finally(() => { ev.target.disabled = false; });
+});
+
+// O PTZ agora vive DENTRO da telinha, e a telinha inteira e um botao
+// ("clique para ligar/desligar o video"). Sem barrar aqui, cada seta movia a
+// camera E desligava o stream no mesmo clique.
+document.getElementById("ptz-overlay").addEventListener("click", (ev) => {
+  ev.stopPropagation();
 });
 
 const TECLAS = {
@@ -2159,6 +2439,333 @@ async function atualizarPainelBorda() {
 
 setInterval(atualizarPainelBorda, 3000);
 
+// ---------------------------------------------------------------------
+// Equipamentos da localidade e graficos flutuantes
+//
+// Uma barragem nao e so a camera. O sensor de nivel e o gateway pertencem a
+// MESMA localidade, e ate aqui so existiam na tela de Telemetrias -- o
+// operador tinha que trocar de tela para saber o nivel do reservatorio que
+// esta vendo em 3D. Agora eles ficam listados no canto, com a presenca que o
+// servidor conhece, e ligar um deles traz os graficos JA CONFIGURADOS em
+// Telemetrias para cima da cena.
+//
+// Os graficos sao os mesmos objetos, desenhados pelo mesmo codigo
+// (/estatico/widgets.js). O que muda e so a moldura: aqui eles flutuam,
+// translucidos, e sao arrastaveis/redimensionaveis livremente -- sobrepor e
+// legitimo para uma janela, ao contrario do quadro de Telemetrias.
+// ---------------------------------------------------------------------
+const CHAVE_EQUIP_LIGADOS = "hc_equip_ligados";
+const CHAVE_FLUT = "hc_flut_";       // + id do widget
+const ATUALIZAR_EQUIP_MS = 30000;
+
+// device_id -> { dispositivo, widgets, ultimos, alarmes, eventos, nos: Map }
+const equipLigados = new Map();
+
+function lerJson(chave, padrao) {
+  try {
+    const v = localStorage.getItem(chave);
+    return v === null ? padrao : JSON.parse(v);
+  } catch (e) { return padrao; }
+}
+function gravarJson(chave, valor) {
+  try { localStorage.setItem(chave, JSON.stringify(valor)); } catch (e) { /* modo privado */ }
+}
+
+function idsLigados() {
+  const v = lerJson(CHAVE_EQUIP_LIGADOS, []);
+  return Array.isArray(v) ? v : [];
+}
+
+/** Sensores e gateways da MESMA localidade da camera aberta.
+ *
+ *  Sem localidade cadastrada nao ha como dizer quem pertence a mesma
+ *  barragem -- e inventar uma lista com todos seria pior que nao mostrar
+ *  nenhuma: o operador acharia que aquele sensor esta ali. */
+function equipamentosDaLocalidade() {
+  const cam = dispositivosDisponiveis.find(d => d.id === deviceId);
+  if (!cam || !cam.localidade_id) return [];
+  return todosDispositivos.filter(d =>
+    (d.tipo || "camera") !== "camera" && d.localidade_id === cam.localidade_id);
+}
+
+function desenharEquipamentos() {
+  const caixa = document.getElementById("equipamentos");
+  const lista = document.getElementById("equip-lista");
+  if (!caixa || !lista) return;
+  const itens = equipamentosDaLocalidade();
+  const cam = dispositivosDisponiveis.find(d => d.id === deviceId);
+  caixa.hidden = !cam;
+  if (!cam) return;
+
+  if (!itens.length) {
+    lista.innerHTML = '<div class="vazio-eq">'
+      + (cam.localidade_id
+          ? "Nenhum sensor ou gateway nesta localidade."
+          : "Esta câmera ainda não tem localidade: sem ela não dá para saber "
+            + "quais equipamentos são da mesma barragem.")
+      + "</div>";
+    return;
+  }
+  const ligados = new Set(idsLigados());
+  lista.innerHTML = itens.map(d => {
+    const on = ligados.has(d.id);
+    const titulo = d.online ? "online" : `offline (sem contato há ${textoSilencio(d)})`;
+    return `<div class="linha">`
+      + `<span class="luz ${d.online ? "on" : "off"}" title="${escaparAttr(titulo)}"></span>`
+      + `<span class="nome" title="${escaparAttr(d.nome)}">${escapar(d.nome)}</span>`
+      + `<button type="button" class="chave" data-id="${escaparAttr(d.id)}" `
+      + `aria-pressed="${on}" aria-label="Mostrar gráficos de ${escaparAttr(d.nome)}"></button>`
+      + `</div>`;
+  }).join("");
+
+  lista.querySelectorAll("button.chave").forEach(b => {
+    b.addEventListener("click", () => alternarEquipamento(b.dataset.id));
+  });
+}
+
+async function alternarEquipamento(id) {
+  const ligados = new Set(idsLigados());
+  if (ligados.has(id)) {
+    ligados.delete(id);
+    desligarEquipamento(id);
+  } else {
+    ligados.add(id);
+    await ligarEquipamento(id);
+  }
+  gravarJson(CHAVE_EQUIP_LIGADOS, [...ligados]);
+  desenharEquipamentos();
+}
+
+function desligarEquipamento(id) {
+  const est = equipLigados.get(id);
+  if (!est) return;
+  est.nos.forEach(no => no.el.remove());
+  equipLigados.delete(id);
+  // Sem janela nenhuma na tela, a proxima recomeca do canto -- senao o
+  // cursor seguiria descendo e a janela nasceria fora da vista.
+  if (!equipLigados.size) reiniciarCursorFlutuante();
+}
+
+async function ligarEquipamento(id) {
+  const d = todosDispositivos.find(x => x.id === id);
+  if (!d) return;
+  const est = { dispositivo: d, widgets: [], ultimos: {}, alarmes: [], eventos: [],
+                nos: new Map() };
+  equipLigados.set(id, est);
+  await recarregarEquipamento(id);
+}
+
+async function recarregarEquipamento(id) {
+  const est = equipLigados.get(id);
+  if (!est) return;
+  const q = encodeURIComponent(id);
+  try {
+    const [ws, ult, al, ev] = await Promise.all([
+      fetch(`${SERVER_BASE}/api/widgets?device_id=${q}`).then(r => r.json()),
+      fetch(`${SERVER_BASE}/api/telemetria/ultimos?device_id=${q}`).then(r => r.json()),
+      fetch(`${SERVER_BASE}/api/alarmes?device_id=${q}`).then(r => r.json()),
+      fetch(`${SERVER_BASE}/api/alarmes/eventos?limite=50`).then(r => r.json()),
+    ]);
+    est.widgets = ws.widgets || [];
+    est.alarmes = al.alarmes || [];
+    est.eventos = (ev.eventos || []).filter(e => e.dispositivo_id === id);
+    est.ultimos = {};
+    (ult.itens || []).forEach(i => {
+      est.ultimos[Widgets.chaveDe(i.sub_id, i.chave)] = i;
+    });
+  } catch (e) {
+    return;   // servidor fora: mantem na tela o que ja estava desenhado
+  }
+  await desenharFlutuantes(id);
+}
+
+// Onde a proxima janela nasce. Um cursor que anda para a direita e quebra
+// linha, em vez da cascata classica: com cascata, a janela de cima cobria a
+// ALCA da janela de baixo, e a de baixo so podia ser redimensionada depois
+// de ser trazida para a frente -- um passo escondido que ninguem adivinha.
+const cursorFlutuante = { x: 16, y: 16, alturaLinha: 0, voltas: 0 };
+
+// Faixas reservadas aos controles: 260 px a direita (lista de equipamentos)
+// e 90 px embaixo (miniaturas das cameras). Nascer debaixo deles daria a
+// impressao de que a janela nao abriu.
+const RESERVA_DIREITA = 260, RESERVA_RODAPE = 90;
+
+function reiniciarCursorFlutuante() {
+  cursorFlutuante.x = 16; cursorFlutuante.y = 16;
+  cursorFlutuante.alturaLinha = 0; cursorFlutuante.voltas = 0;
+}
+
+// Os tamanhos padrao de widgets.js foram pensados para o QUADRO de
+// Telemetrias, que tem a pagina inteira. Aqui a area util e bem menor (o
+// viewport menos a lista de equipamentos e a faixa de miniaturas), e abrir
+// quatro janelas do tamanho cheio fazia uma cobrir o cabecalho da outra --
+// e uma janela sem cabecalho visivel nao pode nem ser arrastada para fora do
+// caminho. Nasce menor; o operador aumenta a que ele quiser olhar.
+const ESCALA_FLUTUANTE = 0.62;
+
+function tamanhoInicialFlutuante(w) {
+  const p = Widgets.tamanhoPadrao(w);
+  const area = document.getElementById("flutuantes");
+  const util = Math.max(240, area.clientWidth - RESERVA_DIREITA);
+  return {
+    w: Math.max(170, Math.min(Math.round(p.w * ESCALA_FLUTUANTE), Math.round(util * 0.55))),
+    h: Math.max(120, Math.round(p.h * ESCALA_FLUTUANTE)),
+  };
+}
+
+function posicaoInicial(largura, altura) {
+  const area = document.getElementById("flutuantes");
+  const limiteX = Math.max(240, area.clientWidth - RESERVA_DIREITA);
+  const limiteY = Math.max(160, area.clientHeight - RESERVA_RODAPE);
+  const larg = Math.min(largura, limiteX - 32);
+  const alt = Math.min(altura, limiteY - 32);
+  if (cursorFlutuante.x + larg > limiteX && cursorFlutuante.x > 16) {
+    cursorFlutuante.x = 16;
+    cursorFlutuante.y += cursorFlutuante.alturaLinha + 12;
+    cursorFlutuante.alturaLinha = 0;
+  }
+  // Acabou o espaco vertical: volta ao topo em CASCATA, deslocando um pouco
+  // a cada volta. Sobrepor aqui e inevitavel (as janelas somam mais altura
+  // que a tela tem), mas cair exatamente por cima da primeira esconderia o
+  // cabecalho e a alca dela -- e uma janela sem cabecalho visivel nao pode
+  // nem ser arrastada para fora do caminho.
+  if (cursorFlutuante.y + alt > limiteY) {
+    cursorFlutuante.voltas = (cursorFlutuante.voltas || 0) + 1;
+    const desvio = 28 * (((cursorFlutuante.voltas - 1) % 6) + 1);
+    cursorFlutuante.x = Math.min(16 + desvio, Math.max(16, limiteX - larg));
+    cursorFlutuante.y = Math.min(16 + desvio, Math.max(16, limiteY - alt));
+    cursorFlutuante.alturaLinha = 0;
+  }
+  const r = { x: cursorFlutuante.x, y: cursorFlutuante.y, w: larg, h: alt };
+  cursorFlutuante.x = r.x + larg + 12;
+  cursorFlutuante.alturaLinha = Math.max(cursorFlutuante.alturaLinha, alt);
+  return r;
+}
+
+// Ordem de empilhamento das janelas. Tocar numa a traz para a frente -- e o
+// que se espera de qualquer janela, e o unico jeito de alcancar a alca de
+// uma que ficou por baixo depois de o operador arrastar as outras.
+let zFlutuante = 20;
+function trazerParaFrente(el) {
+  el.style.zIndex = ++zFlutuante;
+}
+
+async function desenharFlutuantes(id) {
+  const est = equipLigados.get(id);
+  if (!est) return;
+  const area = document.getElementById("flutuantes");
+  const ctx = {
+    deviceId: id, base: SERVER_BASE,
+    ultimos: est.ultimos, alarmes: est.alarmes, eventos: est.eventos,
+    // Sem aoExcluirAlarme de proposito: aqui se OLHA o alarme; mexer nas
+    // regras e na tela de Telemetrias, onde estao os controles todos.
+  };
+
+  // Some quem foi removido em Telemetrias enquanto a janela estava aberta.
+  const vivos = new Set(est.widgets.map(w => w.id));
+  for (const [wid, no] of [...est.nos]) {
+    if (!vivos.has(wid)) { no.el.remove(); est.nos.delete(wid); }
+  }
+
+  for (const w of est.widgets) {
+    let no = est.nos.get(w.id);
+    if (!no) {
+      no = criarFlutuante(w, est);
+      est.nos.set(w.id, no);
+      area.appendChild(no.el);
+    }
+    const titulo = w.titulo || Widgets.tituloPadrao(w);
+    if (no.el.querySelector("h3").textContent !== titulo)
+      no.el.querySelector("h3").textContent = titulo;
+
+    const assinatura = Widgets.assinatura(w, ctx);
+    if (no.assinatura === assinatura) continue;   // nada mudou: nao redesenha
+    no.assinatura = assinatura;
+    try {
+      await Widgets.desenhar(w, no.corpo, ctx);
+    } catch (e) {
+      no.corpo.innerHTML = `<div class="vazio">Não consegui desenhar: `
+        + `${escapar(e.message || e)}</div>`;
+    }
+  }
+}
+
+function criarFlutuante(w, est) {
+  const area = document.getElementById("flutuantes");
+  const el = document.createElement("section");
+  el.className = "flutuante";
+  el.innerHTML =
+    `<header><h3></h3><span class="de">${escapar(est.dispositivo.nome)}</span></header>`
+    + `<div class="corpo wgt-corpo"></div>`
+    + `<div class="alca" title="Arraste para redimensionar"></div>`;
+
+  const padrao = tamanhoInicialFlutuante(w);
+  // A posicao fica no NAVEGADOR, nao no banco: e o arranjo daquela pessoa
+  // naquela tela, e nao pode mexer no layout que ela montou em Telemetrias
+  // (que usa as mesmas chaves de config do widget).
+  const salvo = lerJson(CHAVE_FLUT + w.id, null);
+  const r = (salvo && Number.isFinite(+salvo.w))
+    ? salvo
+    : posicaoInicial(padrao.w, padrao.h);
+  Quadro.aplicar(el, r);
+  trazerParaFrente(el);
+  // Fase de CAPTURA: quadro.js chama stopPropagation() no cabecalho e na
+  // alca (para o arrasto nao virar clique no que esta atras), entao um
+  // ouvinte de bolha aqui nunca seria chamado -- e arrastar uma janela nao a
+  // trazia para a frente. Sem isso, a janela de baixo ficava com a alca
+  // coberta pela de cima e simplesmente nao redimensionava.
+  el.addEventListener("pointerdown", () => trazerParaFrente(el), true);
+
+  const opcoes = {
+    area,
+    minW: 160, minH: 110,
+    // Sem regra de sobreposicao: sao janelas sobre a cena, e empilhar uma
+    // sobre a outra e uso normal.
+    aoSoltar: (fim) => gravarJson(CHAVE_FLUT + w.id, fim),
+  };
+  Quadro.ligarMover(el, el.querySelector("header"), opcoes);
+  Quadro.ligarRedimensionar(el, el.querySelector(".alca"), opcoes);
+
+  return { el, corpo: el.querySelector(".corpo"), assinatura: null };
+}
+
+/** Presenca (as bolinhas) vem do servidor, nao do navegador. Recarrega a
+ *  lista de dispositivos periodicamente e redesenha as duas coisas que
+ *  dependem dela: as miniaturas e a lista de equipamentos. */
+async function atualizarPresenca() {
+  let lista;
+  try {
+    lista = await fetch(`${SERVER_BASE}/api/dispositivos`).then(r => r.json());
+  } catch (e) { return; }
+  if (!Array.isArray(lista)) return;
+  todosDispositivos = lista;
+  dispositivosDisponiveis = lista.filter(d => (d.tipo || "camera") === "camera");
+  desenharMiniaturas(deviceId);
+  desenharEquipamentos();
+}
+
+async function iniciarEquipamentos() {
+  desenharEquipamentos();
+  const daLocalidade = new Set(equipamentosDaLocalidade().map(d => d.id));
+  for (const id of idsLigados()) {
+    if (daLocalidade.has(id)) await ligarEquipamento(id);
+  }
+  setInterval(atualizarPresenca, ATUALIZAR_EQUIP_MS);
+  setInterval(() => {
+    equipLigados.forEach((_, id) => recarregarEquipamento(id));
+  }, ATUALIZAR_EQUIP_MS);
+}
+
+// Telemetria nova chega pelo mesmo WebSocket do resto do painel. Agrupada:
+// um gateway manda dezenas de valores de uma vez, e cada um deles viraria um
+// redesenho.
+const pendenteEquip = new Set();
+function avisarTelemetria(id) {
+  if (!equipLigados.has(id) || pendenteEquip.has(id)) return;
+  pendenteEquip.add(id);
+  setTimeout(() => { pendenteEquip.delete(id); recarregarEquipamento(id); }, 800);
+}
+
 // Aviso central do viewport: o mesmo espaço serve para "nenhum dispositivo
 // cadastrado" e para "este dispositivo ainda não tem visão 3D", que são
 // situações diferentes e pedem instruções diferentes.
@@ -2177,10 +2784,12 @@ function mostrarAvisoSem3D(titulo, detalheHtml) {
       'Cadastre um em <a href="/dispositivos">Dispositivos</a> para começar.'
     );
     animate();   // cena vazia (so o grid), pra nao deixar o viewport parado
+    desenharEquipamentos();
     return;
   }
   init();
   loadHistory();
+  iniciarEquipamentos();
 })();
 </script>
 </body>

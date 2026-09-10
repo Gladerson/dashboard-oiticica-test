@@ -21,6 +21,7 @@ import secrets
 import shutil
 import subprocess
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, File, UploadFile
@@ -185,6 +186,26 @@ def _localidade_publica(l):
 
 TIPOS_DISPOSITIVO = ("camera", "sensor", "gateway")
 
+# Quanto tempo de silencio faz um equipamento ser dado como offline.
+#
+# Nao existe "desconectar" num equipamento que so fala de saida: a unica
+# evidencia de que ele esta vivo e ter falado ha pouco. O padrao (3 min) cobre
+# com folga as duas cadencias reais do projeto -- a camera reporta a cada 3 s,
+# o gateway a cada 15 s -- sem piscar vermelho a cada POST perdido.
+DISPOSITIVO_OFFLINE_S = int(os.getenv("DISPOSITIVO_OFFLINE_S", "180"))
+
+
+def _presenca(d):
+    """(online, segundos_desde_o_ultimo_contato) deste dispositivo.
+
+    online = False quando ele nunca falou -- e a resposta honesta para um
+    cadastro recem-criado cujo equipamento ainda nao foi ligado."""
+    visto = d.get("visto_em")
+    if visto is None:
+        return False, None
+    idade = (datetime.now(timezone.utc) - visto).total_seconds()
+    return idade <= DISPOSITIVO_OFFLINE_S, round(idade, 1)
+
 
 def motivo_sem_3d(d):
     """Por que este dispositivo ainda nao tem visao 3D -- ou None quando
@@ -215,6 +236,7 @@ def motivo_sem_3d(d):
 
 
 def _dispositivo_publico(d):
+    online, silencio = _presenca(d)
     return {
         "id": str(d["id"]), "entity_id": d["entity_id"], "entity_type": d["entity_type"],
         "nome": d["nome"], "proprietario": d["proprietario"],
@@ -228,6 +250,10 @@ def _dispositivo_publico(d):
         "topico_frame": d["topico_frame"], "criado_em": d["criado_em"].isoformat(),
         "tipo": d.get("tipo") or "camera",
         "motivo_sem_3d": motivo_sem_3d(d),
+        "visto_em": d["visto_em"].isoformat() if d.get("visto_em") else None,
+        "online": online,
+        "silencio_s": silencio,
+        "offline_apos_s": DISPOSITIVO_OFFLINE_S,
     }
 
 
