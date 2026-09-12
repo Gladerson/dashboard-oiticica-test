@@ -33,6 +33,7 @@ que passa 10 minutos acima do limite geraria um evento por leitura e
 afogaria o sininho de notificacoes.
 """
 import os
+import time
 
 from fastapi import Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -374,6 +375,47 @@ def limpar_catalogos_migrados():
         print(f">> Catalogo: {total} chave(s) movidas do gateway para o sensor.")
 
 
+# ============================================================================
+# Cache da serie completa
+# ============================================================================
+# Varrer a serie inteira de uma telemetria e caro: um ano a cada 15 s sao
+# ~2 milhoes de linhas por chave. E o grafico de "tudo" e redesenhado a cada
+# telemetria que chega -- a cada 15 s, portanto.
+#
+# Guardar o resultado por um minuto resolve sem prejuizo nenhum: num desenho
+# que cobre meses, o ultimo balde chegar um minuto atrasado nao muda nada que
+# alguem consiga ver. Quem quer o instante exato usa uma janela curta, que
+# nao passa por aqui.
+#
+# O cache e por processo e some no reinicio, que e o comportamento certo para
+# algo que e so uma otimizacao.
+_CACHE_SERIE = {}
+CACHE_SERIE_S = 60.0
+CACHE_SERIE_MAX = 200          # teto de memoria: 200 series de ~600 pontos
+
+
+def _serie_completa_cache(device_id, sub_id, chave):
+    agora = time.monotonic()
+    chave_cache = (device_id, sub_id, chave)
+    guardado = _CACHE_SERIE.get(chave_cache)
+    if guardado is not None and agora - guardado[0] < CACHE_SERIE_S:
+        return guardado[1], guardado[2]
+
+    linhas, passo = db.serie_completa(device_id, sub_id, chave)
+
+    # Limpeza simples: quando encher, joga fora o que esta vencido. Sem isso
+    # um servidor com muitos equipamentos acumularia series para sempre.
+    if len(_CACHE_SERIE) >= CACHE_SERIE_MAX:
+        for k, v in list(_CACHE_SERIE.items()):
+            if agora - v[0] >= CACHE_SERIE_S:
+                _CACHE_SERIE.pop(k, None)
+        if len(_CACHE_SERIE) >= CACHE_SERIE_MAX:
+            _CACHE_SERIE.clear()
+
+    _CACHE_SERIE[chave_cache] = (agora, linhas, passo)
+    return linhas, passo
+
+
 def instalar(app, manager=None):
     global ctx_manager
     ctx_manager = manager
@@ -518,11 +560,23 @@ def instalar(app, manager=None):
     @app.get("/api/telemetria/serie")
     def serie(device_id: str, chave: str, sub_id: str = "",
               minutos: int = JANELA_PADRAO_MIN, usuario=Depends(auth.usuario_atual)):
+        """A serie de uma telemetria. `minutos <= 0` significa TUDO: do
+        primeiro registro daquele equipamento ate agora."""
         _, erro = _dispositivo(device_id, usuario)
         if erro:
             return erro
-        linhas = db.serie_telemetria(device_id, sub_id, chave, minutos)
+
+        if minutos > 0:
+            linhas = db.serie_telemetria(device_id, sub_id, chave, minutos)
+            passo = 0.0
+        else:
+            linhas, passo = _serie_completa_cache(device_id, sub_id, chave)
+
         return {"sub_id": sub_id, "chave": chave,
+                # passo_s > 0 avisa que os pontos sao MEDIAS por intervalo, e
+                # nao leituras. O grafico diz isso na legenda -- um numero que
+                # parece leitura e nao e seria pior que nao mostrar.
+                "passo_s": round(passo, 1),
                 "pontos": [{"em": l["em"].isoformat(), "v": l["valor_num"],
                             "t": l["valor_txt"]} for l in linhas]}
 
@@ -552,9 +606,17 @@ def instalar(app, manager=None):
 
     @app.post("/api/widgets")
     def criar_widget(p: WidgetPayload, usuario=Depends(auth.usuario_atual)):
-        _, erro = _dispositivo(p.device_id, usuario)
+        linha, erro = _dispositivo(p.device_id, usuario)
         if erro:
             return erro
+        # "equipamentos" e a lista dos controladores REMOTOS de um gateway.
+        # Num sensor ela seria sempre vazia, e o widget ficaria ali sem nunca
+        # mostrar nada -- melhor recusar na criacao que deixar o operador
+        # descobrir depois.
+        if p.tipo == "equipamentos" and (linha.get("tipo") or "") != "gateway":
+            return JSONResponse(
+                {"error": "o widget de equipamentos só existe em gateways"},
+                status_code=400)
         if p.tipo not in TIPOS_WIDGET:
             return JSONResponse({"error": f"tipo de widget inválido: {p.tipo}"},
                                 status_code=400)

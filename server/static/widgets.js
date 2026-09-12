@@ -78,6 +78,16 @@
     return unidade ? txt + " " + unidade : txt;
   }
 
+  /** "45 s", "12 min", "3 h", "2 dias" -- o suficiente para o leitor saber o
+   *  tamanho do intervalo que virou um ponto. */
+  function duracao(segundos) {
+    var s = Math.round(segundos);
+    if (s < 90) return s + " s";
+    if (s < 5400) return Math.round(s / 60) + " min";
+    if (s < 172800) return Math.round(s / 3600) + " h";
+    return Math.round(s / 86400) + " dias";
+  }
+
   function valorDe(ctx, w, chave) {
     return (ctx.ultimos || {})[chaveDe(w.sub_id, chave)] || null;
   }
@@ -225,15 +235,20 @@
   }
 
   async function area(w, alvo, ctx, cfg) {
-    var minutos = Number.isFinite(+cfg.minutos) ? +cfg.minutos : 1440;
+    // 0 (ou ausente) = TUDO, do primeiro registro ate agora. E o padrao: numa
+    // barragem, a pergunta e a tendencia, e recortar as ultimas 24 h por
+    // conta propria escondia justamente isso.
+    var minutos = Number.isFinite(+cfg.minutos) ? +cfg.minutos : 0;
     var base = ctx.base || "";
     var series = [];
+    var passo = 0;
     for (var k = 0; k < w.chaves.length; k++) {
       var c = w.chaves[k];
       var j = await fetch(base + "/api/telemetria/serie?device_id="
         + encodeURIComponent(ctx.deviceId) + "&sub_id=" + encodeURIComponent(w.sub_id || "")
         + "&chave=" + encodeURIComponent(c) + "&minutos=" + minutos)
         .then(function (r) { return r.json(); });
+      passo = Math.max(passo, +j.passo_s || 0);
       series.push({
         chave: c,
         pontos: (j.pontos || []).filter(function (p) { return p.v != null; }),
@@ -299,7 +314,13 @@
       + '<div class="legenda">' + series.map(function (s, k) {
           return '<span><i style="background:' + CORES[k % CORES.length] + '"></i>'
                + escapar(s.chave) + "</span>";
-        }).join("") + "</div>";
+        }).join("")
+        // Quando o servidor reamostra, cada ponto e a MEDIA do intervalo, nao
+        // uma leitura. Dizer isso e o que impede alguem de ler um pico
+        // suavizado como se fosse a medida daquele instante.
+        + (passo > 0 ? '<span class="nota">média por ' + escapar(duracao(passo))
+                        + "</span>" : "")
+      + "</div>";
   }
 
   /** Os equipamentos remotos deste gateway, com o status de cada um.
