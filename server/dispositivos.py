@@ -31,6 +31,7 @@ from pydantic import BaseModel
 import auth
 import db
 import registro_dispositivos as registro
+import sensores
 
 MODELOS_DIR = Path("static/modelos")
 MODELOS_DIR.mkdir(parents=True, exist_ok=True)
@@ -152,9 +153,17 @@ class DispositivoPayload(BaseModel):
     alt_acima_solo: float | None = None
     transporte: str = "http"
     # 'camera'  = Raspberry com a PTZ (geometria 3D, stream, deteccao);
-    # 'sensor'  = ESP32 que manda as proprias telemetrias;
-    # 'gateway' = ESP32 que fala por N equipamentos remotos (LoRa).
+    # 'sensor'  = equipamento que mede e manda as proprias telemetrias;
+    # 'gateway' = equipamento que fala por N outros, por radio.
     tipo: str = "camera"
+    # So para tipo == 'sensor'. Qual conta o servidor aplica sobre a medida
+    # bruta ('radar_nivel', ...) e a calibracao daquele reservatorio.
+    subtipo: str | None = None
+    config_sensor: dict | None = None
+    # Por qual gateway este sensor fala, e como ele se identifica no pacote
+    # ('nivel-rd01'). Sem gateway, ele fala direto e o sub_id nao e usado.
+    gateway_id: str | None = None
+    sub_id: str | None = None
 
 
 class DispositivoEdicaoPayload(BaseModel):
@@ -171,6 +180,10 @@ class DispositivoEdicaoPayload(BaseModel):
     controller_url: str | None = None
     controller_url_publica: str | None = None
     tipo: str | None = None
+    subtipo: str | None = None
+    config_sensor: dict | None = None
+    gateway_id: str | None = None
+    sub_id: str | None = None
 
 
 def _localidade_publica(l):
@@ -185,6 +198,53 @@ def _localidade_publica(l):
 
 
 TIPOS_DISPOSITIVO = ("camera", "sensor", "gateway")
+
+
+def _validar_sensor(campos, tipo_final):
+    """Normaliza e confere os campos de sensor. Devolve a mensagem de erro,
+    ou None quando esta tudo certo.
+
+    Trabalha sobre o dicionario NO LUGAR porque os dois caminhos (criar e
+    editar) precisam exatamente das mesmas regras, e duplicar isso e como se
+    criam dois comportamentos diferentes para a mesma tela."""
+    if "subtipo" in campos:
+        sub = (campos["subtipo"] or "").strip() or None
+        if sub is not None and tipo_final != "sensor":
+            # Um gateway com subtipo de radar nao significa nada, e ficaria
+            # ali guardado esperando para confundir quem ler o cadastro.
+            return "só equipamentos do tipo 'sensor' têm subtipo"
+        if sub is not None and sub not in sensores.SUBTIPOS:
+            return (f"subtipo inválido: {sub} "
+                    f"(use {', '.join(sensores.SUBTIPOS)})")
+        campos["subtipo"] = sub
+
+    if "config_sensor" in campos:
+        cfg = campos["config_sensor"]
+        if cfg is None:
+            campos["config_sensor"] = {}
+        elif not isinstance(cfg, dict):
+            return "config_sensor tem de ser um objeto"
+
+    if "sub_id" in campos:
+        campos["sub_id"] = (campos["sub_id"] or "").strip()
+
+    if "gateway_id" in campos:
+        gid = (campos["gateway_id"] or "").strip() or None
+        if gid is not None:
+            gw = db.dispositivo_por_id(gid)
+            if gw is None:
+                return "gateway não encontrado"
+            if (gw.get("tipo") or "camera") != "gateway":
+                return "o equipamento escolhido como gateway não é do tipo gateway"
+        campos["gateway_id"] = gid
+
+    # Falar por um gateway sem dizer COMO se identifica no pacote LoRa e um
+    # cadastro que nunca vai casar com telemetria nenhuma -- e a falha seria
+    # silenciosa: os numeros simplesmente nao apareceriam.
+    if campos.get("gateway_id") and not (campos.get("sub_id") or "").strip():
+        return ("informe o identificador do equipamento no gateway (o mesmo "
+                "DEVICE_ID gravado no controlador)")
+    return None
 
 # Quanto tempo de silencio faz um equipamento ser dado como offline.
 #
@@ -250,6 +310,11 @@ def _dispositivo_publico(d):
         "topico_frame": d["topico_frame"], "criado_em": d["criado_em"].isoformat(),
         "tipo": d.get("tipo") or "camera",
         "motivo_sem_3d": motivo_sem_3d(d),
+        "subtipo": d.get("subtipo"),
+        "config_sensor": d.get("config_sensor") or {},
+        "gateway_id": str(d["gateway_id"]) if d.get("gateway_id") else None,
+        "sub_id": d.get("sub_id") or "",
+        "avisos_sensor": sensores.conferir(d.get("subtipo"), d.get("config_sensor")),
         "visto_em": d["visto_em"].isoformat() if d.get("visto_em") else None,
         "online": online,
         "silencio_s": silencio,
@@ -509,6 +574,16 @@ def instalar(app):
         return _localidade_publica(loc)
 
     # ---- Dispositivos ---------------------------------------------------------
+    @app.get("/api/sensores/tipos")
+    def listar_tipos_de_sensor(_usuario=Depends(auth.usuario_atual)):
+        """Catalogo dos subtipos de sensor, com os campos de cada um.
+
+        A tela de cadastro monta o formulario a partir daqui. E de proposito:
+        se a lista de campos fosse escrita tambem no HTML, acrescentar um
+        sensor exigiria lembrar de mexer nos dois lugares -- e um dia nao se
+        lembraria."""
+        return {"tipos": sensores.subtipos_publicos()}
+
     @app.get("/api/dispositivos")
     def listar_dispositivos(usuario=Depends(auth.usuario_atual)):
         dono = None if usuario["papel"] == "admin" else usuario["id"]
@@ -533,6 +608,12 @@ def instalar(app):
             return JSONResponse(
                 {"error": f"tipo inválido: {payload.tipo} "
                           f"(use {', '.join(TIPOS_DISPOSITIVO)})"}, status_code=400)
+
+        sensor = {"subtipo": payload.subtipo, "config_sensor": payload.config_sensor,
+                  "gateway_id": payload.gateway_id, "sub_id": payload.sub_id}
+        erro = _validar_sensor(sensor, payload.tipo)
+        if erro:
+            return JSONResponse({"error": erro}, status_code=400)
         try:
             novo = db.criar_dispositivo(
                 entity_id=f"urn:ngsi-ld:CV-SHM:{slug_unico}",
@@ -548,6 +629,10 @@ def instalar(app):
                 topico_frame=f"oiticica/{slug_unico}/frame",
                 dono_usuario_id=usuario["id"],
                 tipo=payload.tipo,
+                subtipo=sensor["subtipo"],
+                config_sensor=sensor["config_sensor"] or {},
+                gateway_id=sensor["gateway_id"],
+                sub_id=sensor["sub_id"] or "",
             )
         except Exception as e:
             return JSONResponse({"error": f"não consegui criar: {e}"}, status_code=400)
@@ -587,6 +672,20 @@ def instalar(app):
         for chave in ("controller_url", "controller_url_publica"):
             if chave in campos:
                 campos[chave] = (campos[chave] or "").strip() or None
+
+        # O tipo que vale e o que o cadastro VAI ter depois desta edicao --
+        # pode estar mudando nesta mesma requisicao.
+        tipo_final = campos.get("tipo") or alvo.get("tipo") or "camera"
+        erro = _validar_sensor(campos, tipo_final)
+        if erro:
+            return JSONResponse({"error": erro}, status_code=400)
+        # Deixar de ser sensor limpa a calibracao junto: guardar a config de
+        # um radar num gateway so serviria para confundir quem ler depois.
+        if tipo_final != "sensor" and campos.get("tipo") is not None:
+            campos["subtipo"] = None
+            campos["config_sensor"] = {}
+            campos["gateway_id"] = None
+            campos["sub_id"] = ""
 
         try:
             atualizado = db.atualizar_dispositivo(dispositivo_id, campos)

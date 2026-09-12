@@ -62,9 +62,9 @@ Depois: **Arquivo → Sketchbook → gateway_lora** (ou `sensor_nivel`).
 Placa: **ESP32 Dev Module**. Core: **ESP32 Arduino 3.x**
 (*Ferramentas → Placa → Gerenciador de placas* → `esp32` da Espressif).
 
-Biblioteca externa: **TinyGSM** — só o gateway, e só se `TIPO_CONEXAO` for
-`TIPO_CONEXAO_4G`. No modo Wi-Fi ela não é necessária, porque o `#include`
-dela está dentro do `#if` do 4G.
+Biblioteca externa: **TinyGSM** — só o gateway, e agora **sempre**: os dois
+enlaces são compilados juntos. Só desligando `TEM_4G` ela deixa de ser
+necessária.
 
 ## Rodar os testes
 
@@ -78,28 +78,54 @@ de JSON (inclusive estouro de buffer e NaN) e as regras de nível (inclusive
 calibração incoerente). Se mexer nos cabeçalhos, rode isto antes de gravar
 qualquer coisa em campo.
 
-## Wi-Fi ou 4G no gateway
+## Wi-Fi e 4G no gateway: os dois, com troca automática
 
-Só a terceira linha muda; as duas de cima são rótulos:
+Não há mais escolha de compilação. O gateway usa **Wi-Fi por prioridade**,
+cai para o **4G** sozinho quando o Wi-Fi some, e volta assim que ele se firma.
+Preencha os quatro campos:
 
 ```cpp
-#define TIPO_CONEXAO        TIPO_CONEXAO_WIFI   // ou TIPO_CONEXAO_4G
+static const char* WIFI_SSID = "...";
+static const char* WIFI_PASS = "...";
+static const char  APN[]     = "java.claro.com.br";   // e APN_USER / APN_PASS
 ```
 
-No Wi-Fi, preencha `WIFI_SSID`/`WIFI_PASS`, a TinyGSM deixa de ser necessária
-e o TLS passa a ser feito pelo ESP32 — que **confere** a cadeia (o modem do
-caminho 4G não confere). Por isso o Wi-Fi depende do relógio: o sketch acerta
-a hora por NTP antes do primeiro envio e a cada envio se ela ainda não estiver
-acertada. Detalhes no README principal, seção **9-sexies**.
+`TEM_WIFI` e `TEM_4G` (no topo do sketch) só existem para o caso de a placa
+realmente não ter aquele hardware — deixe os dois em 1 no caso normal. Um
+gateway sem modem instalado funciona com os dois ligados: depois de três
+tentativas sem resposta o firmware conclui que não há chip e segue só com
+Wi-Fi.
+
+Detalhes da histerese, do estado do modem e das telemetrias de enlace: README
+principal, seção **9-sexies**.
+
+## Rodar a suíte do gateway
+
+Além dos cabeçalhos compartilhados, o **gateway inteiro** roda no PC:
+
+```bash
+g++ -std=c++17 -Wall -Wextra -I firmware/libraries/HydroConecta \
+    -I firmware/testes -I firmware/testes/stubs \
+    firmware/testes/teste_gateway.cpp -o /tmp/tg && /tmp/tg
+```
+
+`testes/ambiente_arduino.h` faz o papel do Arduino, do ESP32 e da TinyGSM: o
+tempo é controlado, o Wi-Fi cai quando o teste manda e o modem responde ou
+fica mudo por decisão do teste. É assim que a troca de enlace é exercitada
+sem subir numa torre. Se mexer na rede do gateway, **rode isto antes de
+gravar**.
 
 ## Antes de gravar
 
 1. **`DEVICE_TOKEN`** no gateway: crie o dispositivo no painel
    (**Dispositivos → Novo**, tipo `gateway`) e cole o token gerado.
-2. **`DEVICE_ID`** no controlador tem de ser **idêntico** ao `id` da tabela
-   `EQUIPAMENTOS` no gateway — é ele que vira o `sub_id` no servidor.
-3. **`cota_fundo`** de cada reservatório: confira no projeto da barragem.
-   Ver a explicação em `libraries/HydroConecta/RegrasNivel.h`.
+2. **`DEVICE_ID`** no controlador, a tabela `EQUIPAMENTOS` no gateway e o
+   campo *Identificador no gateway* do cadastro do sensor têm de ser o
+   **mesmo texto**. Se os três não baterem, a medida chega ao servidor e fica
+   sem dono — sem erro nenhum, só sem aparecer.
+3. **A calibração do reservatório NÃO está mais no firmware.** Cota, volume e
+   percentual são calculados pelo servidor, a partir do que estiver em
+   **Dispositivos → Sensor → Radar de nível**. Não há o que ajustar aqui.
 
 O passo a passo completo, com a ordem de atualização em campo, está no README
 principal, seção **9-sexies**.

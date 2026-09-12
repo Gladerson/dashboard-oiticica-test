@@ -34,6 +34,31 @@
     font-size:11px; line-height:1.35; white-space:pre-wrap; word-break:break-word;
   }
   .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:0 12px; }
+  /* .ajuda existia no HTML sem estilo nenhum (herdava o <p> da pagina, com
+     margem larga). Agora que ha uma dessas embaixo de quase todo campo do
+     sensor, precisa parecer nota de rodape, nao paragrafo. */
+  .ajuda { margin:3px 0 10px; font-size:10.5px; color:var(--muted); line-height:1.45; }
+  .ajuda code { font-size:10px; }
+  /* Bloco que so existe para o tipo "sensor". Separado por uma moldura
+     discreta: sao campos de um assunto so (a calibracao daquele
+     instrumento), no meio de um formulario de cadastro. */
+  .bloco-sensor {
+    border:1px solid var(--border); border-radius:10px;
+    padding:12px 14px 2px; margin:6px 0 14px; background:var(--bg);
+  }
+  .bloco-sensor h3 {
+    margin:0 0 10px; font-size:11px; text-transform:uppercase;
+    letter-spacing:.07em; color:var(--muted);
+  }
+  .bloco-sensor .sem-campos { color:var(--muted); font-size:11.5px; line-height:1.5; }
+  .aviso-sensor {
+    grid-column:1 / -1; margin:2px 0 12px; padding:9px 11px; border-radius:8px;
+    font-size:11.5px; line-height:1.5;
+    background:rgba(168,135,31,.12); border:1px solid rgba(168,135,31,.5);
+  }
+  .chip-aviso {
+    display:block; margin-top:4px; color:var(--warn); font-size:11px; line-height:1.35;
+  }
   .grid2 .full { grid-column: 1 / -1; }
   #mapa { height:260px; border-radius:8px; border:1px solid var(--border); margin-top:6px; }
   .credenciais {
@@ -204,6 +229,31 @@
         <label for="dev-lon">Longitude</label>
         <input id="dev-lon" type="number" step="any" placeholder="-37.126196" />
       </div>
+      <!-- Só aparece quando o tipo é "sensor". O conteúdo é montado por
+           montarBlocoSensor(), a partir de /api/sensores/tipos -- a lista de
+           campos de cada sensor existe num lugar só, em server/sensores.py. -->
+      <div class="full bloco-sensor" id="dev-bloco-sensor" hidden>
+        <h3>Sensor</h3>
+        <div class="grid2">
+          <div>
+            <label for="dev-subtipo">Tipo de sensor</label>
+            <select id="dev-subtipo"><option value="">(escolha)</option></select>
+            <p class="ajuda" id="dev-ajuda-subtipo"></p>
+          </div>
+          <div>
+            <label for="dev-gateway">Fala por meio de</label>
+            <select id="dev-gateway"><option value="">(fala direto com o servidor)</option></select>
+            <p class="ajuda">Escolha o gateway que recebe este sensor por rádio.</p>
+          </div>
+          <div id="dev-campo-subid" hidden>
+            <label for="dev-subid">Identificador no gateway</label>
+            <input id="dev-subid" placeholder="nivel-rd01" />
+            <p class="ajuda">O <b>mesmo</b> texto gravado em <code>DEVICE_ID</code>
+               no controlador. É por ele que o servidor sabe de quem é a medida.</p>
+          </div>
+        </div>
+        <div class="grid2" id="dev-campos-sensor"></div>
+      </div>
       <div class="full">
         <label>Localização (clique no mapa, ou digite acima)</label>
         <div id="mapa"></div>
@@ -325,6 +375,31 @@
       <div>
         <label for="ed-controller">URL do controlador (opcional)</label>
         <input id="ed-controller" placeholder="http://172.16.1.2:8090" />
+      </div>
+      <!-- Só aparece quando o tipo é "sensor". O conteúdo é montado por
+           montarBlocoSensor(), a partir de /api/sensores/tipos -- a lista de
+           campos de cada sensor existe num lugar só, em server/sensores.py. -->
+      <div class="full bloco-sensor" id="ed-bloco-sensor" hidden>
+        <h3>Sensor</h3>
+        <div class="grid2">
+          <div>
+            <label for="ed-subtipo">Tipo de sensor</label>
+            <select id="ed-subtipo"><option value="">(escolha)</option></select>
+            <p class="ajuda" id="ed-ajuda-subtipo"></p>
+          </div>
+          <div>
+            <label for="ed-gateway">Fala por meio de</label>
+            <select id="ed-gateway"><option value="">(fala direto com o servidor)</option></select>
+            <p class="ajuda">Escolha o gateway que recebe este sensor por rádio.</p>
+          </div>
+          <div id="ed-campo-subid" hidden>
+            <label for="ed-subid">Identificador no gateway</label>
+            <input id="ed-subid" placeholder="nivel-rd01" />
+            <p class="ajuda">O <b>mesmo</b> texto gravado em <code>DEVICE_ID</code>
+               no controlador. É por ele que o servidor sabe de quem é a medida.</p>
+          </div>
+        </div>
+        <div class="grid2" id="ed-campos-sensor"></div>
       </div>
       <div class="full">
         <div class="msg" id="msg-editar"></div>
@@ -722,6 +797,9 @@ async function carregarDispositivos() {
   const r = await fetch(`${SERVER_BASE}/api/dispositivos`);
   if (!r.ok) return;
   const lista = await r.json();
+  // O seletor "fala por meio de" precisa dos gateways cadastrados.
+  gatewaysCache = lista.filter(d => (d.tipo || "camera") === "gateway");
+  preencherGateways("dev");
   const corpo = document.querySelector("#tabela-dispositivos tbody");
   corpo.innerHTML = "";
   lista.forEach(dev => {
@@ -731,11 +809,17 @@ async function carregarDispositivos() {
     // reportar. Para eles o que interessa e o painel de telemetria.
     const rotuloTipo = { camera: "Câmera PTZ fixa", sensor: "Sensor", gateway: "Gateway" };
     const tipo = dev.tipo || "camera";
-    const aviso = tipo !== "camera"
+    // Um sensor com calibração duvidosa tem de gritar AQUI: é a tela que
+    // alguém abre quando desconfia do número que viu no painel.
+    const chip = (dev.avisos_sensor || []).length
+      ? `<span class="chip-aviso" title="${escapar(dev.avisos_sensor.join(" "))}">`
+        + `⚠ confira a calibração deste sensor</span>`
+      : "";
+    const aviso = chip + (tipo !== "camera"
       ? `<span class="motivo-3d ok">${escapar(rotuloTipo[tipo])} — sem visão 3D</span>`
       : (dev.motivo_sem_3d
           ? `<span class="motivo-3d">⚠ ${escapar(dev.motivo_sem_3d)}</span>`
-          : `<span class="motivo-3d ok">✔ visão 3D pronta</span>`);
+          : `<span class="motivo-3d ok">✔ visão 3D pronta</span>`));
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapar(dev.nome)}<br/><span class="muted">${escapar(dev.entity_id)}</span></td>
@@ -777,6 +861,149 @@ async function carregarDispositivos() {
 // Sem isto, um dispositivo criado antes da localidade existir (ou com
 // "(nenhuma)") so ganhava modelo 3D sendo excluido e recriado -- o que
 // gera um token novo e derruba o Raspberry que ja esta em campo.
+
+// ---------------------------------------------------------------------
+// Bloco de sensor
+//
+// Um sensor nao e "um sensor": um radar de nivel precisa das duas ancoras e
+// do volume de referencia, um piezometro vai precisar de outra coisa. Em vez
+// de escrever esses campos no HTML -- onde ninguem lembraria de mexer ao
+// acrescentar um instrumento --, a lista vem do servidor
+// (/api/sensores/tipos, gerado por server/sensores.py) e o formulario e
+// montado a partir dela.
+//
+// O mesmo codigo serve ao cadastro e a edicao: muda so o prefixo dos ids
+// ("dev-" ou "ed-"). Duplicar seria criar duas telas que divergem.
+// ---------------------------------------------------------------------
+let tiposSensor = [];      // catalogo vindo do servidor
+let gatewaysCache = [];    // dispositivos tipo gateway, para o seletor
+
+async function carregarTiposSensor() {
+  try {
+    const j = await fetch(`${SERVER_BASE}/api/sensores/tipos`).then(r => r.json());
+    tiposSensor = j.tipos || [];
+  } catch (e) {
+    tiposSensor = [];   // sem catalogo o bloco some; o resto do cadastro segue
+  }
+  ["dev", "ed"].forEach(preencherSubtipos);
+}
+
+function preencherSubtipos(p) {
+  const sel = document.getElementById(`${p}-subtipo`);
+  if (!sel) return;
+  const escolhido = sel.value;
+  sel.innerHTML = '<option value="">(escolha)</option>'
+    + tiposSensor.map(t =>
+        `<option value="${escapar(t.chave)}">${escapar(t.rotulo)}`
+        + `${t.implementado ? "" : " — em preparação"}</option>`).join("");
+  sel.value = escolhido;
+}
+
+function preencherGateways(p) {
+  const sel = document.getElementById(`${p}-gateway`);
+  if (!sel) return;
+  const escolhido = sel.value;
+  sel.innerHTML = '<option value="">(fala direto com o servidor)</option>'
+    + gatewaysCache.map(g =>
+        `<option value="${escapar(g.id)}">${escapar(g.nome)}</option>`).join("");
+  sel.value = escolhido;
+}
+
+/** Mostra ou esconde o bloco inteiro conforme o tipo escolhido. */
+function alternarBlocoSensor(p) {
+  const tipo = document.getElementById(`${p}-tipo`).value;
+  const bloco = document.getElementById(`${p}-bloco-sensor`);
+  if (bloco) bloco.hidden = tipo !== "sensor";
+}
+
+/** Desenha os campos do subtipo escolhido, preservando o que ja estiver
+ *  preenchido (trocar de subtipo por engano nao pode apagar o trabalho). */
+function desenharCamposSensor(p, valores) {
+  const chave = document.getElementById(`${p}-subtipo`).value;
+  const alvo = document.getElementById(`${p}-campos-sensor`);
+  const ajuda = document.getElementById(`${p}-ajuda-subtipo`);
+  if (!alvo) return;
+  const tipo = tiposSensor.find(t => t.chave === chave);
+  const atuais = valores || lerCamposSensor(p);
+
+  ajuda.textContent = tipo ? tipo.descricao : "";
+  if (!tipo) { alvo.innerHTML = ""; return; }
+  if (!tipo.campos.length) {
+    alvo.innerHTML = '<p class="sem-campos">Este sensor ainda não tem '
+      + 'parâmetros de cálculo: a leitura bruta é gravada como veio.</p>';
+    return;
+  }
+  alvo.innerHTML = tipo.campos.map(c => {
+    const id = `${p}-cfg-${c.chave}`;
+    const v = atuais[c.chave];
+    const rotulo = escapar(c.rotulo) + (c.unidade ? ` (${escapar(c.unidade)})` : "")
+                 + (c.obrigatorio ? "" : " <span style='opacity:.6'>opcional</span>");
+    // A medida bruta e um NOME de telemetria, nao um numero -- o unico campo
+    // de texto da lista. O type errado aqui deixaria o campo impossivel de
+    // preencher, sem dizer por que.
+    const numerico = c.chave !== "chave_bruta";
+    return `<div><label for="${id}">${rotulo}</label>`
+      + `<input id="${id}" ${numerico ? 'type="number" step="any"' : ""} `
+      + `placeholder="${escapar(c.exemplo || "")}" `
+      + `value="${escapar(v === undefined || v === null ? (c.padrao || "") : v)}" />`
+      + (c.ajuda ? `<p class="ajuda">${escapar(c.ajuda)}</p>` : "")
+      + `</div>`;
+  }).join("");
+}
+
+function lerCamposSensor(p) {
+  const chave = document.getElementById(`${p}-subtipo`).value;
+  const tipo = tiposSensor.find(t => t.chave === chave);
+  const cfg = {};
+  if (!tipo) return cfg;
+  tipo.campos.forEach(c => {
+    const el = document.getElementById(`${p}-cfg-${c.chave}`);
+    if (!el) return;
+    const bruto = el.value.trim();
+    if (bruto !== "") cfg[c.chave] = bruto;
+  });
+  return cfg;
+}
+
+/** O que mandar ao servidor. Com tipo != sensor devolve os campos zerados:
+ *  e o que limpa a calibracao de um cadastro que deixou de ser sensor. */
+function lerBlocoSensor(p) {
+  const tipo = document.getElementById(`${p}-tipo`).value;
+  if (tipo !== "sensor") {
+    return { subtipo: null, config_sensor: {}, gateway_id: null, sub_id: "" };
+  }
+  return {
+    subtipo: document.getElementById(`${p}-subtipo`).value || null,
+    config_sensor: lerCamposSensor(p),
+    gateway_id: document.getElementById(`${p}-gateway`).value || null,
+    sub_id: document.getElementById(`${p}-subid`).value.trim(),
+  };
+}
+
+function ligarBlocoSensor(p) {
+  const tipo = document.getElementById(`${p}-tipo`);
+  const subtipo = document.getElementById(`${p}-subtipo`);
+  const gateway = document.getElementById(`${p}-gateway`);
+  if (!tipo || !subtipo) return;
+  tipo.addEventListener("change", () => alternarBlocoSensor(p));
+  subtipo.addEventListener("change", () => desenharCamposSensor(p));
+  // O identificador no gateway so faz sentido quando ha um gateway: pedi-lo
+  // sempre faria o operador preencher um campo que nao seria usado.
+  const alternarSubId = () => {
+    document.getElementById(`${p}-campo-subid`).hidden = !gateway.value;
+  };
+  gateway.addEventListener("change", alternarSubId);
+  alternarSubId();
+  alternarBlocoSensor(p);
+}
+
+/** Avisos do servidor sobre a calibracao, ja em HTML. */
+function htmlAvisosSensor(avisos) {
+  if (!avisos || !avisos.length) return "";
+  return `<div class="aviso-sensor"><b>Confira a calibração:</b><br/>`
+       + avisos.map(escapar).join("<br/>") + `</div>`;
+}
+
 // ---------------------------------------------------------------------
 let editandoId = null;
 
@@ -810,6 +1037,19 @@ function abrirEdicao(dev) {
   document.getElementById("ed-tipo").value = dev.tipo || "camera";
   descreverTipo();
   document.getElementById("ed-tipo").onchange = descreverTipo;
+
+  preencherGateways("ed");
+  // Um gateway nao pode falar por si mesmo: oferecer isso levaria a um
+  // cadastro circular que so daria trabalho para descobrir depois.
+  [...document.getElementById("ed-gateway").options].forEach(o => {
+    if (o.value === dev.id) o.remove();
+  });
+  document.getElementById("ed-subtipo").value = dev.subtipo || "";
+  document.getElementById("ed-gateway").value = dev.gateway_id || "";
+  document.getElementById("ed-subid").value = dev.sub_id || "";
+  document.getElementById("ed-campo-subid").hidden = !dev.gateway_id;
+  desenharCamposSensor("ed", dev.config_sensor || {});
+  alternarBlocoSensor("ed");
 
   const select = document.getElementById("ed-localidade");
   select.innerHTML = '<option value="">(nenhuma)</option>';
@@ -871,10 +1111,19 @@ document.getElementById("form-editar").addEventListener("submit", async (ev) => 
         alt_acima_solo: numeroOuNulo("ed-alt"),
         controller_url: document.getElementById("ed-controller").value.trim() || null,
         tipo: document.getElementById("ed-tipo").value,
+        ...lerBlocoSensor("ed"),
       }),
     });
     const j = await r.json();
     if (!r.ok) { msg.className = "msg erro"; msg.textContent = j.error || "Falha."; return; }
+    if (j.avisos_sensor && j.avisos_sensor.length) {
+      // Salvou, mas ha o que conferir: mantem o modal aberto com o aviso a
+      // vista, em vez de fecha-lo e deixar o problema para o campo.
+      msg.className = "msg ok";
+      msg.innerHTML = "Salvo." + htmlAvisosSensor(j.avisos_sensor);
+      carregarDispositivos();
+      return;
+    }
     fecharEdicao();
     carregarDispositivos();
   } catch (e) {
@@ -907,15 +1156,27 @@ document.getElementById("form-dispositivo").addEventListener("submit", async (ev
         alt_acima_solo: document.getElementById("dev-alt").value
           ? parseFloat(document.getElementById("dev-alt").value) : null,
         lat: devLat, lon: devLon,
+        ...lerBlocoSensor("dev"),
       }),
     });
     const j = await r.json();
     if (!r.ok) { msg.className = "msg erro"; msg.textContent = j.error || "Falha."; return; }
     msg.className = "msg ok";
-    msg.textContent = j.motivo_sem_3d
-      ? `Dispositivo "${j.nome}" criado — mas ainda sem visão 3D: ${j.motivo_sem_3d}.`
-      : `Dispositivo "${j.nome}" criado, com visão 3D pronta.`;
+    const criado = (j.tipo || "camera") !== "camera"
+      ? `Equipamento "${j.nome}" criado.`
+      : (j.motivo_sem_3d
+          ? `Dispositivo "${j.nome}" criado — mas ainda sem visão 3D: ${j.motivo_sem_3d}.`
+          : `Dispositivo "${j.nome}" criado, com visão 3D pronta.`);
+    // innerHTML porque os avisos de calibração vêm em bloco próprio; o texto
+    // em si passa por escapar().
+    msg.innerHTML = escapar(criado) + htmlAvisosSensor(j.avisos_sensor);
     document.getElementById("form-dispositivo").reset();
+    // reset() devolve o <select> de tipo a "camera", mas o bloco de sensor
+    // continuaria aberto com a calibração anterior à mostra.
+    document.getElementById("dev-subtipo").value = "";
+    document.getElementById("dev-gateway").value = "";
+    desenharCamposSensor("dev", {});
+    alternarBlocoSensor("dev");
     // reset() limpa os campos, mas o marcador do mapa e o par lat/lon em
     // memoria ficariam do cadastro anterior.
     definirCoordenadas(null, null);
@@ -932,6 +1193,9 @@ async function init() {
   // de um layout que ainda esta se acomodando (menu lateral), precisa de um
   // invalidateSize() depois que tudo assentou.
   if (mapa) setTimeout(() => mapa.invalidateSize(), 200);
+  ligarBlocoSensor("dev");
+  ligarBlocoSensor("ed");
+  await carregarTiposSensor();
   carregarLocalidades();
   carregarDispositivos();
 }
