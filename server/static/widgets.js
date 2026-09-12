@@ -33,12 +33,13 @@
   // recem-criado: dali em diante quem manda e o que o operador arrastou.
   // Um grafico de area precisa de largura; um card, nao.
   var TAMANHO_PADRAO = {
-    area:    { w: 520, h: 260 },
-    barras:  { w: 400, h: 240 },
-    alarmes: { w: 520, h: 300 },
-    card:    { w: 240, h: 160 },
-    radial:  { w: 240, h: 220 },
-    status:  { w: 260, h: 170 },
+    area:         { w: 520, h: 260 },
+    barras:       { w: 400, h: 240 },
+    alarmes:      { w: 520, h: 300 },
+    card:         { w: 240, h: 160 },
+    radial:       { w: 240, h: 220 },
+    status:       { w: 260, h: 170 },
+    equipamentos: { w: 320, h: 200 },
   };
 
   function escapar(t) {
@@ -83,6 +84,7 @@
 
   function tituloPadrao(w) {
     if (w.tipo === "alarmes") return "Alarmes";
+    if (w.tipo === "equipamentos") return "Equipamentos";
     var onde = w.sub_id ? w.sub_id + " · " : "";
     return onde + (w.chaves || []).join(", ");
   }
@@ -102,6 +104,12 @@
       dados.push((ctx.eventos || []).map(function (e) { return e.id + e.lido; }).join(","));
       dados.push((ctx.alarmes || []).map(function (a) { return a.id + a.disparado; }).join(","));
     }
+    if (w.tipo === "equipamentos") {
+      // Nao tem chaves escolhidas: o que ele mostra vem de varrer `ultimos`.
+      dados.push(equipamentosDe(ctx).map(function (e) {
+        return e.sub_id + "=" + e.estado + "@" + e.visto_em;
+      }).join(","));
+    }
     return JSON.stringify([w.tipo, w.titulo, w.sub_id, w.chaves, w.config, dados]);
   }
 
@@ -116,6 +124,7 @@
     // o display do tipo anterior e ficava desalinhado.
     alvo.style.display = "";
     if (w.tipo === "alarmes") return tabelaAlarmes(alvo, ctx);
+    if (w.tipo === "equipamentos") return listaEquipamentos(alvo, ctx);
     if (!w.chaves || !w.chaves.length) {
       alvo.innerHTML = '<div class="vazio">Widget sem telemetria escolhida.</div>';
       return;
@@ -291,6 +300,60 @@
           return '<span><i style="background:' + CORES[k % CORES.length] + '"></i>'
                + escapar(s.chave) + "</span>";
         }).join("") + "</div>";
+  }
+
+  /** Os equipamentos remotos deste gateway, com o status de cada um.
+   *
+   *  A informacao ja chega: o gateway publica `status` para cada sub_id
+   *  (ver montarEquipamento() no firmware). O que faltava era um lugar para
+   *  olhar todos de uma vez -- o indicador de status comum so serve para UM
+   *  sub_id por widget, e com cinco controladores seriam cinco widgets. */
+  function equipamentosDe(ctx) {
+    var lista = [];
+    var ultimos = ctx.ultimos || {};
+    Object.keys(ultimos).forEach(function (k) {
+      var corte = k.indexOf("|");
+      if (corte <= 0) return;                 // sub_id vazio: e do proprio gateway
+      if (k.slice(corte + 1) !== "status") return;
+      var i = ultimos[k];
+      var txt = (i.txt || "").trim().toLowerCase();
+      lista.push({
+        sub_id: k.slice(0, corte),
+        estado: txt || (i.num ? "on" : "off"),
+        visto_em: i.visto_em,
+      });
+    });
+    lista.sort(function (a, b) { return a.sub_id < b.sub_id ? -1 : 1; });
+    return lista;
+  }
+
+  // 'on' = medindo; 'erro' = o controlador fala, mas o instrumento falhou;
+  // 'off' = o controlador nao fala. Sao tres situacoes com respostas
+  // diferentes, e por isso tres cores.
+  var CLASSE_ESTADO = { on: "ok", online: "ok", ok: "ok",
+                        erro: "aviso", falha: "aviso",
+                        off: "ruim", offline: "ruim" };
+  var ROTULO_ESTADO = { on: "online", online: "online", ok: "online",
+                        erro: "erro no sensor", falha: "erro no sensor",
+                        off: "sem comunicação", offline: "sem comunicação" };
+
+  function listaEquipamentos(alvo, ctx) {
+    alvo.style.display = "block";
+    var lista = equipamentosDe(ctx);
+    if (!lista.length) {
+      alvo.innerHTML = '<div class="vazio">Este gateway ainda não reportou '
+        + "nenhum equipamento.</div>";
+      return;
+    }
+    alvo.innerHTML = lista.map(function (e) {
+      var cls = CLASSE_ESTADO[e.estado] || "desconhecido";
+      var rot = ROTULO_ESTADO[e.estado] || e.estado;
+      var quando = e.visto_em ? new Date(e.visto_em).toLocaleString("pt-BR") : "";
+      return '<div class="status-linha" title="' + escapar(quando) + '">'
+        + '<span class="ponto ' + cls + '"></span>'
+        + "<b>" + escapar(e.sub_id) + '</b><span class="v">' + escapar(rot)
+        + "</span></div>";
+    }).join("");
   }
 
   function tabelaAlarmes(alvo, ctx) {

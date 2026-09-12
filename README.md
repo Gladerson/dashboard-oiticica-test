@@ -1273,6 +1273,108 @@ Três garantias que a suíte cobre:
   bruta já está a salvo; perder uma derivada é menos grave que recusar a
   mensagem inteira.
 
+### Quem é dono de cada telemetria
+
+Um gateway fala **por** outros equipamentos, e até setembro/2026 tudo o que
+ele mandava era gravado sob o cadastro **dele**. A consequência aparecia em
+três lugares ao mesmo tempo:
+
+- o sensor cadastrado ficava **eternamente offline** no Painel SHM — a
+  telemetria dele chegava com o token do gateway, então o `visto_em` do sensor
+  nunca era carimbado;
+- em Telemetrias, escolher o sensor mostrava uma tela vazia, enquanto as
+  medidas dele apareciam no gateway;
+- o seletor de widgets do gateway virava uma lista enorme, misturando o que é
+  do enlace com o que é do reservatório.
+
+Agora cada coisa vai para o seu dono:
+
+| O que | Vai para | Em que `sub_id` |
+|---|---|---|
+| `enlace`, `sinal`, `uptime_s`, `envios_ok`, `envios_falha`, `trocas_de_enlace`, `segundos_no_enlace` | **gateway** | vazio (o próprio) |
+| `status`, `pacotes`, `pacotes_descartados` de cada controlador | **gateway** | o `sub_id` daquele controlador |
+| a **medida bruta** (`distancia`) e tudo o que se deriva dela | **sensor** cadastrado | vazio (lá dentro ele é o próprio dispositivo) |
+
+A divisão não é arbitrária: `status` e `pacotes` são coisas que **o gateway
+sabe** — ele conta os pacotes e decide se o controlador está falando. Isso
+descreve o **enlace**, não o instrumento. A distância é do instrumento.
+
+**Um `sub_id` sem sensor cadastrado continua inteiro no gateway**, como sempre
+foi. Ninguém perde dado por não ter cadastrado o equipamento — só não ganha a
+separação nem as derivadas.
+
+A lista de chaves do enlace vive em `sensores.CHAVES_DO_ENLACE`, num lugar só,
+porque dois módulos precisam dela: a ingestão, para rotear, e o cadastro, para
+arrumar o catálogo.
+
+### Online, erro, offline: três estados, não dois
+
+Um sensor atrás de um gateway **nunca abre conexão com o servidor**. Quem sabe
+se ele está vivo é o gateway — e o gateway já diz, para cada controlador:
+
+| O gateway diz | Significa | No painel |
+|---|---|---|
+| `on` | está medindo | **online** (verde) |
+| `erro` | o controlador fala, mas o instrumento dele falhou | **erro** (âmbar) |
+| `off` | o controlador não fala | **offline** (vermelho) |
+
+Na ingestão, cada `sub_id` mencionado carimba duas coisas no cadastro do
+sensor: `visto_em` (o gateway falou dele agora) e `estado_reportado` (o que ele
+falou). As duas juntas, de propósito — um `on` de três dias atrás não
+significa que o sensor está medindo. Por isso **o silêncio vence**: se o
+`visto_em` passou de `DISPOSITIVO_OFFLINE_S`, o estado é `offline`, seja qual
+for o último reportado. É o que cobre o caso de o **gateway inteiro** cair.
+
+A API devolve os dois campos: `estado` (`online`/`erro`/`offline`) e `online`
+(booleano, `estado != "offline"`). O booleano continua existindo porque é o que
+as telas usam para "está respondendo?"; `estado` refina isso.
+
+### Widgets: o que cada equipamento oferece
+
+Depois do roteamento, **o seletor de widgets mostra o que faz sentido para
+aquele equipamento**:
+
+| Ao escolher | Aparece |
+|---|---|
+| um **gateway** | o canal em uso, o sinal, a saúde dele, os contadores de pacotes de cada controlador e a lista de equipamentos |
+| um **sensor** | a medida bruta e tudo que o servidor derivou dela (cota, volume, percentual…) |
+
+Três coisas mudaram para isso funcionar:
+
+- **widget novo, `equipamentos`**: a lista dos controladores daquele gateway
+  com o status de cada um, em três cores. Não escolhe telemetria nenhuma (como
+  o widget de alarmes) — a pergunta que ele responde é "quais controladores
+  estão falando com este gateway, e como". Com cinco controladores, o
+  indicador de status comum exigiria cinco widgets, porque cada widget aponta
+  para **um** `sub_id`;
+- **o card aceita texto**. Foi o que faltava para ver por onde o gateway está
+  falando: `enlace` vale `"wifi"` ou `"4g"`, e só aparecia no indicador de
+  status — que é feito para bolinha de on/off, não para mostrar uma palavra.
+  Área, barras e radial continuam só com número: não há como desenhar "wifi"
+  num eixo;
+- **o catálogo do gateway é limpo** quando um sensor é ligado a ele. Quem já
+  usava a versão anterior tem `cota_atual`, `volume_m3` e companhia gravados
+  sob o gateway; sem a limpeza, o seletor continuaria oferecendo chaves que
+  nunca mais atualizariam. A limpeza roda em dois momentos — ao salvar o
+  cadastro do sensor, e uma vez na subida do servidor, para instalações que já
+  estavam ligadas. **Só o catálogo: a série histórica fica intacta**, porque
+  ela é o registro do que aconteceu na barragem e não pode ser reescrita.
+
+### Identificador no gateway: escolher, não digitar
+
+No cadastro de um sensor que fala por um gateway, o campo **Identificador no
+gateway** é uma **lista** dos equipamentos que aquele gateway já reportou (os
+`sub_id` do catálogo dele).
+
+Digitar era um convite a erro silencioso: um caractere trocado produz um
+cadastro que nunca casa com telemetria nenhuma, e nada avisa — a medida chega e
+fica sem dono. Continua possível digitar (opção *(outro — digitar)*), porque um
+controlador que ainda não mandou o primeiro pacote não está na lista, e
+cadastrá-lo antes de ligá-lo é legítimo.
+
+> O identificador tem de ser o **mesmo texto** em três lugares: `DEVICE_ID` no
+> controlador, a tabela `EQUIPAMENTOS` no gateway, e este campo.
+
 ### Online ou offline: quem responde é o servidor
 
 Nenhum equipamento deste projeto aceita conexão de fora — todos falam **de
@@ -1289,10 +1391,14 @@ equipamento fala com o servidor:
 | `POST /api/edge/deteccao` | câmera |
 | `POST /api/edge/dados` | sensor e gateway |
 
+Um equipamento atrás de um gateway é o caso especial, e tem seção própria
+logo acima (*Online, erro, offline*): ele nunca fala com o servidor, então
+quem carimba o `visto_em` dele é o gateway, ao mencioná-lo.
+
 E `/api/dispositivos` devolve, para cada um:
 
 ```json
-{"online": true, "visto_em": "2026-09-10T18:00:00+00:00",
+{"online": true, "estado": "online", "visto_em": "2026-09-10T18:00:00+00:00",
  "silencio_s": 2.0, "offline_apos_s": 180}
 ```
 
@@ -1387,10 +1493,16 @@ equipamento em Dispositivos). Widgets por equipamento:
 | Medidor radial | valor com mínimo e máximo |
 | Indicador de status | bolinha colorida por telemetria (`on`/`off`/`erro`) |
 | Tabela de alarmes | regras em vigor + histórico de disparos |
+| Equipamentos do gateway | lista dos controladores daquele gateway, com o status de cada um em três cores |
 
 Num **gateway**, cada widget é escolhido pelo **equipamento (deviceID)** e
 depois pela telemetria; num **sensor**, só pela telemetria. Os seletores só
 oferecem o que aquele equipamento já enviou — o operador escolhe, não digita.
+
+O que cada um oferece mudou com o roteamento (§9-quinquies, *Widgets: o que
+cada equipamento oferece*): no gateway ficam o canal em uso, o sinal, a saúde
+dele e os contadores de pacotes; no sensor, a medida e as grandezas derivadas
+dela.
 
 Todos os gráficos são **SVG desenhado pelo próprio código**, sem CDN: o painel
 precisa abrir numa rede sem internet.
@@ -2776,6 +2888,12 @@ Pontos de atenção:
 - **O piezômetro aparece no cadastro e ainda não deriva nada.** Foi
   deliberado: quem cadastrar um hoje já o cadastra no lugar certo, e a conta
   entra depois sem mexer no cadastro. A leitura bruta é gravada como veio.
+- **A série histórica anterior ao roteamento continua no gateway.** Quem já
+  rodava a versão de setembro tem `cota_atual` e companhia gravados sob o
+  gateway, com o `sub_id` do controlador. O catálogo é limpo (o seletor de
+  widgets para de oferecê-los), mas a série não é movida: reescrever o
+  histórico de uma barragem seria pior que a duplicidade. Os gráficos novos
+  começam do zero no cadastro do sensor.
 - **A posição das janelas flutuantes do Painel SHM vive no `localStorage`.**
   É por navegador: o operador que arruma o painel na sala de controle não
   encontra o mesmo arranjo no notebook. Foi escolha deliberada (é o arranjo

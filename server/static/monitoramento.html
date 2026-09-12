@@ -158,6 +158,7 @@
         <option value="radial">Medidor radial (com mínimo e máximo)</option>
         <option value="status">Indicador de status</option>
         <option value="alarmes">Tabela de alarmes</option>
+        <option value="equipamentos">Equipamentos do gateway (lista com status)</option>
       </select>
     </div>
     <div class="campo" id="campo-sub" hidden>
@@ -475,8 +476,13 @@ async function desenharTudo() {
     }
 
     const titulo = w.titulo || Widgets.tituloPadrao(w);
-    if (no.el.querySelector("h3").textContent !== titulo)
-      no.el.querySelector("h3").textContent = titulo;
+    const h3 = no.el.querySelector("h3");
+    if (h3.textContent !== titulo) {
+      h3.textContent = titulo;
+      // A caixa pode ser estreita e o titulo e cortado com reticencias; a
+      // dica do mouse e o que devolve o nome inteiro.
+      h3.title = titulo;
+    }
 
     const assinatura = Widgets.assinatura(w, ctx);
     if (no.assinatura === assinatura) continue;   // nada mudou: nao redesenha
@@ -593,7 +599,12 @@ function atualizarChavesWidget() {
   const sub = catalogo.e_gateway ? $("w-sub").value : "";
   const tipo = $("w-tipo").value;
   const itens = chavesDoSub(sub);
-  const soNumericas = ["area", "barras", "card", "radial"].includes(tipo);
+  // O CARD aceita texto. Foi o que faltava para o operador ver "por onde o
+  // gateway esta falando": `enlace` vale "wifi" ou "4g", e so aparecia no
+  // indicador de status -- que e feito para bolinha de on/off, nao para
+  // mostrar uma palavra. Area, barras e radial continuam so com numero,
+  // porque nao ha como desenhar "wifi" num eixo.
+  const soNumericas = ["area", "barras", "radial"].includes(tipo);
   const uteis = soNumericas ? itens.filter(i => i.numerica) : itens;
   $("w-chaves").innerHTML = uteis.map(
     i => `<option value="${escapar(i.chave)}">${escapar(i.chave)}</option>`).join("")
@@ -603,7 +614,11 @@ function atualizarChavesWidget() {
   $("dica-chaves").textContent = varias
     ? "Segure Ctrl (ou Cmd) para escolher mais de uma."
     : "Escolha uma telemetria.";
-  $("campo-chaves").hidden = tipo === "alarmes";
+  // Nem "alarmes" nem "equipamentos" escolhem telemetria: o primeiro mostra
+  // as regras, o segundo varre os sub_ids que o gateway ja reportou.
+  const semChaves = ["alarmes", "equipamentos"].includes(tipo);
+  $("campo-chaves").hidden = semChaves;
+  $("campo-sub").hidden = !catalogo.e_gateway || semChaves;
   $("campos-escala").style.display = ["radial", "area", "barras"].includes(tipo) ? "" : "none";
 }
 
@@ -642,7 +657,7 @@ function abrirEdicaoWidget(w) {
 async function salvarWidget() {
   const tipo = $("w-tipo").value;
   const escolhidas = [...$("w-chaves").selectedOptions].map(o => o.value);
-  if (tipo !== "alarmes" && !escolhidas.length) {
+  if (!["alarmes", "equipamentos"].includes(tipo) && !escolhidas.length) {
     $("msg-widget").className = "msg erro";
     $("msg-widget").textContent = "Escolha ao menos uma telemetria.";
     return;

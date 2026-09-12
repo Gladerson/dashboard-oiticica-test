@@ -34,6 +34,19 @@ devolve listas — é o que permite testá-lo inteiro sem PostgreSQL
 import math
 
 # ============================================================================
+# Chaves que sao do GATEWAY, nao do instrumento
+# ============================================================================
+# Um gateway publica, para cada equipamento remoto, coisas que ele mesmo sabe:
+# se o controlador falou, quantos pacotes chegaram, quantos foram descartados.
+# Isso descreve o ENLACE, nao a grandeza medida -- e por isso continua no
+# cadastro do gateway quando a medida e roteada para o cadastro do sensor.
+#
+# Mora aqui porque dois modulos precisam da lista (a ingestao, para rotear; o
+# cadastro, para limpar o catalogo ao ligar um sensor a um gateway), e ambos
+# ja importam este.
+CHAVES_DO_ENLACE = ("status", "pacotes", "pacotes_descartados", "erro")
+
+# ============================================================================
 # Ajudantes
 # ============================================================================
 def _num(config, chave):

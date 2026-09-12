@@ -364,16 +364,21 @@
   #equipamentos .cabecalho .luz-resumo {
     width:7px; height:7px; border-radius:999px; flex:none;
   }
-  #equipamentos .cabecalho .luz-resumo.on  { background:var(--ok); }
-  #equipamentos .cabecalho .luz-resumo.off { background:var(--danger); }
+  #equipamentos .cabecalho .luz-resumo.online { background:var(--ok); }
+  #equipamentos .cabecalho .luz-resumo.erro   { background:var(--warn); }
+  #equipamentos .cabecalho .luz-resumo.offline{ background:var(--danger); }
   #equipamentos .linha {
     display:flex; align-items:center; gap:7px; padding:5px 0;
     border-top:1px solid rgba(255,255,255,.07);
   }
   #equipamentos .linha:first-of-type { border-top:0; }
+  /* Tres estados, nao dois. Um controlador que fala mas cujo sensor falhou e
+     uma situacao PROPRIA: nao adianta ir ate la conferir a antena, e nao da
+     para ignorar como se estivesse tudo bem. */
   #equipamentos .luz { width:8px; height:8px; border-radius:999px; flex:none; }
-  #equipamentos .luz.on  { background:var(--ok); }
-  #equipamentos .luz.off { background:var(--danger); }
+  #equipamentos .luz.online { background:var(--ok); }
+  #equipamentos .luz.erro   { background:var(--warn); }
+  #equipamentos .luz.offline{ background:var(--danger); }
   #equipamentos .nome {
     flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
@@ -407,9 +412,9 @@
        convivem com o modelo 3D, nao o substituem. O blur segura a
        legibilidade -- sem ele, este nivel de transparencia sobre uma
        textura de barragem deixaria o texto ilegivel. */
-    border:1px solid rgba(255,255,255,.14); background:rgba(12,20,34,.50);
-    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
-    box-shadow:0 10px 30px rgba(0,0,0,.30);
+    border:1px solid rgba(255,255,255,.13); background:rgba(12,20,34,.40);
+    backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    box-shadow:0 10px 30px rgba(0,0,0,.26);
   }
   .flutuante.movendo, .flutuante.redimensionando { opacity:.95; z-index:9; }
   .flutuante header {
@@ -435,7 +440,7 @@
     content:""; position:absolute; right:3px; bottom:3px; width:8px; height:8px;
     border-right:2px solid var(--muted); border-bottom:2px solid var(--muted);
   }
-  body.tema-claro .flutuante { background:rgba(255,255,255,.66); border-color:rgba(0,0,0,.09); }
+  body.tema-claro .flutuante { background:rgba(255,255,255,.56); border-color:rgba(0,0,0,.08); }
 
   /* ================= PTZ dentro da telinha =================================
      O PTZ estava ENTRE a telinha e o histórico. Como as duas áreas são
@@ -845,6 +850,24 @@ function trocarDispositivo(id) {
   const u = new URL(location.href);
   u.searchParams.set("device_id", id);
   location.href = u.toString();
+}
+
+/** Os tres estados que um equipamento pode ter, como o servidor os calcula
+ *  (ver _presenca em server/dispositivos.py). O campo `estado` e novo; o
+ *  `online` booleano continua existindo e serve de reserva para uma resposta
+ *  de servidor mais antigo. */
+function estadoDe(d) {
+  if (d.estado === "online" || d.estado === "erro" || d.estado === "offline")
+    return d.estado;
+  return d.online ? "online" : "offline";
+}
+
+function tituloEstado(d) {
+  const est = estadoDe(d);
+  if (est === "online") return "online";
+  if (est === "erro")
+    return "o controlador está falando, mas o sensor dele acusou erro";
+  return `offline (sem contato há ${textoSilencio(d)})`;
 }
 
 function textoSilencio(d) {
@@ -2546,14 +2569,19 @@ function desenharEquipamentos() {
 
   // O resumo no cabecalho e o que torna o recolhimento seguro: mesmo
   // fechada, a lista continua dizendo quantos equipamentos ha e se algum
-  // esta offline.
-  const fora = itens.filter(d => !d.online).length;
+  // deles nao esta bem. O pior estado manda na cor: offline vence erro,
+  // erro vence online -- quem olha de relance precisa ver o problema, nao a
+  // media.
+  const fora = itens.filter(d => estadoDe(d) === "offline").length;
+  const comErro = itens.filter(d => estadoDe(d) === "erro").length;
   const conta = document.getElementById("equip-conta");
   if (conta) {
+    const pior = fora ? "offline" : (comErro ? "erro" : "online");
+    const texto = fora ? `${fora}/${itens.length} offline`
+                : comErro ? `${comErro}/${itens.length} com erro`
+                : `${itens.length} online`;
     conta.innerHTML = itens.length
-      ? `<span class="luz-resumo ${fora ? "off" : "on"}"></span> `
-        + (fora ? `${fora}/${itens.length} offline` : `${itens.length} online`)
-      : "";
+      ? `<span class="luz-resumo ${pior}"></span> ` + escapar(texto) : "";
   }
 
   if (!itens.length) {
@@ -2568,9 +2596,9 @@ function desenharEquipamentos() {
   const ligados = new Set(idsLigados());
   lista.innerHTML = itens.map(d => {
     const on = ligados.has(d.id);
-    const titulo = d.online ? "online" : `offline (sem contato há ${textoSilencio(d)})`;
+    const est = estadoDe(d);
     return `<div class="linha">`
-      + `<span class="luz ${d.online ? "on" : "off"}" title="${escaparAttr(titulo)}"></span>`
+      + `<span class="luz ${est}" title="${escaparAttr(tituloEstado(d))}"></span>`
       + `<span class="nome" title="${escaparAttr(d.nome)}">${escapar(d.nome)}</span>`
       + `<button type="button" class="chave" data-id="${escaparAttr(d.id)}" `
       + `aria-pressed="${on}" aria-label="Mostrar gráficos de ${escaparAttr(d.nome)}"></button>`
@@ -2734,8 +2762,11 @@ async function desenharFlutuantes(id) {
       area.appendChild(no.el);
     }
     const titulo = w.titulo || Widgets.tituloPadrao(w);
-    if (no.el.querySelector("h3").textContent !== titulo)
-      no.el.querySelector("h3").textContent = titulo;
+    const h3 = no.el.querySelector("h3");
+    if (h3.textContent !== titulo) {
+      h3.textContent = titulo;
+      h3.title = titulo;   // a janela e estreita; o titulo e cortado
+    }
 
     const assinatura = Widgets.assinatura(w, ctx);
     if (no.assinatura === assinatura) continue;   // nada mudou: nao redesenha

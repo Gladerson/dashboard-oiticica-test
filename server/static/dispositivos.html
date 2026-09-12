@@ -75,8 +75,14 @@
 
   #modal-visualizar {
     position:fixed; inset:0; background:rgba(0,0,0,.8); display:none;
-    align-items:center; justify-content:center; z-index:30;
+    align-items:center; justify-content:center; z-index:2000;
   }
+
+  /* Com um modal aberto, a pagina atras nao rola. Sem isto, o ponteiro fora
+     da caixa rolava o fundo: o formulario ficava parado (e fixo) enquanto o
+     conteudo deslizava atras dele -- desorientador, e a origem de "o mapa
+     cobriu o formulario". A tela que rola aqui e .pagina--rola, nao o body. */
+  body.modal-aberto .pagina--rola { overflow: hidden; }
   #modal-visualizar.open { display:flex; }
   #modal-visualizar .box {
     width:min(90vw, 900px); height:min(80vh, 640px); background:var(--panel);
@@ -96,9 +102,13 @@
   }
 
   /* Os dois modais de edicao (dispositivo e localidade) usam o mesmo visual. */
+  /* z-index 2000, e nao 30: o mapa do Leaflet cria paineis internos com
+     z-index 400 a 800 e o container dele NAO abre contexto de empilhamento
+     proprio. Com 30, bastava rolar a pagina para o mapa subir POR CIMA do
+     formulario de edicao. */
   #modal-editar, #modal-editar-loc {
     position:fixed; inset:0; background:rgba(0,0,0,.8); display:none;
-    align-items:center; justify-content:center; z-index:30; padding:20px;
+    align-items:center; justify-content:center; z-index:2000; padding:20px;
   }
   #modal-editar.open, #modal-editar-loc.open { display:flex; }
   #modal-editar .box, #modal-editar-loc .box {
@@ -246,10 +256,10 @@
             <p class="ajuda">Escolha o gateway que recebe este sensor por rádio.</p>
           </div>
           <div id="dev-campo-subid" hidden>
-            <label for="dev-subid">Identificador no gateway</label>
-            <input id="dev-subid" placeholder="nivel-rd01" />
-            <p class="ajuda">O <b>mesmo</b> texto gravado em <code>DEVICE_ID</code>
-               no controlador. É por ele que o servidor sabe de quem é a medida.</p>
+            <label for="dev-subid-lista">Identificador no gateway</label>
+            <select id="dev-subid-lista"></select>
+            <input id="dev-subid" placeholder="nivel-rd01" hidden />
+            <p class="ajuda" id="dev-ajuda-subid"></p>
           </div>
         </div>
         <div class="grid2" id="dev-campos-sensor"></div>
@@ -393,10 +403,10 @@
             <p class="ajuda">Escolha o gateway que recebe este sensor por rádio.</p>
           </div>
           <div id="ed-campo-subid" hidden>
-            <label for="ed-subid">Identificador no gateway</label>
-            <input id="ed-subid" placeholder="nivel-rd01" />
-            <p class="ajuda">O <b>mesmo</b> texto gravado em <code>DEVICE_ID</code>
-               no controlador. É por ele que o servidor sabe de quem é a medida.</p>
+            <label for="ed-subid-lista">Identificador no gateway</label>
+            <select id="ed-subid-lista"></select>
+            <input id="ed-subid" placeholder="nivel-rd01" hidden />
+            <p class="ajuda" id="ed-ajuda-subid"></p>
           </div>
         </div>
         <div class="grid2" id="ed-campos-sensor"></div>
@@ -529,6 +539,22 @@ function badgeModelo(loc) {
   return selo;
 }
 
+/** Abre/fecha um modal e trava o rolamento da pagina atras dele.
+ *
+ *  A trava e o que impede o efeito de "o mapa cobriu o formulario": com a
+ *  pagina rolando atras de uma caixa fixa, o operador ve o conteudo deslizar
+ *  sob o formulario e nao entende o que aconteceu. */
+function mostrarModal(id, aberto) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle("open", !!aberto);
+  // Se QUALQUER modal ainda estiver aberto, a trava continua -- fechar um
+  // nao pode liberar o rolamento enquanto outro esta na tela.
+  const algumAberto = !!document.querySelector(
+    "#modal-editar.open, #modal-editar-loc.open, #modal-visualizar.open");
+  document.body.classList.toggle("modal-aberto", algumAberto);
+}
+
 function escapar(texto) {
   const d = document.createElement("div");
   d.textContent = texto == null ? "" : String(texto);
@@ -641,12 +667,12 @@ function abrirEdicaoLocalidade(loc) {
   document.getElementById("edloc-eixo").value = loc.model_up_axis || "Z";
   const msg = document.getElementById("msg-editar-loc");
   msg.className = "msg"; msg.textContent = "";
-  document.getElementById("modal-editar-loc").classList.add("open");
+  mostrarModal("modal-editar-loc", true);
 }
 
 function fecharEdicaoLocalidade() {
   editandoLocId = null;
-  document.getElementById("modal-editar-loc").classList.remove("open");
+  mostrarModal("modal-editar-loc", false);
 }
 
 document.getElementById("editar-loc-cancelar")
@@ -976,8 +1002,87 @@ function lerBlocoSensor(p) {
     subtipo: document.getElementById(`${p}-subtipo`).value || null,
     config_sensor: lerCamposSensor(p),
     gateway_id: document.getElementById(`${p}-gateway`).value || null,
-    sub_id: document.getElementById(`${p}-subid`).value.trim(),
+    sub_id: lerSubId(p),
   };
+}
+
+// ---------------------------------------------------------------------
+// Identificador do equipamento no gateway
+//
+// O gateway ja diz quem sao os equipamentos dele: cada pacote LoRa que ele
+// repassa vira um sub_id no catalogo de telemetria. Entao, em vez de pedir
+// que o operador digite "nivel-rd01" de cabeca -- e errar um caractere
+// significaria um cadastro que nunca casa com telemetria nenhuma, em
+// silencio --, a tela oferece a lista.
+//
+// Continua sendo possivel digitar: um controlador que ainda nao mandou o
+// primeiro pacote nao esta na lista, e cadastra-lo antes de liga-lo e
+// legitimo.
+// ---------------------------------------------------------------------
+// Valor impossivel como sub_id de verdade: o protocolo LoRa usa "|" como
+// separador de campos (ver ProtocoloLoRa.h), entao nenhum identificador de
+// equipamento pode conter esse caractere.
+const OUTRO_SUBID = "|outro";
+
+function lerSubId(p) {
+  const lista = document.getElementById(`${p}-subid-lista`);
+  if (lista.value && lista.value !== OUTRO_SUBID) return lista.value;
+  return document.getElementById(`${p}-subid`).value.trim();
+}
+
+async function carregarSubIds(p, escolhido) {
+  const lista = document.getElementById(`${p}-subid-lista`);
+  const campo = document.getElementById(`${p}-subid`);
+  const ajuda = document.getElementById(`${p}-ajuda-subid`);
+  const gateway = document.getElementById(`${p}-gateway`).value;
+  if (!lista) return;
+
+  let conhecidos = [];
+  if (gateway) {
+    try {
+      const j = await fetch(`${SERVER_BASE}/api/telemetria/chaves`
+        + `?device_id=${encodeURIComponent(gateway)}`).then(r => r.json());
+      conhecidos = j.sub_ids || [];
+    } catch (e) { conhecidos = []; }
+  }
+
+  const alvo = escolhido === undefined ? lerSubId(p) : escolhido;
+  // Um cadastro antigo pode apontar para um equipamento que o gateway ainda
+  // nao mencionou nesta instalacao. Ele TEM de continuar aparecendo na lista,
+  // senao abrir a edicao e salvar apagaria o vinculo sem avisar.
+  const opcoes = conhecidos.slice();
+  if (alvo && !opcoes.includes(alvo)) opcoes.push(alvo);
+
+  lista.innerHTML = opcoes.map(
+      s => `<option value="${escapar(s)}">${escapar(s)}</option>`).join("")
+    + `<option value="${OUTRO_SUBID}">(outro — digitar)</option>`;
+
+  if (alvo && opcoes.includes(alvo)) {
+    lista.value = alvo; campo.value = alvo; campo.hidden = true;
+  } else if (opcoes.length) {
+    lista.value = opcoes[0]; campo.value = opcoes[0]; campo.hidden = true;
+  } else {
+    // Nenhum equipamento conhecido ainda: so resta digitar.
+    lista.value = OUTRO_SUBID; campo.value = alvo || ""; campo.hidden = false;
+  }
+
+  ajuda.innerHTML = conhecidos.length
+    ? "Os equipamentos que este gateway já reportou. Tem de ser o "
+      + "<b>mesmo</b> texto gravado em <code>DEVICE_ID</code> no controlador."
+    : "Este gateway ainda não reportou nenhum equipamento. Digite o "
+      + "<code>DEVICE_ID</code> gravado no controlador — ele aparecerá na "
+      + "lista assim que o primeiro pacote chegar.";
+}
+
+function ligarSubId(p) {
+  const lista = document.getElementById(`${p}-subid-lista`);
+  const campo = document.getElementById(`${p}-subid`);
+  if (!lista || !campo) return;
+  lista.addEventListener("change", () => {
+    const digitando = lista.value === OUTRO_SUBID;
+    campo.hidden = !digitando;
+    if (digitando) campo.focus(); else campo.value = lista.value;
+  });
 }
 
 function ligarBlocoSensor(p) {
@@ -991,8 +1096,10 @@ function ligarBlocoSensor(p) {
   // sempre faria o operador preencher um campo que nao seria usado.
   const alternarSubId = () => {
     document.getElementById(`${p}-campo-subid`).hidden = !gateway.value;
+    if (gateway.value) carregarSubIds(p);
   };
   gateway.addEventListener("change", alternarSubId);
+  ligarSubId(p);
   alternarSubId();
   alternarBlocoSensor(p);
 }
@@ -1046,8 +1153,8 @@ function abrirEdicao(dev) {
   });
   document.getElementById("ed-subtipo").value = dev.subtipo || "";
   document.getElementById("ed-gateway").value = dev.gateway_id || "";
-  document.getElementById("ed-subid").value = dev.sub_id || "";
   document.getElementById("ed-campo-subid").hidden = !dev.gateway_id;
+  if (dev.gateway_id) carregarSubIds("ed", dev.sub_id || "");
   desenharCamposSensor("ed", dev.config_sensor || {});
   alternarBlocoSensor("ed");
 
@@ -1064,12 +1171,12 @@ function abrirEdicao(dev) {
 
   const msg = document.getElementById("msg-editar");
   msg.className = "msg"; msg.textContent = "";
-  document.getElementById("modal-editar").classList.add("open");
+  mostrarModal("modal-editar", true);
 }
 
 function fecharEdicao() {
   editandoId = null;
-  document.getElementById("modal-editar").classList.remove("open");
+  mostrarModal("modal-editar", false);
 }
 
 document.getElementById("editar-cancelar").addEventListener("click", fecharEdicao);
@@ -1175,6 +1282,7 @@ document.getElementById("form-dispositivo").addEventListener("submit", async (ev
     // continuaria aberto com a calibração anterior à mostra.
     document.getElementById("dev-subtipo").value = "";
     document.getElementById("dev-gateway").value = "";
+    document.getElementById("dev-campo-subid").hidden = true;
     desenharCamposSensor("dev", {});
     alternarBlocoSensor("dev");
     // reset() limpa os campos, mas o marcador do mapa e o par lat/lon em
@@ -1276,7 +1384,7 @@ function limparModelo() {
 
 window.visualizarModelo = function (loc) {
   document.getElementById("modal-visualizar-titulo").textContent = `Modelo 3D — ${loc.nome}`;
-  modal.classList.add("open");
+  mostrarModal("modal-visualizar", true);
   statusEl.textContent = "Carregando…";
   iniciarViewer();
   redimensionarViewer();
@@ -1327,7 +1435,7 @@ window.visualizarModelo = function (loc) {
 };
 
 document.getElementById("modal-visualizar-fechar").addEventListener("click", () => {
-  modal.classList.remove("open");
+  mostrarModal("modal-visualizar", false);
   animando = false;
   limparModelo();
 });
