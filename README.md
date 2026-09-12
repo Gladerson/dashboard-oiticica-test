@@ -82,10 +82,10 @@ dashboard_oiticica_test/
 ├── install_desktop.sh              # instalador do servidor (Debian/Ubuntu/Zorin)
 │
 ├── firmware/                       # ESP32: controlador (LoRa) e gateway (HTTPS)
-│   ├── libraries/HydroConecta/     # protocolo LoRa, montador JSON e regras -- sem Arduino
-│   ├── gateway_lora/               # N equipamentos -> um POST HTTPS
+│   ├── libraries/HydroConecta/     # protocolo LoRa e montador JSON -- sem Arduino
+│   ├── gateway_lora/               # N equipamentos -> um POST HTTPS, por Wi-Fi ou 4G
 │   ├── sensor_nivel/               # radar Modbus -> LoRa com ACK
-│   └── testes/                     # suite que roda no PC, com g++
+│   └── testes/                     # suite no PC: cabeçalhos + gateway inteiro (dublês em ambiente_arduino.h)
 ├── edge/                           # AGENTE DE BORDA — roda no Raspberry Pi (definitivo)
 │   ├── agente_borda.py             # processo principal: PTZ + inferência + transporte + API 8090
 │   ├── inferencia_hailo.py         # pipeline híbrido HEF (NPU) + ONNX (CPU); letterbox, NMS, máscara
@@ -116,6 +116,9 @@ dashboard_oiticica_test/
 │   ├── db.py                       # PostgreSQL: usuarios/sessoes/localidades/dispositivos/dashboards
 │   ├── auth.py                     # login por sessão, middleware de autenticação, admin de usuários
 │   ├── dispositivos.py             # cadastro de localidades (modelo 3D) e dispositivos CV-SHM
+│   ├── sensores.py                 # subtipos de sensor e as contas que derivam cota/volume/% da medida bruta
+│   ├── testes/teste_sensores.py    # confere a derivação com os números reais de Oiticica (sem banco)
+│   ├── testes/teste_ingestao.py    # separação do payload + derivação, no caminho de /api/edge/dados
 │   ├── migrar_dispositivo_legado.py  # cadastra o dispositivo/localidade que antes eram hardcoded (§9-bis)
 │   ├── prepare_model.sh            # remove compressão Draco do .glb (rodar uma vez, uso manual)
 │   ├── static/layout.css           # casca visual comum: menu lateral, barra de título, cartões, tabelas
@@ -167,6 +170,7 @@ dashboard_oiticica_test/
 | raycasting, cone, coordenadas 3D | `server/glb_geo.py` (`GeoModel`, um por localidade) |
 | histórico, dedup, WebSocket | `server/server.py` |
 | interface, marcações 3D, telinha | `server/static/dashboard.html` |
+| cota, volume, % a partir da medida bruta | `server/sensores.py` |
 | desenho dos widgets (as duas telas) | `server/static/widgets.js` + `widgets.css` |
 | arrastar/redimensionar caixas | `server/static/quadro.js` |
 | menu lateral, barra de título, tema | `server/static/layout.css` + `layout.js` |
@@ -1160,6 +1164,115 @@ O ícone de **Dispositivos** no menu lateral é um **chip**, não uma câmera:
 esta tela cadastra qualquer equipamento, e o ícone de câmera fazia parecer que
 sensores e gateways moravam em outro lugar.
 
+### Cada um com o seu papel: quem calcula o quê
+
+Até setembro/2026 quem transformava a distância do radar em cota, volume e
+percentual era o **gateway** (`RegrasNivel.h`, no firmware). Funcionava, e
+estava no lugar errado: recalibrar um reservatório exigia subir numa torre,
+ligar um notebook num ESP32 e regravar firmware — a centenas de quilômetros de
+distância.
+
+Agora:
+
+| Quem | Faz |
+|---|---|
+| Controlador (`sensor_nivel/`) | mede e entrega a **distância bruta** |
+| Gateway (`gateway_lora/`) | cuida do **enlace** e repassa o que recebeu |
+| Servidor (`server/sensores.py`) | aplica a **calibração** daquele reservatório |
+
+Recalibrar virou editar um cadastro na tela. O gateway ficou menor, mais
+rápido e sem nenhuma razão para ser reprogramado quando a barragem muda.
+
+`RegrasNivel.h` foi **removido** do repositório: manter um cabeçalho morto que
+sabe calcular nível é convidar alguém a usá-lo de novo. Os testes daquelas
+contas foram reescritos em Python (`server/testes/teste_sensores.py`).
+
+### Cadastrar um sensor: subtipo e calibração
+
+Em **Dispositivos → Novo dispositivo**, escolher o tipo **Sensor** abre um
+bloco novo:
+
+1. **Tipo de sensor** — hoje `Radar de nível da água` (o `Piezômetro` já
+   aparece, marcado *em preparação*: aceita cadastro, ainda não deriva nada);
+2. **Fala por meio de** — o gateway que recebe este sensor por rádio, ou
+   "fala direto com o servidor";
+3. **Identificador no gateway** — o **mesmo** texto gravado em `DEVICE_ID` no
+   controlador e na tabela `EQUIPAMENTOS` do gateway. Os três têm de bater; se
+   não baterem, a medida chega e fica sem dono, sem erro nenhum;
+4. **os campos daquele sensor**, gerados a partir do servidor.
+
+Os campos não estão escritos no HTML. Eles vêm de `GET /api/sensores/tipos`,
+que devolve o catálogo declarado em `server/sensores.py`. Acrescentar um
+instrumento novo é acrescentar uma entrada lá — a tela passa a oferecê-lo
+sozinha. Se a lista vivesse nos dois lugares, um dia alguém mexeria só num.
+
+### Radar de nível: como a conta é feita
+
+Duas **âncoras** medidas em campo definem uma reta, e tudo é interpolado entre
+elas. Em Oiticica, os engenheiros da barragem entregaram:
+
+| Distância do radar | Cota | Volume |
+|---|---|---|
+| **8,10 m** | 114,68 m (1º vertimento) | 742.632.840,34 m³ |
+| **30,00 m** (alcance do sensor) | 92,00 m | início do volume morto |
+
+Com `d` = distância lida:
+
+```
+fração  = (30,00 − d) / (30,00 − 8,10)
+cota    = 114,68 + (d − 8,10) × (92,00 − 114,68) / (30,00 − 8,10)
+volume  = fração × 742.632.840,34
+```
+
+Telemetrias que o servidor publica a partir dessa **única** medida:
+`cota_atual`, `volume_m3`, `volume_rest_m3`, `uso_percentual`,
+`cota_restante`, `cota_revanche`, `alerta_revanche` e `vertendo`. São os
+mesmos nomes que o gateway usava, de propósito: **os widgets e alarmes já
+configurados continuam apontando para onde sempre apontaram.**
+
+**O que é travado e o que não é.** A **cota** extrapola livremente: acima da
+âncora cheia o reservatório está vertendo — e é justamente aí que o operador
+mais precisa do número. **Volume e percentual** ficam travados em 0–100%:
+fora das âncoras não existe dado, e o volume de um reservatório não é linear
+na cota. Acima da âncora, `volume_m3` é um **piso**, e a telemetria
+`acima_da_referencia` avisa isso.
+
+> **⚠ Um aviso que a tela dá e vale ouro.** As duas âncoras implicam, cada
+> uma, uma elevação para o próprio radar: `114,68 + 8,10 = 122,78` e
+> `92,00 + 30,00 = 122,00`. Num radar apontado para baixo, subir 1 m de água
+> encurta a leitura em exatamente 1 m — as duas contas **teriam** de dar o
+> mesmo número. Dão 78 cm de diferença. Alguma das quatro medidas não é o que
+> se supõe (o alcance de 30 m talvez não caia exatamente na cota 92, por
+> exemplo). A interpolação funciona assim mesmo — é a convenção acordada com
+> os engenheiros —, mas a cota carrega esse desvio, e a tela avisa toda vez
+> que esse cadastro é salvo. **Confirme as medidas antes de usar a cota em
+> relatório.**
+
+### Onde a calibração mora e o que acontece na ingestão
+
+No cadastro do sensor: `dispositivos.subtipo` e `dispositivos.config_sensor`
+(JSONB), com `gateway_id` e `sub_id` dizendo por onde a medida chega.
+
+Quando um POST do gateway entra em `/api/edge/dados`:
+
+1. o payload é separado em `(sub_id, chave, valor)` como sempre;
+2. para cada `sub_id` que tem um sensor cadastrado, o servidor deriva as
+   grandezas e **acrescenta** as telemetrias calculadas;
+3. tudo é gravado no **mesmo INSERT**, com o mesmo carimbo de hora da medida
+   que as originou. Gravar em dois momentos deixaria a cota e a distância com
+   instantes diferentes, e um gráfico das duas juntas ficaria em degrau.
+
+Três garantias que a suíte cobre:
+
+- **medida ausente ou inválida não vira cota.** Um equipamento mudo (`status:
+  off`), um `NaN` ou uma calibração incompleta produzem **nada** — em vez de
+  um número inventado;
+- **equipamento sem cadastro não trava nada**: a medida bruta é gravada, só
+  não é derivada;
+- **falha de banco na leitura do cadastro não derruba a ingestão.** A medida
+  bruta já está a salvo; perder uma derivada é menos grave que recusar a
+  mensagem inteira.
+
 ### Online ou offline: quem responde é o servidor
 
 Nenhum equipamento deste projeto aceita conexão de fora — todos falam **de
@@ -1436,17 +1549,15 @@ RADAR (Modbus RTU)
 CONTROLADOR  firmware/sensor_nivel/        mede e entrega distancia BRUTA
    |  LoRa  "nivel-rd01|12.500|1*6B"   <-- ACK: "ACK:nivel-rd01"
    v
-GATEWAY      firmware/gateway_lora/         aplica as regras, agrega N equipamentos
-   |  HTTPS  POST /api/edge/dados  (Bearer <token do gateway>)
+GATEWAY      firmware/gateway_lora/         cuida do enlace, agrega N equipamentos
+   |  HTTPS (Wi-Fi ou 4G)  POST /api/edge/dados  (Bearer <token do gateway>)
    v
-SERVIDOR
+SERVIDOR     server/sensores.py             aplica a calibracao -> cota, volume, %
 ```
 
-O controlador **não** calcula percentual, volume nem cota. Ele mede distância.
-Toda a regra de negócio mora no gateway
-(`firmware/libraries/HydroConecta/RegrasNivel.h`) — assim, recalibrar o
-reservatório é mexer em **um** lugar, e não subir numa torre para reprogramar
-cada controlador.
+**Nenhum dos dois ESP32 calcula nada.** O controlador mede distância; o
+gateway repassa. Cota, volume e percentual são derivados no servidor, a partir
+da calibração cadastrada — ver §9-quinquies, *Cada um com o seu papel*.
 
 ### Um gateway, N equipamentos, N telemetrias cada
 
@@ -1486,32 +1597,95 @@ sensor físico falhou (problema do instrumento); `on` = medindo.
 | Watchdog ligado **depois** do setup de rede | Ligado **antes** | um modem mudo travava o setup para sempre, sem ninguém para resgatar |
 | `String` no caminho quente | Buffers fixos | heap fragmentado é a causa clássica de "parou de enviar depois de meses" |
 | `DeviceState states[20]` fixo | Vetor dimensionado pela tabela | a 21ª linha corrompia memória em silêncio |
-| `cota = (perc/100) × cota_max` | `cota = cota_fundo + fração × (cota_max − cota_fundo)` | **a fórmula antiga tratava a cota como proporcional ao percentual** — com o reservatório vazio dava "cota 0 m", o nível do mar, e não a cota do fundo |
+| Cota, volume e percentual **no gateway** | **no servidor** (`server/sensores.py`) | recalibrar exigia regravar firmware a centenas de quilômetros; agora é editar um cadastro |
+| Enlace escolhido em tempo de **compilação** | Wi-Fi e 4G juntos, **troca automática** | a Starlink da barragem pode cair, e ninguém está lá para trocar um `#define` |
 | Percentual travado só no piso | Travado em 0 e em 100 | onda ou eco em estrutura produzia "112%" e volume maior que o total |
 | Resposta Modbus: só CRC e endereço | Também função e contagem de bytes | uma resposta de exceção do sensor podia ser lida como medida |
 | `esp_task_wdt_init()` sem `deinit()` no controlador | `deinit()` antes | num core que já inicializou o watchdog, o init falhava calado: ficava-se **sem watchdog achando que tinha** |
 
-### Escolher o transporte do gateway: Wi-Fi ou 4G
+### Dois enlaces, troca automática
 
-No topo de `firmware/gateway_lora/gateway_lora.ino` há **um** interruptor. Os
-dois primeiros `#define` são apenas rótulos (0 e 1) e **não** devem ser
-mexidos; muda-se só a terceira linha:
+Na barragem haverá **Starlink**, e o módulo 4G continua instalado. O gateway
+compila os dois enlaces juntos e escolhe em tempo de execução — não há mais
+opção de compilação para isso.
 
-```cpp
-#define TIPO_CONEXAO_WIFI   0     // rotulo -- nao mexer
-#define TIPO_CONEXAO_4G     1     // rotulo -- nao mexer
-#define TIPO_CONEXAO        TIPO_CONEXAO_WIFI   // <-- e aqui que se escolhe
+| Situação | O que o gateway faz |
+|---|---|
+| Wi-Fi no ar | usa Wi-Fi; o modem fica **registrado e quieto**, sem gastar franquia |
+| Wi-Fi fora há mais de 25 s | sobe o contexto de dados e passa para o **4G** |
+| Wi-Fi de volta e firme por 60 s | volta para o **Wi-Fi** e solta o contexto do 4G |
+| Nenhum dos dois por 30 min | *reboot seguro* (desliga o rádio do modem antes) |
+
+Os dois prazos existem para o gateway **não ficar pingando**. Uma Starlink que
+oscila alguns segundos é normal; trocar de enlace a cada oscilação gastaria
+dados móveis e perderia envios em toda transição. A suíte cobre exatamente
+isso: seis quedas de 8 segundos seguidas, e o 4G nunca é acionado.
+
+**O modem não é desligado ao voltar para o Wi-Fi.** Ele fica registrado na
+operadora, só sem contexto de dados. Religar o rádio custaria uns 30 s na
+próxima queda — e a próxima queda é exatamente quando não se pode esperar.
+Registrado, o contexto volta em poucos segundos.
+
+**Nada bloqueia.** A subida do modem é uma máquina de estados de passos
+curtos, uma transição por volta do loop. A versão anterior chamava
+`modem.waitForNetwork(60000)` de uma vez: 60 segundos sem processar LoRa e sem
+chance de perceber que o Wi-Fi tinha voltado.
+
+**Um gateway sem modem instalado funciona.** Depois de três tentativas sem
+resposta, o firmware conclui que não há chip naquela placa, diz isso no log e
+segue só com Wi-Fi (reconferindo a cada 10 min, caso fosse só falta de
+energia no módulo).
+
+O gateway **informa qual enlace está usando** na própria telemetria — vira
+widget como qualquer outra:
+
+| Telemetria | O que é |
+|---|---|
+| `enlace` | `wifi`, `4g` ou `sem-rede` |
+| `segundos_no_enlace` | há quanto tempo está nesse enlace |
+| `trocas_de_enlace` | quantas vezes trocou **entre os dois** desde o boot (uma piscada do Wi-Fi não conta) |
+| `sinal` | RSSI no Wi-Fi, CSQ no 4G |
+| `uptime_s`, `envios_ok`, `envios_falha` | saúde do próprio gateway |
+
+> Os nomes evitam de propósito ser prefixo uns dos outros. A separação do
+> payload usa o prefixo como pista para descobrir equipamentos: uma chave
+> `enlace` ao lado de `enlace_ha_s` fazia o servidor concluir que existia um
+> equipamento chamado "enlace". A partir desta versão o servidor **confia na
+> lista explícita** que o gateway manda (`"dispositivos": [...]`) e nem chega
+> a adivinhar — mas os nomes continuam escolhidos com cuidado, porque a
+> heurística ainda vale para firmware que não manda a lista.
+
+### Testar o firmware sem hardware
+
+O gateway tem uma suíte própria que roda **no PC**:
+
+```bash
+g++ -std=c++17 -Wall -Wextra -I firmware/libraries/HydroConecta \
+    -I firmware/testes -I firmware/testes/stubs \
+    firmware/testes/teste_gateway.cpp -o /tmp/tg && /tmp/tg
 ```
 
-Depois de escolher **Wi-Fi**:
+`firmware/testes/ambiente_arduino.h` é um dublê do Arduino, do ESP32 e da
+TinyGSM: o tempo é controlado (`_millis`), o Wi-Fi cai e volta quando o teste
+manda, e o modem responde ou fica mudo por decisão do teste. Com isso
+`gateway_lora.ino` compila num `g++` comum e a **troca de enlace é exercitada
+de verdade** — 51 verificações, incluindo a queda, a volta, a oscilação, o
+gateway sem modem, o reboot dos 30 minutos e o conteúdo do payload.
 
-- preencha `WIFI_SSID` e `WIFI_PASS` logo abaixo;
-- `APN`, `APN_USER` e `APN_PASS` passam a ser ignorados;
-- a TinyGSM **não** precisa mais estar instalada — o `#include` dela está
-  dentro do `#if` do 4G;
-- o TLS passa a ser feito pelo **ESP32**, conferindo a cadeia contra a raiz
-  ISRG Root X1 embutida no sketch (no 4G quem cifra é o modem, e ele não
-  confere nada — ver *Limitações conhecidas*).
+Foi essa suíte que pegou dois defeitos antes de irem a campo:
+
+- **o Wi-Fi nunca era iniciado.** `WiFi.mode(WIFI_STA)` e o primeiro
+  `WiFi.begin()` tinham ficado de fora na reescrita, e a retentativa
+  periódica não disparava no boot (`millis()` ainda é pequeno, e a subtração
+  não alcançava o limite). O gateway simplesmente não conectava;
+- **o contexto de dados voltava sozinho.** Ao retornar ao Wi-Fi, o modem ia
+  para "registrando", que na volta seguinte do loop subia o contexto de novo.
+  O gateway soltava os dados móveis e os retomava meio segundo depois, para
+  sempre. Foi daí que nasceu o estado `MODEM_REGISTRADO`.
+
+O que a suíte **não** testa: nada de hardware — rádio, TLS, HTTP, UART. Os
+dublês registram que foram chamados e devolvem o que o teste mandar. Continua
+valendo: firmware só é firmware depois de gravado e observado em campo.
 
 ### O relógio: por que o Wi-Fi precisa dele e o 4G não
 
@@ -1524,6 +1698,9 @@ coisas, comparar a data de hoje com a validade dele — com o relógio em 1970
   ESP32, para que os logs tenham hora de verdade.
 - **Wi-Fi:** quem faz o TLS é o ESP32. `sincronizarRelogio()` chama NTP
   (`pool.ntp.org`) e espera até 20 s, alimentando o watchdog durante a espera.
+
+Com os dois enlaces vivos, a **fonte da hora segue o enlace em uso**: NTP não
+atravessa o modem, e o SIM7600 só sabe a hora quando está registrado.
 
 Se o gateway ligar sem sinal, o relógio não é acertado no `setup()` — e por
 isso `garantirRelogio()` roda **antes de cada envio**: assim que a rede voltar,
@@ -1572,15 +1749,20 @@ verificação não acontece; prefira a ordem acima.
 
 ### Testes
 
+**Cabeçalhos compartilhados** (protocolo LoRa e montador de JSON):
+
 ```bash
 g++ -std=c++17 -Wall -Wextra -I firmware/libraries/HydroConecta \
     firmware/testes/teste_firmware.cpp -o /tmp/teste && /tmp/teste
 ```
 
-52 verificações: formato do pacote (íntegro, corrompido, truncado, campos
-inválidos, ACK de id parecido), montador de JSON (payload byte a byte,
-estouro de buffer, NaN, texto que quebraria o documento) e regras de nível
-(vazio, cheio, meio, travas, calibrações incoerentes).
+31 verificações: formato do pacote (íntegro, corrompido, truncado, campos
+inválidos, ACK de id parecido) e montador de JSON (payload byte a byte,
+estouro de buffer, NaN, texto que quebraria o documento).
+
+**Gateway inteiro**, com dublês de Arduino/ESP32/TinyGSM — ver *Testar o
+firmware sem hardware*, acima. As contas de nível, que eram testadas aqui,
+mudaram de casa junto com a regra: `server/testes/teste_sensores.py`.
 
 ### Limitações conhecidas
 
@@ -1588,23 +1770,27 @@ estouro de buffer, NaN, texto que quebraria o documento) e regras de nível
   validar exigiria carregar o certificado raiz **no modem** (`AT+CCERTDOWN`),
   o que este sketch não faz. O tráfego vai cifrado, mas o servidor não é
   autenticado: um ataque no meio do enlace da operadora poderia capturar o
-  `DEVICE_TOKEN`. **No Wi-Fi a cadeia é conferida normalmente.** Onde houver
-  Wi-Fi, prefira Wi-Fi.
+  `DEVICE_TOKEN`. **No Wi-Fi a cadeia é conferida normalmente.** Com a troca
+  automática isso deixou de ser uma escolha permanente e virou uma **janela**:
+  o gateway só fica exposto enquanto o Wi-Fi estiver fora.
 - **Telemetria produzida offline é perdida.** O servidor carimba a hora na
   chegada (`gravar_telemetria` em `server/db.py`), então reenviar amostras
   antigas as gravaria com a hora errada — pior que perdê-las. Bufferizar exige
   antes o servidor aceitar um instante vindo do equipamento.
-- **Volume é aproximação prismática.** `volume = fração × volume_total` supõe
-  paredes verticais; nenhum reservatório real é assim. Serve como ordem de
-  grandeza, não como medida. O certo é uma curva cota × volume do projeto,
-  interpolada — trocar só `hc_calcular_nivel()` basta.
-- **`cota_fundo` precisa ser confirmada** no projeto de cada barragem. Um erro
-  ali desloca todas as leituras de cota.
-- **Os firmwares não foram compilados para o ESP32 nem gravados em hardware**
-  neste ambiente (não há toolchain Arduino nem os equipamentos). O que foi
-  testado de verdade: os três cabeçalhos compartilhados com `g++`, e o payload
-  real do gateway enviado ao servidor real, conferindo a separação em
-  `sub_id`/chave no banco.
+- **Volume é interpolação linear entre as duas âncoras.** Isso supõe um
+  reservatório de paredes verticais; nenhum reservatório real é assim. Serve
+  como ordem de grandeza, não como medida. O certo é a curva cota × volume do
+  projeto, interpolada — e agora trocar só `derivar_radar_nivel()` em
+  `server/sensores.py` basta, sem tocar em firmware nenhum.
+- **As duas âncoras de Oiticica não fecham entre si** (78 cm de diferença na
+  altura implícita do radar). A tela avisa a cada gravação; ver *Radar de
+  nível: como a conta é feita*, acima.
+- **Os firmwares não foram gravados em hardware** neste ambiente (não há
+  toolchain Arduino nem os equipamentos). O que **foi** testado de verdade:
+  os cabeçalhos compartilhados e o **gateway inteiro** com `g++`, incluindo a
+  troca de enlace (51 verificações), e o payload real enviado ao servidor
+  real, conferindo a separação em `sub_id`/chave no banco. O que não foi:
+  rádio, TLS, HTTP e UART de verdade.
 
 ---
 
@@ -2503,7 +2689,7 @@ Pontos de atenção:
 - **Firmware ESP32**: reescrito para HTTPS em `firmware/` (§9-sexies). Pendências
   daquele conjunto: TLS do caminho 4G não confere a cadeia (falta carregar a CA
   no SIM7600), telemetria produzida offline é perdida (o servidor carimba a hora
-  na chegada) e o volume é aproximação prismática, não curva cota × volume.
+  na chegada) e o volume é interpolação linear, não curva cota × volume.
 - **HTTPS**: o passo a passo está em §17-bis. Enquanto não estiver feito, o
   token dos dispositivos e o cookie de sessão trafegam em claro. Quando
   estiver, o **modo LAN deixa de valer** (conteúdo misto — ver §17-bis).
@@ -2533,6 +2719,13 @@ Pontos de atenção:
   dispositivo, e criar uma esbarraria na regra que rege a telinha: **imagem só
   sobe enquanto há pedido vivo** (§8). Uma miniatura ao vivo furaria isso para
   todas as câmeras ao mesmo tempo.
+- **A cota de Oiticica carrega 78 cm de incerteza.** As duas âncoras
+  entregues pelos engenheiros não fecham entre si (122,78 m contra 122,00 m
+  para a altura do radar). A interpolação é a acordada, e a tela avisa a cada
+  gravação, mas **confirme as medidas antes de usar a cota em relatório**.
+- **O piezômetro aparece no cadastro e ainda não deriva nada.** Foi
+  deliberado: quem cadastrar um hoje já o cadastra no lugar certo, e a conta
+  entra depois sem mexer no cadastro. A leitura bruta é gravada como veio.
 - **A posição das janelas flutuantes do Painel SHM vive no `localStorage`.**
   É por navegador: o operador que arruma o painel na sala de controle não
   encontra o mesmo arranjo no notebook. Foi escolha deliberada (é o arranjo

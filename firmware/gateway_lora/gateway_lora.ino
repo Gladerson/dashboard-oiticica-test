@@ -1,8 +1,31 @@
 /* ===========================================================================
- * HydroConecta - GATEWAY: LoRa -> HTTPS
+ * HydroConecta - GATEWAY: LoRa -> HTTPS, por Wi-Fi ou 4G
  *
- * Recebe pacotes LoRa de N controladores, aplica as regras de negocio de
- * cada equipamento e publica tudo num unico POST HTTPS para o servidor.
+ * Recebe pacotes LoRa de N controladores e repassa tudo num unico POST HTTPS
+ * para o servidor. So isso: o gateway NAO calcula mais nada.
+ *
+ * CADA UM COM O SEU PAPEL (mudou em setembro/2026)
+ * -----------------------------------------------
+ *   controlador  ->  mede e entrega a distancia BRUTA;
+ *   gateway      ->  cuida do enlace e repassa o que recebeu;
+ *   servidor     ->  aplica a calibracao daquele reservatorio.
+ *
+ * Antes, cota, volume e percentual sairam daqui (RegrasNivel.h). Parecia
+ * economia -- o numero ja subia pronto --, mas punha a regra de negocio no
+ * lugar mais caro de mudar do sistema inteiro: recalibrar um reservatorio
+ * exigia subir numa torre, ligar um notebook num ESP32 e regravar firmware,
+ * a centenas de quilometros de distancia. Agora a calibracao e um cadastro
+ * na tela (Dispositivos -> Sensor -> Radar de nivel) e o servidor faz a
+ * conta na chegada (server/sensores.py). O gateway ficou menor, mais rapido
+ * e sem nenhuma razao para ser reprogramado quando a barragem muda.
+ *
+ * DOIS ENLACES, TROCA AUTOMATICA
+ * ------------------------------
+ * Wi-Fi e 4G ficam os DOIS compilados. O Wi-Fi tem prioridade (na barragem
+ * ha Starlink); se ele cair, o gateway passa para o 4G sozinho e volta para
+ * o Wi-Fi assim que ele se firmar de novo. Ver "ENLACE" mais abaixo -- e a
+ * parte mais delicada deste arquivo, e tem historese nos dois sentidos para
+ * nao ficar pingando entre um e outro.
  *
  * O QUE MUDOU EM RELACAO A VERSAO 3.1 (MQTT/ThingsBoard)
  * -----------------------------------------------------
@@ -34,7 +57,7 @@
  *
  * BIBLIOTECAS
  * -----------
- *  - TinyGSM (so no modo 4G)
+ *  - TinyGSM (sempre: os dois enlaces sao compilados juntos)
  *  - HydroConecta (neste repositorio, em firmware/libraries)
  * Aponte o sketchbook da IDE para a pasta `firmware/` -- ver firmware/README.md.
  *
@@ -45,13 +68,11 @@
 // CONFIGURACAO (EDITE AQUI)
 // ===========================================================================
 
-// Transporte do gateway. As duas linhas de cima sao apenas ROTULOS (0 e 1) e
-// nao devem ser trocadas -- quem escolhe e a terceira linha.
-// No Wi-Fi quem faz o TLS e o ESP32 (confere a cadeia, mas precisa de relogio
-// certo -- ver sincronizarRelogio()); no 4G quem faz e o modem.
-#define TIPO_CONEXAO_WIFI   0
-#define TIPO_CONEXAO_4G     1
-#define TIPO_CONEXAO        TIPO_CONEXAO_4G   // <-- troque so esta linha
+// Quais enlaces este gateway tem fisicamente. Os dois ligados e o caso
+// normal; desligue um so se a placa realmente nao tiver aquele hardware --
+// um modem que nao existe custa alguns segundos de tentativa a cada boot.
+#define TEM_WIFI  1
+#define TEM_4G    1
 
 // --- Servidor HydroConecta ---
 // TEM de ser o dominio, nao o IP: o certificado e emitido para o nome, e a
@@ -64,11 +85,11 @@ static const char* SERVIDOR_ROTA  = "/api/edge/dados";
 // "gateway") no painel. NAO e o token do ThingsBoard.
 static const char* DEVICE_TOKEN = "COLE-AQUI-O-TOKEN-DO-GATEWAY";
 
-// --- Wi-Fi (se TIPO_CONEXAO for WIFI) ---
+// --- Wi-Fi (enlace preferido) ---
 static const char* WIFI_SSID = "COLE-AQUI-O-SSID";
 static const char* WIFI_PASS = "COLE-AQUI-A-SENHA";
 
-// --- 4G (se TIPO_CONEXAO for 4G) ---
+// --- 4G (reserva automatica) ---
 // Vivo: zap.vivo.com.br (vivo/vivo) | Claro: java.claro.com.br (claro/claro)
 // Tim: timbrasil.com.br (tim/tim)
 static const char APN[]       = "java.claro.com.br";
@@ -80,6 +101,16 @@ static const unsigned long INTERVALO_ENVIO_MS   = 15000;   // cadencia do POST
 static const unsigned long TIMEOUT_SENSOR_MS    = 60000;   // sem pacote = "off"
 static const unsigned long TEMPO_MAX_OFFLINE_MS = 1800000; // 30 min -> reboot
 static const int  FALHAS_ATE_RECONECTAR = 4;               // POSTs seguidos
+
+// --- Historese da troca de enlace ---
+// Os dois numeros existem para o gateway NAO ficar pingando entre Wi-Fi e 4G.
+// Uma Starlink que oscila alguns segundos e normal; trocar de enlace a cada
+// oscilacao gastaria dados moveis e ainda perderia envios na transicao.
+static const unsigned long WIFI_TOLERANCIA_MS = 25000;   // sem Wi-Fi ate cair para o 4G
+static const unsigned long WIFI_ESTAVEL_MS    = 60000;   // Wi-Fi firme ate voltar para ele
+// Tem de ser bem MENOR que a tolerancia: com 20 s aqui e 25 s de tolerancia,
+// o gateway tinha uma unica chance de reconectar antes de cair para o 4G.
+static const unsigned long WIFI_RETENTAR_MS   = 8000;    // intervalo entre WiFi.begin()
 
 // ===========================================================================
 
@@ -95,11 +126,12 @@ static const int  FALHAS_ATE_RECONECTAR = 4;               // POSTs seguidos
 // "fatal error: ProtocoloLoRa.h: No such file or directory", a pasta
 // HydroConecta nao foi instalada -- ver "Instalar a biblioteca compartilhada"
 // em firmware/README.md. Nao e erro de codigo, e um passo de instalacao.
+// RegrasNivel.h saiu daqui: a conta de cota/volume e do SERVIDOR agora
+// (server/sensores.py). O gateway so repassa a medida bruta.
 #include <ProtocoloLoRa.h>
 #include <MontadorJson.h>
-#include <RegrasNivel.h>
 
-#if TIPO_CONEXAO == TIPO_CONEXAO_4G
+#if TEM_4G
   #define TINY_GSM_MODEM_SIM7600
   #define TINY_GSM_RX_BUFFER 1024
   #include <TinyGsmClient.h>
@@ -155,21 +187,18 @@ emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
 
 // ---------------------------------------------------------------------------
 // Tabela de equipamentos: e aqui que se declara "este gateway fala por quem".
-// O `id` vira o sub_id no servidor -- use o MESMO texto configurado no
-// DEVICE_ID do controlador.
+//
+// Sao SO os identificadores. A calibracao de cada reservatorio (as duas
+// ancoras, o volume de referencia, as cotas de vertimento) mora no cadastro
+// do servidor, em Dispositivos -> Sensor -> Radar de nivel. Antes ela vinha
+// nesta tabela, e mudar uma cota significava regravar firmware em campo.
+//
+// O `id` vira o sub_id no servidor: use o MESMO texto configurado no
+// DEVICE_ID do controlador E no campo "Identificador no gateway" do cadastro
+// do sensor. Se os tres nao baterem, a medida chega e fica sem dono.
 // ---------------------------------------------------------------------------
-enum TipoEquipamento { TIPO_NIVEL_RADAR, TIPO_PIEZOMETRO };
-
-struct Equipamento {
-  const char*      id;
-  TipoEquipamento  tipo;
-  HcConfigNivel    nivel;   // usado so quando tipo == TIPO_NIVEL_RADAR
-};
-
-static const Equipamento EQUIPAMENTOS[] = {
-  // id             tipo               vazio  cheio  volume(m3)    fundo   max     alerta
-  { "nivel-rd01", TIPO_NIVEL_RADAR, { 30.0f, 10.0f,  742000000.0,  90.00f, 114.68f, 118.00f } },
-  { "nivel-rd02", TIPO_NIVEL_RADAR, { 15.0f,  2.0f,      50000.0,  37.00f,  50.00f,  52.00f } },
+static const char* EQUIPAMENTOS[] = {
+  "nivel-rd01",
 };
 static const int NUM_EQUIPAMENTOS = sizeof(EQUIPAMENTOS) / sizeof(EQUIPAMENTOS[0]);
 
@@ -191,11 +220,72 @@ static EstadoEquipamento estados[NUM_EQUIPAMENTOS];
 HardwareSerial loraSerial(1);
 WiFiClientSecure clienteTLS;
 
-#if TIPO_CONEXAO == TIPO_CONEXAO_4G
+#if TEM_4G
   HardwareSerial SerialAT(2);
   TinyGsm modem(SerialAT);
   TinyGsmClientSecure clienteGsmTLS(modem);
 #endif
+
+// ---------------------------------------------------------------------------
+// Estado do enlace. Declarado AQUI, junto dos outros globais, e nao la
+// embaixo com as funcoes que o usam: contabilizarFalha() menciona
+// `enlaceAtual` bem antes da secao REDE, e a geracao automatica de
+// prototipos da Arduino IDE nao move declaracoes de TIPO -- so de funcao.
+// ---------------------------------------------------------------------------
+enum Enlace { ENLACE_NENHUM = 0, ENLACE_WIFI, ENLACE_4G };
+
+static Enlace        enlaceAtual         = ENLACE_NENHUM;
+static unsigned long enlaceDesde         = 0;
+static unsigned long trocasDeEnlace      = 0;
+static unsigned long wifiCaiuEm          = 0;  // quando o Wi-Fi sumiu (0 = no ar)
+static unsigned long wifiVoltouEm        = 0;  // quando o Wi-Fi reapareceu
+static unsigned long ultimaTentativaWifi = 0;
+
+#if TEM_4G
+enum EstadoModem {
+  MODEM_PARADO,       // serial ainda nao aberta
+  MODEM_INICIANDO,    // respondendo a AT?
+  MODEM_REGISTRANDO,  // procurando torre
+  MODEM_REGISTRADO,   // achou a torre e esta de prontidao, SEM gastar dados
+  MODEM_CONTEXTO,     // subindo o APN
+  MODEM_PRONTO,       // dados disponiveis
+  MODEM_AUSENTE,      // nao respondeu: provavelmente nao ha modem nesta placa
+};
+static EstadoModem   estadoModem     = MODEM_PARADO;
+static unsigned long modemPassoEm    = 0;
+static int           modemTentativas = 0;
+#endif
+
+// Prototipos. A Arduino IDE geraria estes sozinha, mas escreve-los deixa o
+// arquivo compilavel tambem por um g++ comum -- e e isso que permite a suite
+// em firmware/testes/ exercitar a troca de enlace num PC, sem hardware.
+void  setup();
+void  loop();
+void  processarLoRa();
+void  tratarLinha(const char* linha);
+void  enviarAck(const char* id);
+int   indiceDoEquipamento(const char* id);
+void  marcarSensoresSilenciosos();
+bool  montarPayload();
+void  montarEquipamento(HcJson* j, int i);
+void  enviarTelemetria();
+void  contabilizarFalha();
+const char* nomeDoEnlace(Enlace e);
+bool  modemTemDados();
+void  cuidarDoModem(bool precisaDeDados);
+void  soltarDadosDoModem();
+bool  wifiNoAr();
+void  iniciarWifi();
+void  cuidarDoWifi();
+void  trocarEnlace(Enlace novo);
+void  cuidarDaRede();
+bool  redeConectada();
+void  configurarTLS();
+void  garantirRelogio();
+int   sinalDoEnlace();
+void  sincronizarRelogio();
+void  esperarComWatchdog(unsigned long ms);
+void  rebootSeguro();
 
 // Reboots consecutivos sobrevivem ao ESP.restart() na RTC RAM. Sem esse
 // limite, uma falha permanente (SIM sem credito, APN errada) viraria um
@@ -210,8 +300,11 @@ static unsigned long inicioOffline = 0;
 static int           falhasSeguidas = 0;
 static unsigned long enviosOk = 0, enviosFalha = 0;
 
-// Buffer do payload. Fixo e dimensionado para o pior caso: cada radar produz
-// 9 chaves. 24 equipamentos ainda cabem com folga.
+// Buffer do payload. Fixo e dimensionado para o pior caso. Cada equipamento
+// gasta ~90 bytes agora (antes eram ~250, com as nove chaves calculadas), e
+// o bloco do proprio gateway leva uns 180. Passar de 24 equipamentos ainda
+// cabe -- e se nao couber, montarPayload() recusa e diz, em vez de enviar
+// meio JSON.
 static char payload[3072];
 
 // ===========================================================================
@@ -254,9 +347,16 @@ void setup() {
     estados[i].descartados = 0;
   }
 
-  conectarRede();
-  sincronizarRelogio();
   configurarTLS();
+  iniciarWifi();
+
+  // A rede sobe pelo LOOP, nao aqui. O setup nao espera por enlace nenhum:
+  // com Starlink fora do ar e 4G sem sinal, esperar aqui seria ficar preso
+  // antes mesmo de comecar a receber LoRa -- e os pacotes dos controladores
+  // se perderiam enquanto isso. cuidarDaRede() e chamada a cada volta e
+  // resolve tudo em segundo plano.
+  cuidarDaRede();
+  sincronizarRelogio();
 
   Serial.println("=== GATEWAY PRONTO ===");
   rebootCount = 0;   // setup completo: o contador de reboots zera
@@ -269,6 +369,7 @@ void loop() {
   esp_task_wdt_reset();
 
   processarLoRa();          // nunca bloqueia
+  cuidarDaRede();           // escolhe Wi-Fi ou 4G; tambem nunca bloqueia
 
   const bool rede = redeConectada();
   if (rede) {
@@ -276,10 +377,11 @@ void loop() {
   } else {
     if (inicioOffline == 0) inicioOffline = millis();
     if (millis() - inicioOffline > TEMPO_MAX_OFFLINE_MS) {
-      Serial.println("CRITICO: 30 min sem rede. Reboot seguro.");
+      // 30 min sem NENHUM dos dois enlaces. Nao e oscilacao: e alguma coisa
+      // travada que so um reinicio resolve.
+      Serial.println("CRITICO: 30 min sem rede (nem Wi-Fi nem 4G). Reboot seguro.");
       rebootSeguro();
     }
-    tentarReconectar();
   }
 
   if (millis() - ultimoEnvio >= INTERVALO_ENVIO_MS) {
@@ -356,7 +458,7 @@ void enviarAck(const char* id) {
 
 int indiceDoEquipamento(const char* id) {
   for (int i = 0; i < NUM_EQUIPAMENTOS; i++)
-    if (strcmp(EQUIPAMENTOS[i].id, id) == 0) return i;
+    if (strcmp(EQUIPAMENTOS[i], id) == 0) return i;
   return -1;
 }
 
@@ -364,7 +466,7 @@ void marcarSensoresSilenciosos() {
   for (int i = 0; i < NUM_EQUIPAMENTOS; i++) {
     if (estados[i].online && (millis() - estados[i].visto_em > TIMEOUT_SENSOR_MS)) {
       estados[i].online = false;
-      Serial.printf("[lora] %s ficou mudo -> off\n", EQUIPAMENTOS[i].id);
+      Serial.printf("[lora] %s ficou mudo -> off\n", EQUIPAMENTOS[i]);
     }
   }
 }
@@ -384,12 +486,31 @@ bool montarPayload() {
   // dizer quem sao elimina qualquer adivinhacao -- inclusive no primeiro
   // envio, quando ele ainda nao conhece nenhum equipamento deste gateway.
   hc_json_abrir_lista(&j, "dispositivos");
-  for (int i = 0; i < NUM_EQUIPAMENTOS; i++) hc_json_item_texto(&j, EQUIPAMENTOS[i].id);
+  for (int i = 0; i < NUM_EQUIPAMENTOS; i++) hc_json_item_texto(&j, EQUIPAMENTOS[i]);
   hc_json_fechar_lista(&j);
 
   hc_json_abrir_objeto(&j, "values");
+
+  // Telemetria do PROPRIO gateway. Sobe solta (nao dentro de nenhum
+  // equipamento), entao no servidor ela fica em sub_id vazio -- "o proprio
+  // dispositivo" -- e pode virar widget como qualquer outra.
+  //
+  // Os nomes evitam de proposito ser prefixo uns dos outros: a separacao do
+  // payload usa o prefixo como pista para descobrir equipamentos, e uma
+  // chave "enlace" ao lado de "enlace_ha_s" faria o servidor achar que
+  // existe um equipamento chamado "enlace".
+  hc_json_texto(&j, "enlace", nomeDoEnlace(enlaceAtual));
+  hc_json_inteiro(&j, "segundos_no_enlace",
+                  enlaceDesde ? (long long)((millis() - enlaceDesde) / 1000) : 0);
+  hc_json_inteiro(&j, "trocas_de_enlace", (long long)trocasDeEnlace);
+  const int sinal = sinalDoEnlace();
+  if (sinal != -127) hc_json_inteiro(&j, "sinal", (long long)sinal);
+  hc_json_inteiro(&j, "uptime_s", (long long)(millis() / 1000));
+  hc_json_inteiro(&j, "envios_ok", (long long)enviosOk);
+  hc_json_inteiro(&j, "envios_falha", (long long)enviosFalha);
+
   for (int i = 0; i < NUM_EQUIPAMENTOS; i++) {
-    hc_json_abrir_objeto(&j, EQUIPAMENTOS[i].id);
+    hc_json_abrir_objeto(&j, EQUIPAMENTOS[i]);
     montarEquipamento(&j, i);
     hc_json_fechar_objeto(&j);
   }
@@ -417,27 +538,12 @@ void montarEquipamento(HcJson* j, int i) {
   if (st.descartados > 0)
     hc_json_inteiro(j, "pacotes_descartados", (long long)st.descartados);
 
-  if (strcmp(status, "on") != 0) return;   // sem medida valida, nada a calcular
+  if (strcmp(status, "on") != 0) return;   // sem medida valida, nada a publicar
 
-  if (EQUIPAMENTOS[i].tipo == TIPO_NIVEL_RADAR) {
-    HcNivel n;
-    if (!hc_calcular_nivel(EQUIPAMENTOS[i].nivel, st.valor_bruto, &n)) {
-      // Calibracao incoerente: diz isso, em vez de publicar numero inventado.
-      hc_json_texto(j, "status", "erro");
-      hc_json_texto(j, "erro", "calibracao-invalida");
-      return;
-    }
-    hc_json_num(j, "distancia",       st.valor_bruto,    3);
-    hc_json_num(j, "uso_percentual",  n.percentual,      2);
-    hc_json_num(j, "volume_m3",       n.volume_m3,       0);
-    hc_json_num(j, "volume_rest_m3",  n.volume_rest_m3,  0);
-    hc_json_num(j, "cota_atual",      n.cota_atual,      3);
-    hc_json_num(j, "cota_restante",   n.cota_restante,   3);
-    hc_json_num(j, "cota_revanche",   EQUIPAMENTOS[i].nivel.cota_alerta, 2);
-    hc_json_bool(j, "alerta_revanche", n.alerta_revanche);
-  } else {
-    hc_json_num(j, "leitura", st.valor_bruto, 3);
-  }
+  // A MEDIDA BRUTA, e so ela. Cota, volume e percentual sao derivados no
+  // servidor a partir dela (server/sensores.py) -- o gateway nao precisa
+  // saber nem que o equipamento e um radar de nivel.
+  hc_json_num(j, "distancia", st.valor_bruto, 3);
 }
 
 // ===========================================================================
@@ -457,12 +563,22 @@ void enviarTelemetria() {
   char url[160];
   snprintf(url, sizeof(url), "https://%s:%d%s", SERVIDOR_HOST, SERVIDOR_PORTA, SERVIDOR_ROTA);
 
-  bool aberto;
-#if TIPO_CONEXAO == TIPO_CONEXAO_4G
-  aberto = http.begin(clienteGsmTLS, SERVIDOR_HOST, SERVIDOR_PORTA, SERVIDOR_ROTA, true);
-#else
-  aberto = http.begin(clienteTLS, url);
+  // Cada enlace tem o seu cliente TLS, e quem escolhe e o enlace em uso
+  // NESTE instante -- nao uma opcao de compilacao.
+  bool aberto = false;
+#if TEM_4G
+  if (enlaceAtual == ENLACE_4G) {
+    aberto = http.begin(clienteGsmTLS, SERVIDOR_HOST, SERVIDOR_PORTA, SERVIDOR_ROTA, true);
+  }
 #endif
+#if TEM_WIFI
+  if (enlaceAtual == ENLACE_WIFI) aberto = http.begin(clienteTLS, url);
+#endif
+  if (enlaceAtual == ENLACE_NENHUM) {
+    // Sem enlace nao se tenta: o POST falharia, contaria como falha e
+    // dispararia uma reconexao que nao tem nada a consertar.
+    return;
+  }
   if (!aberto) {
     Serial.println("[envio] nao consegui abrir a conexao");
     contabilizarFalha();
@@ -500,23 +616,313 @@ void enviarTelemetria() {
 void contabilizarFalha() {
   enviosFalha++;
   falhasSeguidas++;
-  if (falhasSeguidas >= FALHAS_ATE_RECONECTAR) {
-    Serial.printf("[envio] %d falhas seguidas: refazendo a conexao de rede\n",
-                  falhasSeguidas);
-    falhasSeguidas = 0;
-    reconectarRede();
+  if (falhasSeguidas < FALHAS_ATE_RECONECTAR) return;
+  falhasSeguidas = 0;
+  // O enlace diz que esta no ar, mas os POSTs nao passam. Derruba-lo obriga
+  // cuidarDaRede() a reconstruir -- e, se o problema for daquele enlace,
+  // abre caminho para o outro assumir.
+  Serial.printf("[envio] %d falhas seguidas no enlace %s: derrubando para reconstruir\n",
+                FALHAS_ATE_RECONECTAR, nomeDoEnlace(enlaceAtual));
+#if TEM_WIFI
+  if (enlaceAtual == ENLACE_WIFI) {
+    WiFi.disconnect();
+    ultimaTentativaWifi = 0;   // pode tentar de novo ja na proxima volta
   }
+#endif
+#if TEM_4G
+  if (enlaceAtual == ENLACE_4G && estadoModem == MODEM_PRONTO) {
+    modem.gprsDisconnect();
+    estadoModem = MODEM_REGISTRANDO;
+  }
+#endif
 }
 
 // ===========================================================================
-// REDE
+// ENLACE: Wi-Fi com 4G de reserva, troca automatica nos dois sentidos
+//
+// Esta e a parte mais delicada do arquivo. O gateway fica a centenas de
+// quilometros de quem pode mexer nele: nada aqui pode bloquear o loop, e
+// nenhuma falha de um enlace pode impedir o outro de funcionar.
+//
+// REGRAS
+//   1. Wi-Fi e preferido. Na barragem ha Starlink; o 4G e reserva paga.
+//   2. Sem Wi-Fi por WIFI_TOLERANCIA_MS, sobe o 4G e passa a usar.
+//   3. Com Wi-Fi firme por WIFI_ESTAVEL_MS, volta para ele e derruba o
+//      contexto de dados do modem (para de gastar franquia).
+//   4. O modem NAO e desligado ao voltar para o Wi-Fi: fica registrado na
+//      operadora, so sem contexto de dados. Religar o radio custaria uns 30 s
+//      na proxima queda -- e a proxima queda e exatamente quando nao se pode
+//      esperar. Registrado, o contexto volta em poucos segundos.
+//   5. O radio Wi-Fi fica sempre ligado e sempre tentando, mesmo enquanto o
+//      4G trabalha: e assim que o gateway percebe que a Starlink voltou.
+//
+// NADA AQUI BLOQUEIA. A subida do modem e uma maquina de estados com passos
+// curtos (cuidarDoModem()), chamada uma vez por volta do loop. A versao
+// anterior chamava modem.waitForNetwork(60000) de uma vez -- 60 segundos sem
+// processar LoRa, sem alimentar o watchdog por conta propria e sem chance de
+// perceber que o Wi-Fi tinha voltado.
 // ===========================================================================
-bool redeConectada() {
-#if TIPO_CONEXAO == TIPO_CONEXAO_4G
-  return modem.isNetworkConnected() && modem.isGprsConnected();
+const char* nomeDoEnlace(Enlace e) {
+  return e == ENLACE_WIFI ? "wifi" : (e == ENLACE_4G ? "4g" : "sem-rede");
+}
+
+// --- Modem: maquina de estados, passos curtos --------------------------------
+#if TEM_4G
+// Quantas vezes insistir antes de aceitar que nao ha modem. Aceitar e
+// importante: um gateway so-Wi-Fi nao pode gastar meio loop tentando falar
+// com um chip que nao existe.
+static const int MODEM_MAX_TENTATIVAS = 3;
+static const unsigned long MODEM_REGISTRO_MAX_MS = 90000;
+static const unsigned long MODEM_AUSENTE_RETENTAR_MS = 600000;   // 10 min
+
+bool modemTemDados() {
+  return estadoModem == MODEM_PRONTO &&
+         modem.isNetworkConnected() && modem.isGprsConnected();
+}
+
+/** Um passo por volta do loop. Nunca demora mais que alguns segundos. */
+void cuidarDoModem(bool precisaDeDados) {
+  const unsigned long agora = millis();
+
+  switch (estadoModem) {
+    case MODEM_AUSENTE:
+      // Tenta de novo de vez em quando: pode ser um modem que estava sem
+      // energia no boot, e nao um modem inexistente.
+      if (agora - modemPassoEm > MODEM_AUSENTE_RETENTAR_MS) {
+        estadoModem = MODEM_PARADO;
+        modemTentativas = 0;
+      }
+      return;
+
+    case MODEM_PARADO:
+      SerialAT.begin(115200, SERIAL_8N1, PIN_4G_RX, PIN_4G_TX);
+      estadoModem  = MODEM_INICIANDO;
+      modemPassoEm = agora;
+      return;
+
+    case MODEM_INICIANDO: {
+      esp_task_wdt_reset();
+      // init() so manda "AT" e confere a resposta -- barato. restart() reseta
+      // o modulo e o obriga a se registrar do zero, o que so vale a pena
+      // quando ele esta mesmo mudo.
+      if (modem.init()) {
+        Serial.println("[4g] modem respondeu");
+        estadoModem  = MODEM_REGISTRANDO;
+        modemPassoEm = agora;
+        modemTentativas = 0;
+        return;
+      }
+      modemTentativas++;
+      Serial.printf("[4g] modem mudo (tentativa %d/%d)\n",
+                    modemTentativas, MODEM_MAX_TENTATIVAS);
+      if (modemTentativas == 1) { modem.restart(); esp_task_wdt_reset(); }
+      if (modemTentativas >= MODEM_MAX_TENTATIVAS) {
+        Serial.println("[4g] sem modem nesta placa; seguindo so com Wi-Fi.");
+        estadoModem  = MODEM_AUSENTE;
+        modemPassoEm = agora;
+      }
+      return;
+    }
+
+    case MODEM_REGISTRANDO:
+      esp_task_wdt_reset();
+      // waitForNetwork com 1 s: consulta o registro e devolve. Chamado uma
+      // vez por volta do loop, faz o mesmo que a espera de 60 s da versao
+      // anterior -- sem parar o resto do gateway enquanto isso.
+      if (modem.waitForNetwork(1000)) {
+        Serial.println("[4g] registrado na operadora");
+        estadoModem  = MODEM_REGISTRADO;
+        modemPassoEm = agora;
+        return;
+      }
+      if (agora - modemPassoEm > MODEM_REGISTRO_MAX_MS) {
+        Serial.println("[4g] 90 s sem registro; recomecando o modem");
+        estadoModem  = MODEM_PARADO;
+        modemPassoEm = agora;
+      }
+      return;
+
+    case MODEM_REGISTRADO:
+      // Registrado e quieto: este e o estado de repouso enquanto o Wi-Fi
+      // funciona. Registrado nao gasta franquia, e voltar dele para o
+      // contexto leva segundos -- contra os ~30 s de religar o radio.
+      //
+      // Este estado e a correcao de um defeito que a suite pegou: antes,
+      // soltar o contexto voltava para MODEM_REGISTRANDO, que subia o
+      // contexto de novo na volta seguinte do loop. O gateway "soltava" os
+      // dados moveis e os retomava meio segundo depois, para sempre.
+      if (!precisaDeDados) {
+        if (!modem.isNetworkConnected()) {
+          estadoModem  = MODEM_REGISTRANDO;
+          modemPassoEm = agora;
+        }
+        return;
+      }
+      estadoModem  = MODEM_CONTEXTO;
+      modemPassoEm = agora;
+      return;
+
+    case MODEM_CONTEXTO:
+      esp_task_wdt_reset();
+      Serial.printf("[4g] subindo APN %s ... ", APN);
+      if (modem.gprsConnect(APN, APN_USER, APN_PASS)) {
+        Serial.println("OK");
+        estadoModem  = MODEM_PRONTO;
+        modemPassoEm = agora;
+      } else {
+        Serial.println("falhou");
+        modemPassoEm = agora;
+        estadoModem  = MODEM_REGISTRANDO;   // reconfere o registro e tenta de novo
+      }
+      if (!precisaDeDados && estadoModem == MODEM_PRONTO) {
+        // O Wi-Fi voltou no meio da subida: nao vale a pena manter o
+        // contexto que acabou de nascer.
+        modem.gprsDisconnect();
+        estadoModem = MODEM_REGISTRADO;
+      }
+      esp_task_wdt_reset();
+      return;
+
+    case MODEM_PRONTO:
+      if (!precisaDeDados) return;          // fica de prontidao, sem mexer
+      if (!modem.isNetworkConnected() || !modem.isGprsConnected()) {
+        Serial.println("[4g] contexto caiu; refazendo");
+        estadoModem  = MODEM_REGISTRANDO;
+        modemPassoEm = agora;
+      }
+      return;
+  }
+}
+
+/** Derruba so o contexto de dados; o modem continua registrado. Ver a regra 4
+ *  no cabecalho desta secao. */
+void soltarDadosDoModem() {
+  if (estadoModem != MODEM_PRONTO) return;
+  Serial.println("[4g] Wi-Fi voltou: soltando o contexto de dados");
+  modem.gprsDisconnect();
+  // REGISTRADO, nao REGISTRANDO: ver o comentario naquele estado. Voltar
+  // para "registrando" faria o contexto subir de novo na volta seguinte.
+  estadoModem = MODEM_REGISTRADO;
+  modemPassoEm = millis();
+}
 #else
+// Sem hardware de 4G: as mesmas funcoes, sem fazer nada. Assim o resto do
+// arquivo nao precisa de um unico #if a mais.
+bool modemTemDados() { return false; }
+void cuidarDoModem(bool) {}
+void soltarDadosDoModem() {}
+#endif  // TEM_4G
+
+// --- Wi-Fi -------------------------------------------------------------------
+bool wifiNoAr() {
+#if TEM_WIFI
   return WiFi.status() == WL_CONNECTED;
+#else
+  return false;
 #endif
+}
+
+/** Liga o radio e faz a PRIMEIRA tentativa. Chamada uma vez, no setup.
+ *
+ *  Sem WiFi.mode(WIFI_STA) o ESP32 nasce em modo AP+STA e pode simplesmente
+ *  nao conectar; setSleep(false) troca alguns mA por latencia estavel, que e
+ *  o que importa num equipamento alimentado da rede. */
+void iniciarWifi() {
+#if TEM_WIFI
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  ultimaTentativaWifi = millis();
+  Serial.println("[wifi] radio ligado, procurando a rede");
+#endif
+}
+
+void cuidarDoWifi() {
+#if TEM_WIFI
+  if (wifiNoAr()) return;
+  // WiFi.setAutoReconnect() ja tenta sozinho, mas ele desiste em alguns
+  // cenarios (AP que some por muito tempo, senha recusada uma vez). Um
+  // begin() periodico e a rede de seguranca que faz a Starlink ser
+  // reencontrada depois de horas fora.
+  //
+  // ultimaTentativaWifi == 0 significa "nunca tentei": e o caso do primeiro
+  // loop se iniciarWifi() nao tiver rodado. Sem esta guarda, o gateway
+  // passava os primeiros WIFI_RETENTAR_MS sem sequer chamar begin() --
+  // millis() ainda e pequeno no boot, e a subtracao nao alcancava o limite.
+  if (ultimaTentativaWifi != 0 &&
+      millis() - ultimaTentativaWifi < WIFI_RETENTAR_MS) return;
+  ultimaTentativaWifi = millis();
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+#endif
+}
+
+// --- Decisao -----------------------------------------------------------------
+void trocarEnlace(Enlace novo) {
+  if (novo == enlaceAtual) return;
+  Serial.printf("[enlace] %s -> %s\n", nomeDoEnlace(enlaceAtual), nomeDoEnlace(novo));
+  // Conta so a troca entre DOIS enlaces de verdade (wifi <-> 4g). Uma piscada
+  // do Wi-Fi passa por "sem-rede" e volta: contar isso faria a telemetria
+  // dizer "12 trocas de enlace" num dia em que o gateway nunca saiu do
+  // Wi-Fi -- e quem olha o numero quer saber se o 4G esta sendo acionado.
+  if (novo != ENLACE_NENHUM && enlaceAtual != ENLACE_NENHUM) trocasDeEnlace++;
+  enlaceAtual = novo;
+  enlaceDesde = millis();
+  // Uma conexao TLS aberta pertence ao enlace anterior. Zerar as falhas
+  // seguidas evita que a troca -- que e a SOLUCAO -- seja contada como
+  // problema e dispare uma reconexao logo em seguida.
+  falhasSeguidas = 0;
+}
+
+/** Chamada uma vez por volta do loop. Decide em qual enlace o proximo POST
+ *  vai sair, e cuida dos dois para que a decisao tenha o que escolher. */
+void cuidarDaRede() {
+  const unsigned long agora = millis();
+
+  cuidarDoWifi();
+
+  const bool wifi = wifiNoAr();
+  if (wifi) {
+    if (wifiCaiuEm != 0) {            // acabou de voltar
+      wifiCaiuEm = 0;
+      wifiVoltouEm = agora;
+    }
+    if (wifiVoltouEm == 0) wifiVoltouEm = agora;
+  } else {
+    wifiVoltouEm = 0;
+    if (wifiCaiuEm == 0) wifiCaiuEm = agora;
+  }
+
+  // Quanto tempo o Wi-Fi esta fora. Se ja passou da tolerancia, vale a pena
+  // ter o 4G de pe -- mesmo que o Wi-Fi volte em seguida, ter o contexto
+  // pronto e o que torna a proxima queda indolor.
+  const bool wifiForaHaMuito = !wifi && (agora - wifiCaiuEm >= WIFI_TOLERANCIA_MS);
+  const bool queroDados = wifiForaHaMuito || enlaceAtual == ENLACE_4G;
+  cuidarDoModem(queroDados);
+
+  // ---- escolha ----
+  if (wifi) {
+    if (enlaceAtual != ENLACE_4G) {
+      // Nada a perder: se ja nao estamos no 4G, Wi-Fi no ar e o enlace.
+      trocarEnlace(ENLACE_WIFI);
+    } else if (agora - wifiVoltouEm >= WIFI_ESTAVEL_MS) {
+      // Estamos no 4G e o Wi-Fi voltou e se firmou. So agora se troca: sem
+      // esta espera, uma Starlink oscilando faria o gateway pular de um lado
+      // para o outro e perder envios em toda transicao.
+      trocarEnlace(ENLACE_WIFI);
+      soltarDadosDoModem();
+    }
+    return;
+  }
+
+  if (modemTemDados()) { trocarEnlace(ENLACE_4G); return; }
+  trocarEnlace(ENLACE_NENHUM);
+}
+
+bool redeConectada() {
+  return enlaceAtual == ENLACE_WIFI ? wifiNoAr()
+       : enlaceAtual == ENLACE_4G   ? modemTemDados()
+       : false;
 }
 
 void configurarTLS() {
@@ -524,97 +930,41 @@ void configurarTLS() {
   // um no caminho poderia se passar pelo servidor e capturar o token.
   clienteTLS.setCACert(CA_LETSENCRYPT);
   clienteTLS.setTimeout(8000);
-#if TIPO_CONEXAO == TIPO_CONEXAO_4G
-  // ATENCAO, e esta a limitacao conhecida desta versao: no caminho 4G quem
-  // faz o TLS e o SIM7600, nao o ESP32, e a cadeia so e conferida se o
-  // certificado raiz for carregado NO MODEM (AT+CCERTDOWN). Este sketch nao
-  // faz isso. O trafego vai cifrado, mas sem autenticar o servidor.
-  // Consequencia pratica: um ataque no meio do enlace da operadora poderia
-  // capturar o DEVICE_TOKEN. Onde houver Wi-Fi, prefira Wi-Fi. Esta anotado
+#if TEM_4G
+  // ATENCAO, limitacao conhecida: no caminho 4G quem faz o TLS e o SIM7600,
+  // nao o ESP32, e a cadeia so seria conferida com o certificado raiz
+  // carregado NO MODEM (AT+CCERTDOWN). Este sketch nao faz isso. O trafego
+  // vai cifrado, mas sem autenticar o servidor -- um ataque no meio do
+  // enlace da operadora poderia capturar o DEVICE_TOKEN.
+  //
+  // Com a troca automatica isso deixou de ser uma escolha permanente e virou
+  // uma janela: o gateway so fica exposto ENQUANTO estiver no 4G, e volta
+  // para o Wi-Fi (que confere a cadeia) assim que ele se firma. Esta anotado
   // como pendencia no README.
-  Serial.println("[tls] 4G: TLS pelo modem, SEM conferencia da cadeia (ver README).");
+  Serial.println("[tls] 4G usa TLS do modem, SEM conferencia da cadeia (ver README).");
 #endif
 }
 
-void conectarRede() {
-#if TIPO_CONEXAO == TIPO_CONEXAO_4G
-  Serial.println("[rede] iniciando modem 4G...");
-  SerialAT.begin(115200, SERIAL_8N1, PIN_4G_RX, PIN_4G_TX);
-  esperarComWatchdog(3000);
-
-  // init() so manda "AT" e confere a resposta. restart() reseta o modulo e o
-  // obriga a se registrar do zero na rede -- caro, e desnecessario quando ele
-  // ja esta respondendo.
-  if (!modem.init()) {
-    Serial.println("[rede] modem mudo; forcando restart...");
-    modem.restart();
-    esperarComWatchdog(5000);
-  }
-  esp_task_wdt_reset();
-
-  Serial.print("[rede] aguardando registro (60s)...");
-  if (!modem.waitForNetwork(60000L)) {
-    Serial.println(" falhou (o loop continua tentando)");
-    return;
-  }
-  Serial.println(" registrado");
-  esp_task_wdt_reset();
-
-  Serial.printf("[rede] conectando APN %s ... ", APN);
-  Serial.println(modem.gprsConnect(APN, APN_USER, APN_PASS) ? "OK" : "falhou");
-#else
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);        // latencia estavel importa mais que os mA aqui
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("[rede] conectando Wi-Fi");
-  for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) {
-    esperarComWatchdog(500);
-    Serial.print(".");
-  }
-  Serial.println(WiFi.status() == WL_CONNECTED ? " OK" : " falhou (o loop tenta)");
-#endif
-}
-
-void tentarReconectar() {
-  static unsigned long ultimaTentativa = 0;
-  if (millis() - ultimaTentativa < 10000) return;
-  ultimaTentativa = millis();
-  esp_task_wdt_reset();
-#if TIPO_CONEXAO == TIPO_CONEXAO_4G
-  if (!modem.isNetworkConnected()) {
-    Serial.println("[rede] sem registro; o modem procura a torre sozinho.");
-    return;
-  }
-  Serial.println("[rede] GPRS caiu; refazendo o contexto...");
-  modem.gprsDisconnect();
-  esperarComWatchdog(1000);
-  modem.gprsConnect(APN, APN_USER, APN_PASS);
-#else
-  Serial.println("[rede] Wi-Fi caiu; reconectando...");
-  WiFi.reconnect();
-#endif
-}
-
-// Chamado quando a rede volta: se o boot aconteceu sem hora (sem sinal, por
-// exemplo), e aqui que ela e finalmente acertada -- senao o equipamento
-// passaria a vida sem conseguir fechar o TLS.
+/** Chamado antes de cada envio: se o boot aconteceu sem hora (sem sinal, por
+ *  exemplo), e aqui que ela e finalmente acertada -- senao o equipamento
+ *  passaria a vida sem conseguir fechar o TLS. Tambem cobre a troca de
+ *  enlace, porque a fonte da hora muda junto. */
 void garantirRelogio() {
   time_t agora = 0;
   time(&agora);
   if (agora < 1700000000) sincronizarRelogio();
 }
 
-void reconectarRede() {
-#if TIPO_CONEXAO == TIPO_CONEXAO_4G
-  modem.gprsDisconnect();
-  esperarComWatchdog(2000);
-  modem.gprsConnect(APN, APN_USER, APN_PASS);
-#else
-  WiFi.disconnect();
-  esperarComWatchdog(500);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+/** Qualidade do sinal do enlace em uso, para subir junto com a telemetria.
+ *  -127 significa "nao sei dizer". */
+int sinalDoEnlace() {
+#if TEM_WIFI
+  if (enlaceAtual == ENLACE_WIFI) return WiFi.RSSI();
 #endif
+#if TEM_4G
+  if (enlaceAtual == ENLACE_4G) return modem.getSignalQuality();
+#endif
+  return -127;
 }
 
 // ===========================================================================
@@ -624,32 +974,39 @@ void reconectarRede() {
 // "ainda nao valido" se o relogio estiver antes do notBefore dele. E o ESP32
 // acorda em 1970.
 //
-// No caminho 4G isso nao aparecia, porque quem faz o TLS e o modem -- e ele
-// pega a hora da propria rede da operadora. No Wi-Fi, quem faz o TLS e o
-// ESP32: sem acertar o relogio, TODO envio falha com um erro generico de
-// handshake, e se perde tempo procurando problema de rede que nao existe.
+// No 4G quem faz o TLS e o modem -- e ele pega a hora da propria rede da
+// operadora. No Wi-Fi, quem faz o TLS e o ESP32: sem acertar o relogio, TODO
+// envio falha com um erro generico de handshake, e se perde tempo procurando
+// problema de rede que nao existe.
+//
+// Com os dois enlaces vivos, a fonte da hora segue o enlace EM USO: NTP nao
+// atravessa o modem, e o SIM7600 so sabe a hora quando esta registrado.
 // ===========================================================================
 void sincronizarRelogio() {
   time_t agora = 0;
 
-#if TIPO_CONEXAO == TIPO_CONEXAO_4G
-  // O NTP do lwIP nao atravessa o modem; a hora vem do proprio SIM7600.
-  int ano = 0, mes = 0, dia = 0, h = 0, m = 0, seg = 0; float fuso = 0;
-  if (modem.getNetworkTime(&ano, &mes, &dia, &h, &m, &seg, &fuso) && ano > 2020) {
-    struct tm t = {};
-    t.tm_year = ano - 1900; t.tm_mon = mes - 1; t.tm_mday = dia;
-    t.tm_hour = h; t.tm_min = m; t.tm_sec = seg;
-    time_t utc = mktime(&t) - (time_t)(fuso * 900);   // fuso vem em 1/4 de hora
-    struct timeval tv = { .tv_sec = utc, .tv_usec = 0 };
-    settimeofday(&tv, NULL);
-    agora = utc;
+#if TEM_4G
+  if (enlaceAtual == ENLACE_4G) {
+    int ano = 0, mes = 0, dia = 0, h = 0, m = 0, seg = 0; float fuso = 0;
+    if (modem.getNetworkTime(&ano, &mes, &dia, &h, &m, &seg, &fuso) && ano > 2020) {
+      struct tm t = {};
+      t.tm_year = ano - 1900; t.tm_mon = mes - 1; t.tm_mday = dia;
+      t.tm_hour = h; t.tm_min = m; t.tm_sec = seg;
+      time_t utc = mktime(&t) - (time_t)(fuso * 900);  // fuso vem em 1/4 de hora
+      struct timeval tv = { .tv_sec = utc, .tv_usec = 0 };
+      settimeofday(&tv, NULL);
+      agora = utc;
+    }
   }
-#else
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  const unsigned long inicio = millis();
-  while (agora < 1700000000 && millis() - inicio < 20000) {
-    esperarComWatchdog(500);
-    time(&agora);
+#endif
+#if TEM_WIFI
+  if (agora < 1700000000 && enlaceAtual == ENLACE_WIFI) {
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    const unsigned long inicio = millis();
+    while (agora < 1700000000 && millis() - inicio < 20000) {
+      esperarComWatchdog(500);
+      time(&agora);
+    }
   }
 #endif
 
@@ -682,11 +1039,15 @@ void esperarComWatchdog(unsigned long ms) {
 void rebootSeguro() {
   rebootCount++;
   Serial.printf("[reboot] #%d\n", rebootCount);
-#if TIPO_CONEXAO == TIPO_CONEXAO_4G
-  modem.gprsDisconnect();
-  esperarComWatchdog(1000);
-  modem.poweroff();
-  esperarComWatchdog(3000);
+#if TEM_4G
+  // So se o modem chegou a subir: mandar AT para um chip que nunca respondeu
+  // e esperar por ele seria somar segundos a um reinicio de emergencia.
+  if (estadoModem != MODEM_PARADO && estadoModem != MODEM_AUSENTE) {
+    modem.gprsDisconnect();
+    esperarComWatchdog(1000);
+    modem.poweroff();
+    esperarComWatchdog(3000);
+  }
 #endif
   Serial.println("[reboot] reiniciando ESP32...");
   delay(200);

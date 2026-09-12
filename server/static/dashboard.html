@@ -340,10 +340,32 @@
     backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px);
     font-size:11px; max-height:44%; overflow:auto;
   }
-  #equipamentos h4 {
-    margin:0 0 8px; font-size:10px; text-transform:uppercase; letter-spacing:.08em;
+  /* Cabecalho clicavel: com muitos equipamentos a lista ocupa o canto
+     inteiro do viewport, e quem quer olhar o modelo precisa poder tira-la do
+     caminho sem perder de vista quantos equipamentos existem. */
+  #equipamentos .cabecalho {
+    margin:0; font-size:10px; text-transform:uppercase; letter-spacing:.08em;
     color:var(--muted); font-weight:600;
+    display:flex; align-items:center; gap:6px; cursor:pointer;
+    background:none; border:0; padding:0; width:100%; font-family:inherit;
   }
+  #equipamentos .cabecalho:hover { color:var(--text); }
+  #equipamentos .cabecalho .conta {
+    margin-left:auto; font-weight:500; letter-spacing:0; text-transform:none;
+    opacity:.85;
+  }
+  #equipamentos .cabecalho .seta { transition:transform .15s; font-size:9px; opacity:.8; }
+  #equipamentos.recolhido .cabecalho .seta { transform:rotate(-90deg); }
+  #equipamentos #equip-lista { margin-top:8px; }
+  #equipamentos.recolhido #equip-lista { display:none; }
+  #equipamentos.recolhido { max-height:none; width:auto; min-width:150px; }
+  /* A bolinha vermelha continua visivel mesmo recolhido: e a informacao que
+     faz alguem abrir a lista. */
+  #equipamentos .cabecalho .luz-resumo {
+    width:7px; height:7px; border-radius:999px; flex:none;
+  }
+  #equipamentos .cabecalho .luz-resumo.on  { background:var(--ok); }
+  #equipamentos .cabecalho .luz-resumo.off { background:var(--danger); }
   #equipamentos .linha {
     display:flex; align-items:center; gap:7px; padding:5px 0;
     border-top:1px solid rgba(255,255,255,.07);
@@ -381,9 +403,13 @@
     position:absolute; pointer-events:auto; box-sizing:border-box;
     display:flex; flex-direction:column; overflow:hidden;
     border-radius:12px; padding:8px 10px;
-    border:1px solid rgba(255,255,255,.16); background:rgba(12,20,34,.62);
-    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
-    box-shadow:0 10px 30px rgba(0,0,0,.35);
+    /* Um pouco mais translucidas que a primeira versao (.62 -> .50): elas
+       convivem com o modelo 3D, nao o substituem. O blur segura a
+       legibilidade -- sem ele, este nivel de transparencia sobre uma
+       textura de barragem deixaria o texto ilegivel. */
+    border:1px solid rgba(255,255,255,.14); background:rgba(12,20,34,.50);
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 10px 30px rgba(0,0,0,.30);
   }
   .flutuante.movendo, .flutuante.redimensionando { opacity:.95; z-index:9; }
   .flutuante header {
@@ -409,7 +435,7 @@
     content:""; position:absolute; right:3px; bottom:3px; width:8px; height:8px;
     border-right:2px solid var(--muted); border-bottom:2px solid var(--muted);
   }
-  body.tema-claro .flutuante { background:rgba(255,255,255,.78); border-color:rgba(0,0,0,.10); }
+  body.tema-claro .flutuante { background:rgba(255,255,255,.66); border-color:rgba(0,0,0,.09); }
 
   /* ================= PTZ dentro da telinha =================================
      O PTZ estava ENTRE a telinha e o histórico. Como as duas áreas são
@@ -461,7 +487,11 @@
          Ligar um deles traz os gráficos configurados em Telemetrias para
          cima da cena, sem trocar de tela. -->
     <aside id="equipamentos" hidden>
-      <h4>Equipamentos</h4>
+      <button type="button" id="equip-cabecalho" class="cabecalho" aria-expanded="true"
+              aria-controls="equip-lista">
+        <span class="seta">&#9660;</span>Equipamentos
+        <span class="conta" id="equip-conta"></span>
+      </button>
       <div id="equip-lista"></div>
     </aside>
 
@@ -2488,6 +2518,23 @@ function equipamentosDaLocalidade() {
     (d.tipo || "camera") !== "camera" && d.localidade_id === cam.localidade_id);
 }
 
+const CHAVE_EQUIP_RECOLHIDO = "hc_equip_recolhido";
+
+/** Recolher/expandir a lista. Com muitos equipamentos ela toma o canto
+ *  inteiro do viewport; recolhida, vira uma etiqueta com a contagem e uma
+ *  bolinha que continua avisando se algum deles caiu. */
+function alternarListaEquipamentos(forcar) {
+  const caixa = document.getElementById("equipamentos");
+  const botao = document.getElementById("equip-cabecalho");
+  if (!caixa || !botao) return;
+  const recolher = forcar === undefined
+    ? !caixa.classList.contains("recolhido") : !!forcar;
+  caixa.classList.toggle("recolhido", recolher);
+  botao.setAttribute("aria-expanded", String(!recolher));
+  botao.title = recolher ? "Expandir a lista" : "Recolher a lista";
+  gravarJson(CHAVE_EQUIP_RECOLHIDO, recolher);
+}
+
 function desenharEquipamentos() {
   const caixa = document.getElementById("equipamentos");
   const lista = document.getElementById("equip-lista");
@@ -2496,6 +2543,18 @@ function desenharEquipamentos() {
   const cam = dispositivosDisponiveis.find(d => d.id === deviceId);
   caixa.hidden = !cam;
   if (!cam) return;
+
+  // O resumo no cabecalho e o que torna o recolhimento seguro: mesmo
+  // fechada, a lista continua dizendo quantos equipamentos ha e se algum
+  // esta offline.
+  const fora = itens.filter(d => !d.online).length;
+  const conta = document.getElementById("equip-conta");
+  if (conta) {
+    conta.innerHTML = itens.length
+      ? `<span class="luz-resumo ${fora ? "off" : "on"}"></span> `
+        + (fora ? `${fora}/${itens.length} offline` : `${itens.length} online`)
+      : "";
+  }
 
   if (!itens.length) {
     lista.innerHTML = '<div class="vazio-eq">'
@@ -2745,6 +2804,9 @@ async function atualizarPresenca() {
 }
 
 async function iniciarEquipamentos() {
+  const botao = document.getElementById("equip-cabecalho");
+  if (botao) botao.addEventListener("click", () => alternarListaEquipamentos());
+  alternarListaEquipamentos(lerJson(CHAVE_EQUIP_RECOLHIDO, false) === true);
   desenharEquipamentos();
   const daLocalidade = new Set(equipamentosDaLocalidade().map(d => d.id));
   for (const id of idsLigados()) {

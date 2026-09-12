@@ -162,6 +162,26 @@ ALTER TABLE dispositivos ADD CONSTRAINT dispositivos_tipo_check
 -- NULL = nunca falou desde que a coluna existe.
 ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS visto_em TIMESTAMPTZ;
 
+-- ---------------------------------------------------------------------------
+-- Subtipo de sensor e a calibracao dele
+--
+-- Ate setembro/2026 quem calculava cota, volume e percentual era o GATEWAY
+-- (RegrasNivel.h, no firmware). Recalibrar um reservatorio exigia regravar
+-- firmware a centenas de quilometros de distancia. Agora a conta e do
+-- servidor (server/sensores.py) e a calibracao e cadastro -- editavel na tela.
+--
+-- 'subtipo'       qual conta aplicar ('radar_nivel', 'piezometro', ...);
+-- 'config_sensor' os campos daquele subtipo, como o formulario os coletou;
+-- 'gateway_id'    por qual gateway este sensor fala (NULL = fala sozinho);
+-- 'sub_id'        como ele se identifica no pacote LoRa ('nivel-rd01') --
+--                 tem de ser IGUAL ao DEVICE_ID gravado no controlador.
+-- ---------------------------------------------------------------------------
+ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS subtipo TEXT;
+ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS config_sensor JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS gateway_id UUID REFERENCES dispositivos(id) ON DELETE SET NULL;
+ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS sub_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS ix_dispositivos_gateway ON dispositivos(gateway_id);
+
 -- Serie historica. sub_id = '' quer dizer "o proprio dispositivo" (sensor
 -- direto); num gateway e o identificador do equipamento remoto
 -- ("nivel-rd01"). Guardamos numero E texto porque o gateway manda os dois
@@ -594,6 +614,33 @@ def dispositivo_por_id_com_localidade(dispositivo_id):
         ).fetchone()
 
 
+def sensores_de(dispositivo_id):
+    """Os sensores cadastrados cuja telemetria chega POR este dispositivo.
+
+    Para um gateway sao os equipamentos remotos dele, cada um com o seu
+    `sub_id`. Para um sensor que fala sozinho e ele proprio, com sub_id ''.
+
+    Devolve so o que a derivacao precisa -- e uma consulta no caminho quente
+    da ingestao, e trazer a linha inteira do dispositivo seria desperdicio."""
+    with pool.connection() as conn:
+        proprios = conn.execute(
+            "SELECT sub_id, subtipo, config_sensor FROM dispositivos "
+            "WHERE gateway_id = %s AND subtipo IS NOT NULL",
+            (dispositivo_id,),
+        ).fetchall()
+        eu = conn.execute(
+            "SELECT sub_id, subtipo, config_sensor FROM dispositivos "
+            "WHERE id = %s AND gateway_id IS NULL AND subtipo IS NOT NULL",
+            (dispositivo_id,),
+        ).fetchall()
+    # Um sensor que fala sozinho manda tudo em sub_id '' -- o `sub_id` do
+    # cadastro dele so vale quando ha um gateway no meio.
+    return ([{"sub_id": "", "subtipo": l["subtipo"], "config": l["config_sensor"]}
+             for l in eu]
+            + [{"sub_id": l["sub_id"] or "", "subtipo": l["subtipo"],
+                "config": l["config_sensor"]} for l in proprios])
+
+
 def marcar_dispositivo_visto(dispositivo_id):
     """Carimba visto_em = now(). Chamada em TODO caminho por onde um
     equipamento fala com o servidor.
@@ -611,18 +658,21 @@ def criar_dispositivo(entity_id, entity_type, nome, proprietario, localidade_id,
                       lat, lon, alt_acima_solo, transporte, token,
                       topico_telemetria, topico_atributos, topico_frame,
                       dono_usuario_id, controller_url=None, controller_url_publica=None,
-                      tipo="camera"):
+                      tipo="camera", subtipo=None, config_sensor=None,
+                      gateway_id=None, sub_id=""):
     with pool.connection() as conn:
         return conn.execute(
             "INSERT INTO dispositivos (entity_id, entity_type, nome, proprietario, "
             "localidade_id, lat, lon, alt_acima_solo, transporte, token, "
             "topico_telemetria, topico_atributos, topico_frame, dono_usuario_id, "
-            "controller_url, controller_url_publica, tipo) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+            "controller_url, controller_url_publica, tipo, "
+            "subtipo, config_sensor, gateway_id, sub_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "RETURNING *",
             (entity_id, entity_type, nome, proprietario, localidade_id, lat, lon,
              alt_acima_solo, transporte, token, topico_telemetria, topico_atributos,
              topico_frame, dono_usuario_id, controller_url, controller_url_publica,
-             tipo),
+             tipo, subtipo, Jsonb(config_sensor or {}), gateway_id, sub_id or ""),
         ).fetchone()
 
 
@@ -633,6 +683,7 @@ def criar_dispositivo(entity_id, entity_type, nome, proprietario, localidade_id,
 CAMPOS_EDITAVEIS_DISPOSITIVO = (
     "nome", "proprietario", "localidade_id", "lat", "lon", "alt_acima_solo",
     "transporte", "controller_url", "controller_url_publica", "tipo",
+    "subtipo", "config_sensor", "gateway_id", "sub_id",
 )
 
 
@@ -644,6 +695,9 @@ def atualizar_dispositivo(dispositivo_id, campos):
     campos = {k: v for k, v in campos.items() if k in CAMPOS_EDITAVEIS_DISPOSITIVO}
     if not campos:
         return dispositivo_por_id_com_localidade(dispositivo_id)
+    # JSONB precisa do adaptador; um dict cru viraria erro de tipo no driver.
+    if isinstance(campos.get("config_sensor"), dict):
+        campos["config_sensor"] = Jsonb(campos["config_sensor"])
     atribuicoes = ", ".join(f"{k} = %s" for k in campos)
     valores = list(campos.values()) + [dispositivo_id]
     with pool.connection() as conn:

@@ -41,6 +41,7 @@ from pydantic import BaseModel
 import auth
 import db
 import registro_dispositivos as rd
+import sensores
 
 # Quanto tempo de serie o grafico pede por padrao.
 JANELA_PADRAO_MIN = int(os.getenv("TELEMETRIA_JANELA_MIN", "1440"))
@@ -73,27 +74,40 @@ def _normalizar(valor):
         return None, txt
 
 
-def descobrir_sub_ids(valores, conhecidos=()):
+def descobrir_sub_ids(valores, conhecidos=(), explicitos=None):
     """Quais chaves do payload sao, na verdade, equipamentos remotos.
 
-    Tres pistas, em ordem de confianca:
+    Quando o firmware DIZ quem sao (campo "dispositivos" do payload), a lista
+    dele e a resposta -- e so ela. O gateway sabe por quem fala; adivinhar em
+    cima disso so cria chance de errar. Foi assim que uma telemetria do
+    proprio gateway virou equipamento: `enlace` e prefixo de `enlace_ha_s`, e
+    a pista (3) concluiu que existia um equipamento chamado "enlace".
+
+    Sem lista explicita, valem tres pistas, em ordem de confianca:
       1. ja apareceu antes neste dispositivo (veio do banco);
       2. o valor e um status conhecido ("on"/"off"/"erro");
       3. a chave e prefixo de outra chave ("nivel-rd01" e "nivel-rd01_x").
+
+    Um objeto aninhado e sempre um equipamento, com ou sem lista: a forma
+    aninhada nao tem outra leitura possivel.
     """
-    subs = set(conhecidos)
+    aninhados = {k for k, v in valores.items() if isinstance(v, dict)}
+    if explicitos:
+        return set(explicitos) | aninhados
+
+    subs = set(conhecidos) | aninhados
     chaves = list(valores.keys())
     for k, v in valores.items():
         if isinstance(v, dict):
-            subs.add(k)
-        elif isinstance(v, str) and v.strip().lower() in _STATUS_CONHECIDOS:
+            continue
+        if isinstance(v, str) and v.strip().lower() in _STATUS_CONHECIDOS:
             subs.add(k)
         elif any(o != k and o.startswith(k + "_") for o in chaves):
             subs.add(k)
     return subs
 
 
-def separar(valores, e_gateway, sub_ids_conhecidos=()):
+def separar(valores, e_gateway, sub_ids_conhecidos=(), explicitos=None):
     """Payload -> lista de (sub_id, chave, valor_num, valor_txt).
 
     Num dispositivo que nao e gateway tudo cai em sub_id '' -- ou seja, "o
@@ -112,7 +126,8 @@ def separar(valores, e_gateway, sub_ids_conhecidos=()):
             amostras.append(("", str(chave), n, t))
         return amostras
 
-    subs = sorted(descobrir_sub_ids(valores, sub_ids_conhecidos), key=len, reverse=True)
+    subs = sorted(descobrir_sub_ids(valores, sub_ids_conhecidos, explicitos),
+                  key=len, reverse=True)
     for chave, v in valores.items():
         chave = str(chave)
         if isinstance(v, dict):            # forma aninhada: sem adivinhacao
@@ -131,6 +146,53 @@ def separar(valores, e_gateway, sub_ids_conhecidos=()):
         n, t = _normalizar(v)
         amostras.append((alvo, resto, n, t))
     return amostras
+
+
+# ============================================================================
+# Derivacao: de UMA medida bruta para as grandezas do operador
+# ============================================================================
+def derivar_amostras(dispositivo_id, amostras):
+    """Telemetrias CALCULADAS a acrescentar as que chegaram.
+
+    Antes quem fazia estas contas era o firmware do gateway. Passaram para ca
+    porque recalibrar um reservatorio nao pode exigir regravar um ESP32 a
+    centenas de quilometros -- ver server/sensores.py.
+
+    As derivadas sao gravadas no MESMO endereco da medida bruta (mesmo
+    dispositivo, mesmo sub_id), e nao num dispositivo separado. Assim os
+    widgets e alarmes ja configurados continuam apontando para onde sempre
+    apontaram: quem via `nivel-rd01 / cota_atual` continua vendo.
+
+    Falha aqui nunca derruba a ingestao: a medida bruta ja esta a salvo, e
+    perder uma derivada e menos grave que recusar a mensagem inteira."""
+    try:
+        configurados = db.sensores_de(dispositivo_id)
+    except Exception as e:
+        print(f"[telemetria] nao consegui ler os sensores de {dispositivo_id}: {e}")
+        return []
+    if not configurados:
+        return []
+
+    # O que chegou, agrupado por equipamento. O valor numerico manda; texto
+    # so quando nao ha numero (um "status": "on" nao serve de medida).
+    por_sub = {}
+    for sub_id, chave, num, txt in amostras:
+        por_sub.setdefault(sub_id, {})[chave] = num if num is not None else txt
+
+    extras = []
+    for cfg in configurados:
+        valores = por_sub.get(cfg["sub_id"])
+        if not valores:
+            continue
+        for chave, valor in sensores.derivar(cfg["subtipo"], cfg["config"], valores):
+            if valor is None:
+                continue
+            if isinstance(valor, bool):
+                extras.append((cfg["sub_id"], chave, 1.0 if valor else 0.0,
+                               "true" if valor else "false"))
+            else:
+                extras.append((cfg["sub_id"], chave, float(valor), None))
+    return extras
 
 
 # ============================================================================
@@ -264,13 +326,19 @@ def instalar(app, manager=None):
         if e_gateway:
             conhecidos = {l["sub_id"] for l in db.listar_chaves_telemetria(device.id)
                           if l["sub_id"]}
-        # A lista explicita evita adivinhacao quando o firmware puder mandar.
+        # A lista explicita dispensa a adivinhacao por completo (ver
+        # descobrir_sub_ids). O firmware do gateway sempre a manda.
         explicitos = corpo.get("dispositivos") if isinstance(corpo, dict) else None
-        if isinstance(explicitos, list):
-            conhecidos = set(conhecidos) | {str(x) for x in explicitos}
+        explicitos = ([str(x) for x in explicitos if str(x).strip()]
+                      if isinstance(explicitos, list) else None)
 
-        amostras = separar(valores, e_gateway, conhecidos)
+        amostras = separar(valores, e_gateway, conhecidos, explicitos)
         amostras = [a for a in amostras if a[1]]      # descarta chave vazia
+        # As derivadas entram ANTES da gravacao, para irem no mesmo INSERT e
+        # com o mesmo carimbo de hora da medida que as originou. Gravar em
+        # dois momentos deixaria a cota e a distancia com instantes
+        # diferentes, e um grafico das duas juntas ficaria em degrau.
+        amostras += derivar_amostras(device.id, amostras)
         db.gravar_telemetria(device.id, amostras)
         rd.marcar_visto(device)
 

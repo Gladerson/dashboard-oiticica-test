@@ -1,13 +1,18 @@
 // ===========================================================================
 // Suite dos firmwares, rodando NO PC.
 //
-// Os tres cabecalhos de firmware/libraries/HydroConecta sao livres de
-// Arduino justamente para isto: o formato do pacote LoRa, o montador de JSON
-// e as regras de nivel podem ser exercitados de verdade, com g++, sem
-// hardware. E o que separa "eu revisei o codigo" de "eu testei o codigo".
+// Os cabecalhos de firmware/libraries/HydroConecta sao livres de Arduino
+// justamente para isto: o formato do pacote LoRa e o montador de JSON podem
+// ser exercitados de verdade, com g++, sem hardware. E o que separa "eu
+// revisei o codigo" de "eu testei o codigo".
 //
 //   g++ -std=c++17 -I firmware/libraries/HydroConecta
 //       firmware/testes/teste_firmware.cpp -o /tmp/teste && /tmp/teste
+//
+// As REGRAS DE NIVEL (cota, volume, percentual) sairam daqui em
+// setembro/2026: a conta e do servidor agora, e os testes dela estao em
+// server/testes/teste_sensores.py. O gateway tem suite propria, em
+// teste_gateway.cpp, que exercita a troca de enlace Wi-Fi/4G.
 // ===========================================================================
 #include <cstdio>
 #include <cstring>
@@ -15,7 +20,6 @@
 
 #include "MontadorJson.h"
 #include "ProtocoloLoRa.h"
-#include "RegrasNivel.h"
 
 static int falhas = 0, total = 0;
 
@@ -156,52 +160,9 @@ static void testes_json() {
                "{\"dispositivos\":[\"a\",\"b\"],\"z\":\"1\"}", "lista de textos");
 }
 
-// ------------------------------------------------------------- regras nivel
-static void testes_regras() {
-  printf("regras de nivel\n");
-  // Reservatorio de teste: antena a 30 m do fundo, 10 m no nivel cheio.
-  HcConfigNivel cfg = { 30.0f, 10.0f, 1000000.0, 90.0f, 114.68f, 113.0f };
-  HcNivel r;
-
-  checar(hc_calcular_nivel(cfg, 30.0f, &r), "vazio: calcula");
-  checar(perto(r.percentual, 0.0, 1e-4), "vazio: 0%");
-  checar(perto(r.cota_atual, 90.0, 1e-3), "vazio: cota e a do FUNDO, nao zero");
-  checar(perto(r.volume_m3, 0.0, 1e-6), "vazio: volume zero");
-  checar(!r.alerta_revanche, "vazio: sem alerta");
-
-  checar(hc_calcular_nivel(cfg, 10.0f, &r), "cheio: calcula");
-  checar(perto(r.percentual, 100.0, 1e-4), "cheio: 100%");
-  checar(perto(r.cota_atual, 114.68, 1e-3), "cheio: cota maxima");
-  checar(perto(r.volume_m3, 1000000.0, 1e-3), "cheio: volume total");
-  checar(perto(r.cota_restante, 0.0, 1e-3), "cheio: nada a subir");
-  checar(r.alerta_revanche, "cheio: alerta de revanche disparado");
-
-  checar(hc_calcular_nivel(cfg, 20.0f, &r), "meio: calcula");
-  checar(perto(r.percentual, 50.0, 1e-4), "meio: 50%");
-  checar(perto(r.cota_atual, 90.0 + 0.5 * 24.68, 1e-3), "meio: cota interpolada");
-
-  // Travas nos extremos: o teto NAO existia antes.
-  checar(hc_calcular_nivel(cfg, 5.0f, &r) && perto(r.percentual, 100.0, 1e-4),
-         "leitura abaixo do cheio trava em 100%");
-  checar(r.volume_m3 <= cfg.volume_total + 1e-6,
-         "volume nunca passa do volume total");
-  checar(hc_calcular_nivel(cfg, 40.0f, &r) && perto(r.percentual, 0.0, 1e-4),
-         "leitura acima do vazio trava em 0%");
-
-  // Calibracao incoerente: recusa em vez de publicar numero sem sentido.
-  HcConfigNivel invertida = { 10.0f, 30.0f, 1000.0, 90.0f, 114.0f, 113.0f };
-  checar(!hc_calcular_nivel(invertida, 20.0f, &r), "recusa vazio/cheio invertidos");
-  HcConfigNivel iguais = { 10.0f, 10.0f, 1000.0, 90.0f, 114.0f, 113.0f };
-  checar(!hc_calcular_nivel(iguais, 10.0f, &r), "recusa faixa zero");
-  HcConfigNivel cota_ruim = { 30.0f, 10.0f, 1000.0, 120.0f, 114.0f, 113.0f };
-  checar(!hc_calcular_nivel(cota_ruim, 20.0f, &r), "recusa cota de fundo acima da maxima");
-  checar(!hc_calcular_nivel(cfg, NAN, &r), "recusa distancia NaN");
-}
-
 int main() {
   testes_protocolo();
   testes_json();
-  testes_regras();
   printf("\n%d verificacoes, %d falha(s)\n", total, falhas);
   return falhas == 0 ? 0 : 1;
 }
