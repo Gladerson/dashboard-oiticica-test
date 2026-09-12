@@ -101,6 +101,10 @@ static const unsigned long INTERVALO_ENVIO_MS   = 15000;   // cadencia do POST
 static const unsigned long TIMEOUT_SENSOR_MS    = 60000;   // sem pacote = "off"
 static const unsigned long TEMPO_MAX_OFFLINE_MS = 1800000; // 30 min -> reboot
 static const int  FALHAS_ATE_RECONECTAR = 4;               // POSTs seguidos
+// Espera maxima pela linha de status do servidor. Enquanto o POST acontece, o
+// LoRa fica acumulando no buffer da UART (2 KB, uns 60 pacotes); 12 s e folga
+// para 4G ruim sem chegar perto de perder pacote.
+static const unsigned long TIMEOUT_RESPOSTA_MS = 12000;
 
 // --- Historese da troca de enlace ---
 // Os dois numeros existem para o gateway NAO ficar pingando entre Wi-Fi e 4G.
@@ -118,7 +122,6 @@ static const unsigned long WIFI_RETENTAR_MS   = 8000;    // intervalo entre WiFi
 #include <HardwareSerial.h>
 #include <time.h>
 #include <sys/time.h>
-#include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
@@ -135,6 +138,19 @@ static const unsigned long WIFI_RETENTAR_MS   = 8000;    // intervalo entre WiFi
   #define TINY_GSM_MODEM_SIM7600
   #define TINY_GSM_RX_BUFFER 1024
   #include <TinyGsmClient.h>
+  // TLS por cima do socket do modem, feito pelo PROPRIO ESP32.
+  //
+  // A TinyGSM NAO oferece `TinyGsmClientSecure` para o SIM7600 -- so o
+  // cliente TCP puro (confira em TinyGsmClient.h: o ramo do SIM7600 define
+  // apenas `TinyGsmClient`). Mandar o token por TCP puro estava fora de
+  // questao, entao quem cifra e o ESP32, com a mesma CA do caminho Wi-Fi.
+  //
+  // De quebra, isto CORRIGE a limitacao que estava anotada no README: o 4G
+  // passou a conferir a cadeia do certificado, como o Wi-Fi sempre conferiu.
+  //
+  // Biblioteca: "GovoroxSSLClient" (govorox/SSLClient), no Gerenciador de
+  // Bibliotecas da IDE. Ver firmware/README.md.
+  #include <SSLClient.h>
   #define PIN_4G_RX 26   // ligado ao T (TX) do modulo
   #define PIN_4G_TX 27   // ligado ao R (RX) do modulo
 #endif
@@ -223,7 +239,10 @@ WiFiClientSecure clienteTLS;
 #if TEM_4G
   HardwareSerial SerialAT(2);
   TinyGsm modem(SerialAT);
-  TinyGsmClientSecure clienteGsmTLS(modem);
+  // Duas camadas: a TinyGSM abre o socket TCP pelo modem, e a SSLClient faz
+  // o TLS por cima dele, no ESP32.
+  TinyGsmClient clienteGsm(modem);
+  SSLClient     clienteGsmTLS(&clienteGsm);
 #endif
 
 // ---------------------------------------------------------------------------
@@ -268,6 +287,8 @@ int   indiceDoEquipamento(const char* id);
 void  marcarSensoresSilenciosos();
 bool  montarPayload();
 void  montarEquipamento(HcJson* j, int i);
+int   postarHttps(Client& cliente, const char* corpo);
+const char* motivoDoErro(int codigo);
 void  enviarTelemetria();
 void  contabilizarFalha();
 const char* nomeDoEnlace(Enlace e);
@@ -548,57 +569,130 @@ void montarEquipamento(HcJson* j, int i) {
 
 // ===========================================================================
 // ENVIO (HTTPS)
+//
+// POR QUE O POST E ESCRITO A MAO
+// ------------------------------
+// A versao anterior usava o HTTPClient do nucleo do ESP32. Ele nao serve
+// aqui, e por uma razao dura: `HTTPClient::begin()` exige um
+// `NetworkClient&` (o antigo `WiFiClient&`), nao um `Client&` qualquer. O
+// cliente TLS que roda por cima do modem 4G e um `Client` comum -- e nao ha
+// como passa-lo. Era exatamente esse o erro de compilacao do caminho 4G.
+//
+// Um POST e simples o bastante para nao valer uma biblioteca: abrir, escrever
+// cabecalho e corpo, ler a linha de status. Escrito assim, os DOIS enlaces
+// usam o mesmo codigo -- e a suite consegue conferir byte a byte o que sai na
+// rede, coisa que nao dava para fazer com o HTTPClient no meio.
+//
+// Do corpo da resposta so interessa o codigo. O servidor devolve um JSON
+// curto que ninguem le aqui, e `Connection: close` garante que a conexao
+// morre no fim de cada envio -- sem socket pendurado entre ciclos.
 // ===========================================================================
+
+// Codigos proprios, todos negativos, para nao colidirem com codigo HTTP.
+static const int HC_ERRO_CONEXAO    = -1;   // nem abriu (TLS, DNS, sinal)
+static const int HC_ERRO_ESCRITA    = -2;   // caiu no meio do envio
+static const int HC_ERRO_SEM_RESPOSTA = -3; // abriu, escreveu, e ninguem respondeu
+static const int HC_ERRO_RESPOSTA_MA  = -4; // respondeu algo que nao e HTTP
+
+const char* motivoDoErro(int codigo) {
+  switch (codigo) {
+    case HC_ERRO_CONEXAO:      return "nao consegui abrir a conexao (TLS, DNS ou sinal)";
+    case HC_ERRO_ESCRITA:      return "a conexao caiu no meio do envio";
+    case HC_ERRO_SEM_RESPOSTA: return "o servidor nao respondeu a tempo";
+    case HC_ERRO_RESPOSTA_MA:  return "a resposta nao parece HTTP";
+    default:                   return "erro do servidor";
+  }
+}
+
+int postarHttps(Client& cliente, const char* corpo) {
+  const size_t n = strlen(corpo);
+
+  esp_task_wdt_reset();
+  if (!cliente.connect(SERVIDOR_HOST, SERVIDOR_PORTA)) return HC_ERRO_CONEXAO;
+  esp_task_wdt_reset();
+
+  char cab[512];
+  const int k = snprintf(cab, sizeof(cab),
+      "POST %s HTTP/1.1\r\n"
+      "Host: %s\r\n"
+      "Authorization: Bearer %s\r\n"
+      "Content-Type: application/json\r\n"
+      "Content-Length: %u\r\n"
+      "Connection: close\r\n"
+      "User-Agent: HydroConecta-Gateway\r\n"
+      "\r\n",
+      SERVIDOR_ROTA, SERVIDOR_HOST, DEVICE_TOKEN, (unsigned)n);
+  // snprintf truncaria calado se o token fosse enorme; um cabecalho truncado
+  // viraria 400 no servidor e mandaria quem investiga para o lugar errado.
+  if (k <= 0 || (size_t)k >= sizeof(cab)) { cliente.stop(); return HC_ERRO_ESCRITA; }
+
+  if (cliente.write((const uint8_t*)cab, (size_t)k) != (size_t)k) {
+    cliente.stop();
+    return HC_ERRO_ESCRITA;
+  }
+  if (cliente.write((const uint8_t*)corpo, n) != n) {
+    cliente.stop();
+    return HC_ERRO_ESCRITA;
+  }
+  esp_task_wdt_reset();
+
+  // Le SO a linha de status ("HTTP/1.1 200 OK"), com prazo. A subtracao e
+  // feita assim de proposito: millis() vira a zero a cada 49 dias, e
+  // `millis() < prazo` deixaria o gateway preso nesse instante.
+  char linha[80];
+  size_t li = 0;
+  bool completou = false;
+  const unsigned long inicio = millis();
+  while (millis() - inicio < TIMEOUT_RESPOSTA_MS) {
+    esp_task_wdt_reset();
+    const int c = cliente.read();
+    if (c < 0) {
+      // Sem byte agora. Se a conexao ja fechou e nao sobrou nada no buffer,
+      // nao adianta esperar o prazo inteiro.
+      if (!cliente.connected() && cliente.available() <= 0) break;
+      delay(10);
+      continue;
+    }
+    if (c == '\n') { completou = true; break; }
+    if (c != '\r' && li < sizeof(linha) - 1) linha[li++] = (char)c;
+  }
+  linha[li] = '\0';
+  cliente.stop();
+
+  if (!completou) return HC_ERRO_SEM_RESPOSTA;
+
+  const char* espaco = strchr(linha, ' ');
+  if (espaco == NULL) return HC_ERRO_RESPOSTA_MA;
+  const int codigo = atoi(espaco + 1);
+  return (codigo >= 100 && codigo <= 599) ? codigo : HC_ERRO_RESPOSTA_MA;
+}
+
 void enviarTelemetria() {
+  // Sem enlace nao se tenta: o POST falharia, contaria como falha e
+  // dispararia uma reconexao que nao tem nada a consertar.
+  if (enlaceAtual == ENLACE_NENHUM) return;
   if (!montarPayload()) return;
 
-  HTTPClient http;
-  // Tempos curtos e explicitos: enquanto o POST acontece, o LoRa fica
-  // acumulando no buffer da UART (2 KB, uns 60 pacotes). 8 + 8 segundos e
-  // folga suficiente para 4G ruim sem chegar perto de perder pacote.
-  http.setConnectTimeout(8000);
-  http.setTimeout(8000);
-  http.setReuse(false);
-
-  char url[160];
-  snprintf(url, sizeof(url), "https://%s:%d%s", SERVIDOR_HOST, SERVIDOR_PORTA, SERVIDOR_ROTA);
-
-  // Cada enlace tem o seu cliente TLS, e quem escolhe e o enlace em uso
-  // NESTE instante -- nao uma opcao de compilacao.
-  bool aberto = false;
-#if TEM_4G
-  if (enlaceAtual == ENLACE_4G) {
-    aberto = http.begin(clienteGsmTLS, SERVIDOR_HOST, SERVIDOR_PORTA, SERVIDOR_ROTA, true);
-  }
-#endif
+  // O cliente segue o enlace em uso NESTE instante -- nao uma opcao de
+  // compilacao. Os dois sao `Client`, entao daqui para baixo o codigo e o
+  // mesmo, com os mesmos prazos.
+  Client* cliente = NULL;
 #if TEM_WIFI
-  if (enlaceAtual == ENLACE_WIFI) aberto = http.begin(clienteTLS, url);
+  if (enlaceAtual == ENLACE_WIFI) cliente = &clienteTLS;
 #endif
-  if (enlaceAtual == ENLACE_NENHUM) {
-    // Sem enlace nao se tenta: o POST falharia, contaria como falha e
-    // dispararia uma reconexao que nao tem nada a consertar.
-    return;
-  }
-  if (!aberto) {
-    Serial.println("[envio] nao consegui abrir a conexao");
-    contabilizarFalha();
-    return;
-  }
+#if TEM_4G
+  if (enlaceAtual == ENLACE_4G) cliente = &clienteGsmTLS;
+#endif
+  if (cliente == NULL) return;
 
-  char auth[128];
-  snprintf(auth, sizeof(auth), "Bearer %s", DEVICE_TOKEN);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", auth);
-
-  esp_task_wdt_reset();
-  int codigo = http.POST((uint8_t*)payload, strlen(payload));
-  esp_task_wdt_reset();
+  const int codigo = postarHttps(*cliente, payload);
 
   if (codigo == 200) {
     enviosOk++;
     falhasSeguidas = 0;
-    Serial.printf("[envio] OK (%u bytes, %lu ok / %lu falhas)\n",
-                  (unsigned)strlen(payload), enviosOk, enviosFalha);
+    Serial.printf("[envio] OK por %s (%u bytes, %lu ok / %lu falhas)\n",
+                  nomeDoEnlace(enlaceAtual), (unsigned)strlen(payload),
+                  enviosOk, enviosFalha);
   } else if (codigo == 401) {
     // Nao adianta reconectar rede: o token e que esta errado. Dizer isso
     // evita horas procurando problema de sinal.
@@ -606,11 +700,10 @@ void enviarTelemetria() {
                    "Confira DEVICE_TOKEN no painel (Dispositivos).");
     enviosFalha++;
   } else {
-    Serial.printf("[envio] falhou: %d (%s)\n", codigo,
-                  http.errorToString(codigo).c_str());
+    Serial.printf("[envio] falhou por %s: %d (%s)\n",
+                  nomeDoEnlace(enlaceAtual), codigo, motivoDoErro(codigo));
     contabilizarFalha();
   }
-  http.end();
 }
 
 void contabilizarFalha() {
@@ -928,20 +1021,26 @@ bool redeConectada() {
 void configurarTLS() {
   // A raiz da Let's Encrypt e conferida no proprio ESP32: sem isto, qualquer
   // um no caminho poderia se passar pelo servidor e capturar o token.
-  clienteTLS.setCACert(CA_LETSENCRYPT);
-  clienteTLS.setTimeout(8000);
-#if TEM_4G
-  // ATENCAO, limitacao conhecida: no caminho 4G quem faz o TLS e o SIM7600,
-  // nao o ESP32, e a cadeia so seria conferida com o certificado raiz
-  // carregado NO MODEM (AT+CCERTDOWN). Este sketch nao faz isso. O trafego
-  // vai cifrado, mas sem autenticar o servidor -- um ataque no meio do
-  // enlace da operadora poderia capturar o DEVICE_TOKEN.
   //
-  // Com a troca automatica isso deixou de ser uma escolha permanente e virou
-  // uma janela: o gateway so fica exposto ENQUANTO estiver no 4G, e volta
-  // para o Wi-Fi (que confere a cadeia) assim que ele se firma. Esta anotado
-  // como pendencia no README.
-  Serial.println("[tls] 4G usa TLS do modem, SEM conferencia da cadeia (ver README).");
+  // A MESMA raiz nos dois enlaces. No 4G quem cifra tambem e o ESP32
+  // (SSLClient por cima do socket da TinyGSM), e nao o modem -- por isso a
+  // cadeia e conferida tambem la. Ate a versao anterior o caminho 4G nao
+  // autenticava o servidor; era a limitacao conhecida do README, e deixou
+  // de existir.
+  clienteTLS.setCACert(CA_LETSENCRYPT);
+  clienteTLS.setTimeout(8000);              // ms, no core 3.x
+  // O padrao do core para o handshake e 120 s. Somado ao resto de uma volta
+  // do loop, isso chega perto do watchdog de 180 s -- e um servidor que
+  // aceita o TCP mas nunca fecha o TLS derrubaria o gateway por panico, em
+  // ciclo. 30 s e folga larga ate para 4G ruim.
+  clienteTLS.setHandshakeTimeout(30);       // segundos
+#if TEM_4G
+  clienteGsmTLS.setCACert(CA_LETSENCRYPT);
+  clienteGsmTLS.setTimeout(8000);
+  // Em SEGUNDOS nesta biblioteca. O padrao dela e 120 s, o que passaria da
+  // folga do watchdog (180 s) somado ao resto do ciclo.
+  clienteGsmTLS.setHandshakeTimeout(30);
+  Serial.println("[tls] 4G: TLS feito pelo ESP32, com a cadeia conferida.");
 #endif
 }
 

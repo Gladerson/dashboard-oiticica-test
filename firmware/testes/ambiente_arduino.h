@@ -137,35 +137,103 @@ struct FalsoWiFi {
 };
 extern FalsoWiFi WiFi;
 
-// --- TLS / HTTP ------------------------------------------------------------
-struct WiFiClientSecure {
-  void setCACert(const char*) {}
-  void setTimeout(unsigned long) {}
+// --- Client: a interface do Arduino que os dois enlaces implementam --------
+// O gateway escreve o POST à mão sobre um `Client&`, então é AQUI que o teste
+// observa o que realmente sai na rede -- byte a byte, o que com o HTTPClient
+// no meio não era possível.
+struct Client {
+  virtual ~Client() {}
+  virtual int    connect(const char* host, uint16_t port) = 0;
+  virtual size_t write(const uint8_t* buf, size_t n) = 0;
+  virtual int    available() = 0;
+  virtual int    read() = 0;
+  virtual void   stop() = 0;
+  virtual uint8_t connected() = 0;
 };
-struct HTTPClient {
-  static int  proximoCodigo;       // o teste decide o que o servidor responde
-  static int  posts;
-  static std::string ultimoCorpo;
-  static std::string ultimaUrl;
 
-  void setConnectTimeout(unsigned long) {}
+/** Cliente de mentira, um por enlace. O teste diz se a conexão abre, o que o
+ *  servidor responde, e depois lê tudo o que foi escrito. */
+struct FalsoClienteTLS : public Client {
+  // Controlado pelo teste:
+  bool        conecta = true;        // connect() dá certo?
+  bool        escritaFalha = false;  // a conexão cai no meio do envio?
+  std::string resposta = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+  std::string ca;                    // qual CA foi configurada
+  unsigned long handshake_s = 0;
+
+  // Observado pelo teste:
+  int         conexoes = 0, stops = 0;
+  std::string enviado;               // cabeçalho + corpo, exatamente como foram
+  std::string ultimoHost;
+  uint16_t    ultimaPorta = 0;
+
+  size_t lido = 0;
+  bool   aberto = false;
+
+  void setCACert(const char* c) { ca = c ? c : ""; }
   void setTimeout(unsigned long) {}
-  void setReuse(bool) {}
-  bool begin(WiFiClientSecure&, const char* url) { ultimaUrl = url; return true; }
-  template <typename C>
-  bool begin(C&, const char*, int, const char* rota, bool) { ultimaUrl = rota; return true; }
-  void addHeader(const char*, const char*) {}
-  int  POST(uint8_t* corpo, size_t n) {
-    posts++;
-    ultimoCorpo.assign((const char*)corpo, n);
-    return proximoCodigo;
+  void setHandshakeTimeout(unsigned long s) { handshake_s = s; }
+
+  int connect(const char* host, uint16_t port) override {
+    conexoes++;
+    ultimoHost = host ? host : "";
+    ultimaPorta = port;
+    enviado.clear();
+    lido = 0;
+    aberto = conecta;
+    return conecta ? 1 : 0;
   }
-  void end() {}
-  std::string errorToString(int) { return "erro"; }
+  size_t write(const uint8_t* buf, size_t n) override {
+    if (!aberto) return 0;
+    if (escritaFalha) { aberto = false; return 0; }
+    enviado.append((const char*)buf, n);
+    return n;
+  }
+  int available() override {
+    return aberto ? (int)(resposta.size() - lido) : 0;
+  }
+  int read() override {
+    if (!aberto || lido >= resposta.size()) return -1;
+    return (unsigned char)resposta[lido++];
+  }
+  void stop() override { stops++; aberto = false; }
+  uint8_t connected() override {
+    return (aberto && lido < resposta.size()) ? 1 : 0;
+  }
+  void limpar() {
+    conexoes = stops = 0;
+    enviado.clear();
+    lido = 0;
+    aberto = false;
+    escritaFalha = false;
+    conecta = true;
+  }
 };
-// O sketch chama http.errorToString(codigo).c_str(): std::string já tem.
+
+using WiFiClientSecure = FalsoClienteTLS;
+
+// --- SSLClient (govorox): TLS por cima de um Client qualquer ---------------
+struct SSLClient : public FalsoClienteTLS {
+  Client* base = nullptr;
+  explicit SSLClient(Client* c) : base(c) {}
+};
 
 // --- TinyGSM ---------------------------------------------------------------
+// TinyGsmClient: o socket TCP puro do modem, sobre o qual o SSLClient roda.
+// O teste não o exercita direto -- quem escreve é o SSLClient --, mas ele
+// precisa existir para o sketch compilar igual ao de verdade.
+struct TinyGsm;
+struct TinyGsmClient : public Client {
+  TinyGsmClient() {}
+  template <typename M> explicit TinyGsmClient(M&) {}
+  int    connect(const char*, uint16_t) override { return 1; }
+  size_t write(const uint8_t*, size_t n) override { return n; }
+  int    available() override { return 0; }
+  int    read() override { return -1; }
+  void   stop() override {}
+  uint8_t connected() override { return 1; }
+};
+
 struct TinyGsm {
   explicit TinyGsm(HardwareSerial&) {}
   // Tudo controlado pelo teste.
@@ -194,9 +262,10 @@ struct TinyGsm {
     return responde && registrado;
   }
 };
-template <typename M>
-struct TinyGsmClientSecureT { explicit TinyGsmClientSecureT(M&) {} };
-#define TinyGsmClientSecure TinyGsmClientSecureT<TinyGsm>
+// NOTA: a TinyGSM de verdade NÃO define TinyGsmClientSecure para o SIM7600 --
+// só o TCP puro acima. Foi esse o erro de compilação que levou o gateway a
+// passar a usar SSLClient. O dublê reflete isso de propósito: se alguém
+// reintroduzir TinyGsmClientSecure no sketch, aqui também não compila.
 
 // --- relógio ---------------------------------------------------------------
 // time.h de verdade é incluído pelo sketch; só faltam estes dois.

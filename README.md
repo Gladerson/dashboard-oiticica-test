@@ -1655,6 +1655,60 @@ widget como qualquer outra:
 > a adivinhar — mas os nomes continuam escolhidos com cuidado, porque a
 > heurística ainda vale para firmware que não manda a lista.
 
+### HTTPS nos dois enlaces, e por que o POST é escrito à mão
+
+O gateway **não usa** o `HTTPClient` do núcleo do ESP32. A razão é dura e vale
+registrar, porque custou um erro de compilação em campo:
+
+1. **A TinyGSM não oferece `TinyGsmClientSecure` para o SIM7600.** O ramo
+   daquele modem no `TinyGsmClient.h` define **só** `TinyGsmClient`, o cliente
+   TCP puro — não há cliente TLS. O sketch declarava um mesmo assim, e como o
+   caminho 4G vivia dentro de um `#if` que ninguém compilava, o erro só
+   apareceu quando os dois enlaces passaram a ser compilados juntos.
+2. **`HTTPClient::begin()` exige um `NetworkClient&`** (o antigo
+   `WiFiClient&`), não um `Client&` qualquer. Um cliente TLS que roda por cima
+   do modem é um `Client` comum, e não há como passá-lo.
+
+A solução resolve os dois de uma vez:
+
+```text
+Wi-Fi:  WiFiClientSecure                          --> POST
+4G:     SSLClient  ->  TinyGsmClient  ->  modem   --> POST
+```
+
+Os dois são `Client`, então **o mesmo código escreve o POST nos dois casos**,
+com os mesmos prazos. Um POST é simples o bastante para não valer uma
+biblioteca: abrir, escrever cabeçalho e corpo, ler a linha de status,
+`Connection: close`. Do corpo da resposta só interessa o código.
+
+**Isso corrigiu uma limitação que estava anotada aqui.** Antes, o 4G era
+cifrado pelo próprio SIM7600, que não confere a cadeia sem o certificado raiz
+carregado no modem (`AT+CCERTDOWN`) — o tráfego ia cifrado, mas o servidor não
+era autenticado. Agora quem cifra é o **ESP32** também no 4G, com a **mesma
+CA** do Wi-Fi. A cadeia é conferida nos dois enlaces.
+
+Escrever o POST à mão trouxe um ganho de verificação: a suíte confere
+**byte a byte** o que sai na rede — linha de requisição, `Host`,
+`Authorization`, `Content-Length` batendo exatamente com o corpo,
+`Connection: close` — e exercita as respostas ruins, que antes ficavam
+escondidas dentro da biblioteca:
+
+| O servidor faz | O gateway diz |
+|---|---|
+| responde `401` | *token do dispositivo inválido* — e **não** derruba o enlace |
+| responde algo que não é HTTP | *a resposta não parece HTTP* |
+| aceita e nunca responde | *o servidor não respondeu a tempo* |
+| nem aceita a conexão | *não consegui abrir a conexão (TLS, DNS ou sinal)* |
+| cai no meio do envio | *a conexão caiu no meio do envio* |
+
+Nenhuma delas reinicia o gateway; todas contam como falha, e quatro seguidas
+derrubam o enlace para ele ser reconstruído.
+
+> **Prazo de handshake.** O padrão do núcleo é **120 s**. Somado ao resto de
+> uma volta do loop, isso chega perto do watchdog de 180 s — e um servidor que
+> aceita o TCP mas nunca fecha o TLS derrubaria o gateway por pânico, em
+> ciclo. Os dois clientes ficam em **30 s**, folga larga até para 4G ruim.
+
 ### Testar o firmware sem hardware
 
 O gateway tem uma suíte própria que roda **no PC**:
@@ -1669,10 +1723,11 @@ g++ -std=c++17 -Wall -Wextra -I firmware/libraries/HydroConecta \
 TinyGSM: o tempo é controlado (`_millis`), o Wi-Fi cai e volta quando o teste
 manda, e o modem responde ou fica mudo por decisão do teste. Com isso
 `gateway_lora.ino` compila num `g++` comum e a **troca de enlace é exercitada
-de verdade** — 51 verificações, incluindo a queda, a volta, a oscilação, o
-gateway sem modem, o reboot dos 30 minutos e o conteúdo do payload.
+de verdade** — 68 verificações, incluindo a queda, a volta, a oscilação, o
+gateway sem modem, o reboot dos 30 minutos, os bytes exatos do POST e cada
+tipo de resposta ruim do servidor.
 
-Foi essa suíte que pegou dois defeitos antes de irem a campo:
+Foi essa suíte que pegou três defeitos antes de irem a campo:
 
 - **o Wi-Fi nunca era iniciado.** `WiFi.mode(WIFI_STA)` e o primeiro
   `WiFi.begin()` tinham ficado de fora na reescrita, e a retentativa
@@ -1681,7 +1736,10 @@ Foi essa suíte que pegou dois defeitos antes de irem a campo:
 - **o contexto de dados voltava sozinho.** Ao retornar ao Wi-Fi, o modem ia
   para "registrando", que na volta seguinte do loop subia o contexto de novo.
   O gateway soltava os dados móveis e os retomava meio segundo depois, para
-  sempre. Foi daí que nasceu o estado `MODEM_REGISTRADO`.
+  sempre. Foi daí que nasceu o estado `MODEM_REGISTRADO`;
+- **o handshake TLS podia passar do watchdog.** O padrão do núcleo é 120 s;
+  com um servidor que aceita o TCP e nunca fecha o TLS, o gateway reiniciaria
+  por pânico, em ciclo.
 
 O que a suíte **não** testa: nada de hardware — rádio, TLS, HTTP, UART. Os
 dublês registram que foram chamados e devolvem o que o teste mandar. Continua
@@ -1766,13 +1824,6 @@ mudaram de casa junto com a regra: `server/testes/teste_sensores.py`.
 
 ### Limitações conhecidas
 
-- **TLS no caminho 4G não confere a cadeia.** Quem faz o TLS é o SIM7600, e
-  validar exigiria carregar o certificado raiz **no modem** (`AT+CCERTDOWN`),
-  o que este sketch não faz. O tráfego vai cifrado, mas o servidor não é
-  autenticado: um ataque no meio do enlace da operadora poderia capturar o
-  `DEVICE_TOKEN`. **No Wi-Fi a cadeia é conferida normalmente.** Com a troca
-  automática isso deixou de ser uma escolha permanente e virou uma **janela**:
-  o gateway só fica exposto enquanto o Wi-Fi estiver fora.
 - **Telemetria produzida offline é perdida.** O servidor carimba a hora na
   chegada (`gravar_telemetria` em `server/db.py`), então reenviar amostras
   antigas as gravaria com a hora errada — pior que perdê-las. Bufferizar exige
@@ -1788,7 +1839,7 @@ mudaram de casa junto com a regra: `server/testes/teste_sensores.py`.
 - **Os firmwares não foram gravados em hardware** neste ambiente (não há
   toolchain Arduino nem os equipamentos). O que **foi** testado de verdade:
   os cabeçalhos compartilhados e o **gateway inteiro** com `g++`, incluindo a
-  troca de enlace (51 verificações), e o payload real enviado ao servidor
+  troca de enlace (68 verificações), e o payload real enviado ao servidor
   real, conferindo a separação em `sub_id`/chave no banco. O que não foi:
   rádio, TLS, HTTP e UART de verdade.
 
@@ -2687,9 +2738,8 @@ Pontos de atenção:
   `db.limpar_telemetria_antiga(dias)` existe mas ainda **não é chamada por
   ninguém**. Falta agendar (cron ou tarefa no startup) antes de produção.
 - **Firmware ESP32**: reescrito para HTTPS em `firmware/` (§9-sexies). Pendências
-  daquele conjunto: TLS do caminho 4G não confere a cadeia (falta carregar a CA
-  no SIM7600), telemetria produzida offline é perdida (o servidor carimba a hora
-  na chegada) e o volume é interpolação linear, não curva cota × volume.
+  daquele conjunto: telemetria produzida offline é perdida (o servidor carimba
+  a hora na chegada) e o volume é interpolação linear, não curva cota × volume.
 - **HTTPS**: o passo a passo está em §17-bis. Enquanto não estiver feito, o
   token dos dispositivos e o cookie de sessão trafegam em claro. Quando
   estiver, o **modo LAN deixa de valer** (conteúdo misto — ver §17-bis).

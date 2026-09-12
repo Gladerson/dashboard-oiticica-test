@@ -62,9 +62,21 @@ Depois: **Arquivo → Sketchbook → gateway_lora** (ou `sensor_nivel`).
 Placa: **ESP32 Dev Module**. Core: **ESP32 Arduino 3.x**
 (*Ferramentas → Placa → Gerenciador de placas* → `esp32` da Espressif).
 
-Biblioteca externa: **TinyGSM** — só o gateway, e agora **sempre**: os dois
-enlaces são compilados juntos. Só desligando `TEM_4G` ela deixa de ser
-necessária.
+Bibliotecas externas (só o gateway, e ambas **sempre**, porque os dois
+enlaces são compilados juntos — só desligando `TEM_4G` elas deixam de ser
+necessárias):
+
+| No Gerenciador de Bibliotecas, procure por | Para quê |
+|---|---|
+| **TinyGSM** | falar com o modem SIM7600 |
+| **GovoroxSSLClient** | fazer o TLS por cima do socket do modem |
+
+A segunda existe por um motivo concreto: **a TinyGSM não oferece
+`TinyGsmClientSecure` para o SIM7600** — só o cliente TCP puro (dá para
+conferir no `TinyGsmClient.h` dela: o ramo do SIM7600 define apenas
+`TinyGsmClient`). Sem ela, o token do dispositivo trafegaria em claro pelo
+enlace da operadora. Com ela, quem cifra é o próprio ESP32, com a mesma CA do
+caminho Wi-Fi.
 
 ## Rodar os testes
 
@@ -109,11 +121,12 @@ g++ -std=c++17 -Wall -Wextra -I firmware/libraries/HydroConecta \
     firmware/testes/teste_gateway.cpp -o /tmp/tg && /tmp/tg
 ```
 
-`testes/ambiente_arduino.h` faz o papel do Arduino, do ESP32 e da TinyGSM: o
-tempo é controlado, o Wi-Fi cai quando o teste manda e o modem responde ou
-fica mudo por decisão do teste. É assim que a troca de enlace é exercitada
-sem subir numa torre. Se mexer na rede do gateway, **rode isto antes de
-gravar**.
+`testes/ambiente_arduino.h` faz o papel do Arduino, do ESP32, da TinyGSM e da
+SSLClient: o tempo é controlado, o Wi-Fi cai quando o teste manda, o modem
+responde ou fica mudo, e o "servidor" devolve o que o teste mandar. É assim
+que a troca de enlace e o POST são exercitados sem subir numa torre — a suíte
+confere até os bytes exatos da requisição HTTP. Se mexer na rede ou no envio
+do gateway, **rode isto antes de gravar**.
 
 ## Antes de gravar
 

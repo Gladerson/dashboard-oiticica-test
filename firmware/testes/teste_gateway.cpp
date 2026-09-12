@@ -22,10 +22,6 @@ int _restarts = 0;
 FalsaSerial Serial;
 FalsoWiFi WiFi;
 FalsoESP ESP;
-int HTTPClient::proximoCodigo = 200;
-int HTTPClient::posts = 0;
-std::string HTTPClient::ultimoCorpo;
-std::string HTTPClient::ultimaUrl;
 
 #include "../gateway_lora/gateway_lora.ino"
 
@@ -71,9 +67,10 @@ static void zerar() {
   enviosOk = enviosFalha = 0;
   ultimoEnvio = 0;
   rebootCount = 0;
-  HTTPClient::posts = 0;
-  HTTPClient::proximoCodigo = 200;
-  HTTPClient::ultimoCorpo.clear();
+  clienteTLS.limpar();
+  clienteTLS.resposta = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+  clienteGsmTLS.limpar();
+  clienteGsmTLS.resposta = clienteTLS.resposta;
   for (int i = 0; i < NUM_EQUIPAMENTOS; i++) {
     estados[i] = EstadoEquipamento{};
   }
@@ -159,25 +156,103 @@ int main() {
   estados[0].sensor_ok = true;
   estados[0].valor_bruto = 12.5f;
   estados[0].visto_em = _millis;
-  HTTPClient::posts = 0;
   rodar(20000);
-  cheque(HTTPClient::posts >= 1, "houve POST no Wi-Fi");
-  cheque(HTTPClient::ultimaUrl.find("https://") == 0,
-         "no Wi-Fi a URL completa é usada (TLS do ESP32)");
-  const std::string corpoWifi = HTTPClient::ultimoCorpo;
+  cheque(clienteTLS.conexoes >= 1, "houve POST pelo cliente do Wi-Fi");
+  cheque(clienteGsmTLS.conexoes == 0, "e nenhum pelo cliente do 4G");
+  cheque(clienteTLS.ultimoHost == std::string(SERVIDOR_HOST) &&
+         clienteTLS.ultimaPorta == SERVIDOR_PORTA,
+         "conectou no host e na porta certos");
+  const std::string reqWifi = clienteTLS.enviado;
+  const size_t corpoEm = reqWifi.find("\r\n\r\n");
+  const std::string corpoWifi =
+      corpoEm == std::string::npos ? "" : reqWifi.substr(corpoEm + 4);
   cheque(corpoWifi.find("\"enlace\":\"wifi\"") != std::string::npos,
          "o payload informa o enlace em uso");
 
+  printf("\n== O POST escrito a mao esta correto ==\n");
+  cheque(reqWifi.find("POST /api/edge/dados HTTP/1.1\r\n") == 0,
+         "linha de requisicao");
+  cheque(reqWifi.find("\r\nHost: hydroconecta.com.br\r\n") != std::string::npos,
+         "cabecalho Host (o TLS e o virtual host dependem dele)");
+  cheque(reqWifi.find("\r\nAuthorization: Bearer ") != std::string::npos,
+         "o token vai no Authorization");
+  cheque(reqWifi.find("\r\nContent-Type: application/json\r\n") != std::string::npos,
+         "Content-Type");
+  cheque(reqWifi.find("\r\nConnection: close\r\n") != std::string::npos,
+         "Connection: close -- nenhum socket fica pendurado entre ciclos");
+  char esperado[64];
+  snprintf(esperado, sizeof(esperado), "\r\nContent-Length: %u\r\n",
+           (unsigned)corpoWifi.size());
+  cheque(reqWifi.find(esperado) != std::string::npos,
+         "Content-Length bate EXATAMENTE com o corpo enviado");
+  cheque(clienteTLS.stops >= 1, "a conexao e fechada ao fim de cada envio");
+  cheque(clienteTLS.ca.find("BEGIN CERTIFICATE") != std::string::npos,
+         "a CA da Let's Encrypt foi configurada no cliente do Wi-Fi");
+  cheque(clienteGsmTLS.ca == clienteTLS.ca,
+         "e a MESMA CA no cliente do 4G (a cadeia e conferida nos dois)");
+  cheque(clienteGsmTLS.handshake_s > 0 && clienteGsmTLS.handshake_s < 180,
+         "o handshake do 4G tem prazo menor que o watchdog");
+  cheque(clienteTLS.handshake_s > 0 && clienteTLS.handshake_s < 180,
+         "o do Wi-Fi tambem (o padrao do core seria 120 s)");
+
+  printf("\n== Depois de cair para o 4G, quem envia e o outro cliente ==\n");
   WiFi.ap_disponivel = false; WiFi.cair();
   rodar(60000);
   cheque(enlaceAtual == ENLACE_4G, "caiu para o 4G");
-  estados[0].visto_em = _millis;          // mantém o sensor "on"
-  HTTPClient::ultimaUrl.clear();
+  estados[0].visto_em = _millis;          // mantem o sensor "on"
+  clienteGsmTLS.limpar();
   rodar(20000);
-  cheque(HTTPClient::ultimaUrl == "/api/edge/dados",
-         "no 4G o begin() usa host/porta/rota separados (TLS do modem)");
-  cheque(HTTPClient::ultimoCorpo.find("\"enlace\":\"4g\"") != std::string::npos,
+  cheque(clienteGsmTLS.conexoes >= 1, "agora o POST sai pelo cliente do 4G");
+  cheque(clienteGsmTLS.enviado.find("\"enlace\":\"4g\"") != std::string::npos,
          "e o payload passa a informar 4g");
+  cheque(clienteGsmTLS.base == &clienteGsm,
+         "o TLS do 4G roda por cima do socket da TinyGSM");
+
+  printf("\n== Respostas que nao sao 200 ==\n");
+  zerar();
+  estados[0].online = true; estados[0].sensor_ok = true;
+  estados[0].valor_bruto = 9.0f; estados[0].visto_em = _millis;
+
+  clienteTLS.resposta = "HTTP/1.1 401 Unauthorized\r\n\r\n";
+  const int discAntes = WiFi.disconnects;
+  rodar(40000);
+  cheque(Serial.disse("token do dispositivo invalido"),
+         "401 aponta o token, nao o sinal");
+  cheque(WiFi.disconnects == discAntes,
+         "e o enlace NAO e derrubado (reconectar nao conserta token errado)");
+
+  Serial.limpar();
+  clienteTLS.resposta = "nao sou HTTP\r\n";
+  clienteTLS.lido = 0;
+  rodar(20000);
+  cheque(Serial.disse("nao parece HTTP"),
+         "resposta que nao e HTTP e diagnosticada como tal");
+
+  Serial.limpar();
+  clienteTLS.resposta = "";      // conecta, escreve, e o servidor cala
+  clienteTLS.lido = 0;
+  rodar(20000);
+  cheque(Serial.disse("nao respondeu a tempo"),
+         "servidor mudo vira 'nao respondeu a tempo', nao um numero inventado");
+
+  Serial.limpar();
+  clienteTLS.conecta = false;    // nem abre
+  rodar(20000);
+  cheque(Serial.disse("nao consegui abrir a conexao"),
+         "falha de conexao e dita com todas as letras");
+  cheque(_restarts == 0, "e nada disso reinicia o gateway");
+  clienteTLS.conecta = true;
+  clienteTLS.resposta = "HTTP/1.1 200 OK\r\n\r\n";
+
+  printf("\n== A conexao cai no meio do envio ==\n");
+  zerar();
+  estados[0].online = true; estados[0].sensor_ok = true;
+  estados[0].valor_bruto = 9.0f; estados[0].visto_em = _millis;
+  clienteTLS.escritaFalha = true;
+  rodar(20000);
+  cheque(Serial.disse("caiu no meio do envio"), "a queda no meio do POST e dita");
+  cheque(clienteTLS.stops >= 1, "e a conexao e fechada mesmo assim");
+  clienteTLS.escritaFalha = false;
 
   printf("\n== Payload: só a medida bruta, sem cota nem volume ==\n");
   cheque(corpoWifi.find("\"distancia\":12.500") != std::string::npos,
@@ -218,27 +293,15 @@ int main() {
 
   printf("\n== Falhas seguidas derrubam o enlace para reconstruir ==\n");
   zerar();
-  HTTPClient::proximoCodigo = 500;
+  clienteTLS.resposta = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
   estados[0].online = true; estados[0].sensor_ok = true;
   estados[0].valor_bruto = 9.0f; estados[0].visto_em = _millis;
   const int beginsAntes = WiFi.begins;
-  rodar(80000);                            // várias tentativas de envio
-  cheque(enviosFalha > 0, "as falhas são contadas");
+  rodar(80000);                            // varias tentativas de envio
+  cheque(enviosFalha > 0, "as falhas sao contadas");
   cheque(WiFi.begins > beginsAntes,
-         "depois de N falhas seguidas o Wi-Fi é refeito");
-  cheque(_restarts == 0, "mas não se reinicia por falha de POST");
-
-  printf("\n== 401 é diagnosticado como token, não como rede ==\n");
-  zerar();
-  HTTPClient::proximoCodigo = 401;
-  estados[0].online = true; estados[0].sensor_ok = true;
-  estados[0].valor_bruto = 9.0f; estados[0].visto_em = _millis;
-  const int disc = WiFi.disconnects;
-  rodar(80000);
-  cheque(Serial.disse("token do dispositivo invalido"),
-         "o log aponta o token, não o sinal");
-  cheque(WiFi.disconnects == disc,
-         "e o enlace NÃO é derrubado (reconectar não conserta token errado)");
+         "depois de N falhas seguidas o Wi-Fi e refeito");
+  cheque(_restarts == 0, "mas nao se reinicia por falha de POST");
 
   printf("\n== LoRa: pacote válido vira estado e ACK ==\n");
   zerar();
@@ -266,9 +329,9 @@ int main() {
   estados[0].visto_em = _millis;
   rodar(90000);
   cheque(!estados[0].online, "passado o timeout, o equipamento é marcado off");
-  cheque(HTTPClient::ultimoCorpo.find("\"status\":\"off\"") != std::string::npos,
+  cheque(clienteTLS.enviado.find("\"status\":\"off\"") != std::string::npos,
          "e o payload diz off, em vez de repetir a última medida");
-  cheque(HTTPClient::ultimoCorpo.find("distancia") == std::string::npos,
+  cheque(clienteTLS.enviado.find("distancia") == std::string::npos,
          "sem medida válida, nenhuma distância é publicada");
 
   printf("\n== O watchdog é alimentado em todo caminho ==\n");
