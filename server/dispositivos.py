@@ -200,6 +200,26 @@ def _localidade_publica(l):
 TIPOS_DISPOSITIVO = ("camera", "sensor", "gateway")
 
 
+def _limpar_catalogo_do_sensor(linha):
+    """Quando um sensor passa a falar por um gateway, as medidas daquele
+    sub_id deixam de ser gravadas no gateway. O catalogo dele precisa
+    acompanhar -- senao o seletor de widgets do gateway continuaria
+    oferecendo `cota_atual`, `volume_m3` e companhia, que nunca mais
+    atualizariam.
+
+    So o catalogo: a serie historica fica intacta.
+
+    Arrumacao, nao funcionamento: falhar aqui nao pode impedir o cadastro de
+    ser salvo."""
+    if linha is None or not linha.get("gateway_id") or not (linha.get("sub_id") or ""):
+        return
+    try:
+        db.limpar_catalogo_do_gateway(str(linha["gateway_id"]), linha["sub_id"],
+                                      sensores.CHAVES_DO_ENLACE)
+    except Exception as e:
+        print(f"[dispositivos] nao consegui arrumar o catalogo do gateway: {e}")
+
+
 def _validar_sensor(campos, tipo_final):
     """Normaliza e confere os campos de sensor. Devolve a mensagem de erro,
     ou None quando esta tudo certo.
@@ -256,15 +276,35 @@ DISPOSITIVO_OFFLINE_S = int(os.getenv("DISPOSITIVO_OFFLINE_S", "180"))
 
 
 def _presenca(d):
-    """(online, segundos_desde_o_ultimo_contato) deste dispositivo.
+    """(estado, segundos_desde_o_ultimo_contato) deste dispositivo.
 
-    online = False quando ele nunca falou -- e a resposta honesta para um
-    cadastro recem-criado cujo equipamento ainda nao foi ligado."""
+    O estado tem TRES valores, nao dois:
+
+      'online'   esta falando, e sem problema;
+      'erro'     esta falando, mas o instrumento dele falhou;
+      'offline'  nao esta falando (ou nunca falou).
+
+    Para um sensor atras de um gateway, quem responde por ele e o gateway --
+    o sensor nunca abre conexao com o servidor. Entao valem as duas coisas
+    juntas: `visto_em` diz se o gateway falou dele ha pouco, e
+    `estado_reportado` diz o que ele falou. Um estado 'on' de tres dias atras
+    nao significa que o sensor esta medindo, e por isso o silencio vence.
+
+    'offline' tambem e a resposta honesta para um cadastro recem-criado cujo
+    equipamento ainda nao foi ligado."""
     visto = d.get("visto_em")
     if visto is None:
-        return False, None
+        return "offline", None
     idade = (datetime.now(timezone.utc) - visto).total_seconds()
-    return idade <= DISPOSITIVO_OFFLINE_S, round(idade, 1)
+    if idade > DISPOSITIVO_OFFLINE_S:
+        return "offline", round(idade, 1)
+    reportado = (d.get("estado_reportado") or "").strip().lower()
+    if reportado == "off":
+        # O gateway falou, e falou que o controlador esta mudo.
+        return "offline", round(idade, 1)
+    if reportado == "erro":
+        return "erro", round(idade, 1)
+    return "online", round(idade, 1)
 
 
 def motivo_sem_3d(d):
@@ -296,7 +336,7 @@ def motivo_sem_3d(d):
 
 
 def _dispositivo_publico(d):
-    online, silencio = _presenca(d)
+    estado, silencio = _presenca(d)
     return {
         "id": str(d["id"]), "entity_id": d["entity_id"], "entity_type": d["entity_type"],
         "nome": d["nome"], "proprietario": d["proprietario"],
@@ -316,7 +356,10 @@ def _dispositivo_publico(d):
         "sub_id": d.get("sub_id") or "",
         "avisos_sensor": sensores.conferir(d.get("subtipo"), d.get("config_sensor")),
         "visto_em": d["visto_em"].isoformat() if d.get("visto_em") else None,
-        "online": online,
+        # 'online' continua existindo e continua booleano: e o que as telas
+        # usam para "esta respondendo?". 'estado' refina isso em tres.
+        "online": estado != "offline",
+        "estado": estado,
         "silencio_s": silencio,
         "offline_apos_s": DISPOSITIVO_OFFLINE_S,
     }
@@ -638,7 +681,9 @@ def instalar(app):
             return JSONResponse({"error": f"não consegui criar: {e}"}, status_code=400)
         # Rele com a localidade junto: e o que motivo_sem_3d precisa para
         # dizer, ja na resposta da criacao, se a visao 3D vai funcionar.
-        return _dispositivo_publico(db.dispositivo_por_id_com_localidade(novo["id"]))
+        completo = db.dispositivo_por_id_com_localidade(novo["id"])
+        _limpar_catalogo_do_sensor(completo)
+        return _dispositivo_publico(completo)
 
     @app.patch("/api/dispositivos/{dispositivo_id}")
     def editar_dispositivo(dispositivo_id: str, payload: DispositivoEdicaoPayload,
@@ -696,6 +741,7 @@ def instalar(app):
         # a pose da camera e o GeoModel da localidade antiga): descarta pra
         # ser remontado com o cadastro novo no proximo acesso.
         registro.recarregar(dispositivo_id)
+        _limpar_catalogo_do_sensor(atualizado)
         return _dispositivo_publico(atualizado)
 
     @app.delete("/api/dispositivos/{dispositivo_id}")

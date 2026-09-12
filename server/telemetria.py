@@ -149,50 +149,118 @@ def separar(valores, e_gateway, sub_ids_conhecidos=(), explicitos=None):
 
 
 # ============================================================================
-# Derivacao: de UMA medida bruta para as grandezas do operador
+# Roteamento: de quem e cada telemetria que chegou
 # ============================================================================
-def derivar_amostras(dispositivo_id, amostras):
-    """Telemetrias CALCULADAS a acrescentar as que chegaram.
+# Chaves que o gateway produz SOBRE O ENLACE com um controlador. A lista mora
+# em sensores.py porque o cadastro tambem precisa dela (ver
+# _limpar_catalogo_do_sensor em dispositivos.py).
+CHAVES_DO_ENLACE = sensores.CHAVES_DO_ENLACE
 
-    Antes quem fazia estas contas era o firmware do gateway. Passaram para ca
-    porque recalibrar um reservatorio nao pode exigir regravar um ESP32 a
-    centenas de quilometros -- ver server/sensores.py.
+# O que o gateway diz sobre um equipamento silencioso/com problema. Sao os
+# mesmos tres valores que o firmware publica (ver montarEquipamento()).
+ESTADOS_REPORTADOS = ("on", "erro", "off")
 
-    As derivadas sao gravadas no MESMO endereco da medida bruta (mesmo
-    dispositivo, mesmo sub_id), e nao num dispositivo separado. Assim os
-    widgets e alarmes ja configurados continuam apontando para onde sempre
-    apontaram: quem via `nivel-rd01 / cota_atual` continua vendo.
+# Tipos de widget aceitos. Tem de bater com o CHECK da tabela `widgets`
+# (server/db.py) e com o seletor da tela de Telemetrias.
+TIPOS_WIDGET = ("area", "barras", "card", "radial", "status", "alarmes",
+                "equipamentos")
 
-    Falha aqui nunca derruba a ingestao: a medida bruta ja esta a salvo, e
-    perder uma derivada e menos grave que recusar a mensagem inteira."""
+
+def distribuir_amostras(dispositivo_id, amostras):
+    """Para onde vai cada telemetria desta mensagem, e o que dizer de cada
+    equipamento remoto.
+
+    Um gateway fala POR outros equipamentos, e ate aqui TUDO era gravado sob
+    o cadastro dele. O sensor cadastrado nunca recebia nada: ficava
+    eternamente offline no painel, e os widgets dele ficavam vazios enquanto
+    as medidas apareciam no gateway -- que e justamente onde elas nao deviam
+    estar.
+
+    Agora cada coisa vai para o seu dono:
+
+      * o que o gateway diz de SI (enlace, sinal, uptime, envios) fica no
+        gateway, em sub_id vazio;
+      * o que ele diz sobre o ENLACE com um controlador (status, pacotes)
+        tambem fica no gateway, sob o sub_id daquele controlador -- e
+        informacao do gateway, nao do instrumento;
+      * a MEDIDA bruta e tudo que se deriva dela vao para o cadastro do
+        SENSOR, em sub_id vazio: la dentro ele e o proprio dispositivo.
+
+    Um sub_id sem sensor cadastrado continua inteiro no gateway, como sempre
+    foi. Ninguem perde dado por nao ter cadastrado o equipamento.
+
+    Devolve (por_dispositivo, estados):
+      por_dispositivo  {device_id: [(sub_id, chave, num, txt), ...]}
+      estados          {device_id do sensor: 'on' | 'erro' | 'off'}
+
+    Falha aqui nunca derruba a ingestao: sem o cadastro, tudo cai no gateway
+    -- que e exatamente o comportamento da versao anterior."""
     try:
         configurados = db.sensores_de(dispositivo_id)
     except Exception as e:
         print(f"[telemetria] nao consegui ler os sensores de {dispositivo_id}: {e}")
-        return []
-    if not configurados:
-        return []
+        return {dispositivo_id: list(amostras)}, {}
 
-    # O que chegou, agrupado por equipamento. O valor numerico manda; texto
+    # sub_id -> cadastro do sensor que responde por ele
+    por_sub_cadastro = {c["sub_id"]: c for c in configurados
+                        if c["sub_id"] and not c["proprio"]}
+    proprio = next((c for c in configurados if c["proprio"]), None)
+
+    # O que chegou, agrupado por equipamento. O valor numerico manda; o texto
     # so quando nao ha numero (um "status": "on" nao serve de medida).
     por_sub = {}
     for sub_id, chave, num, txt in amostras:
         por_sub.setdefault(sub_id, {})[chave] = num if num is not None else txt
 
-    extras = []
-    for cfg in configurados:
-        valores = por_sub.get(cfg["sub_id"])
-        if not valores:
+    por_dispositivo = {dispositivo_id: []}
+    estados = {}
+
+    for sub_id, chave, num, txt in amostras:
+        cad = por_sub_cadastro.get(sub_id)
+        if cad is None or chave in CHAVES_DO_ENLACE:
+            por_dispositivo[dispositivo_id].append((sub_id, chave, num, txt))
             continue
-        for chave, valor in sensores.derivar(cfg["subtipo"], cfg["config"], valores):
-            if valor is None:
-                continue
-            if isinstance(valor, bool):
-                extras.append((cfg["sub_id"], chave, 1.0 if valor else 0.0,
-                               "true" if valor else "false"))
-            else:
-                extras.append((cfg["sub_id"], chave, float(valor), None))
-    return extras
+        por_dispositivo.setdefault(cad["id"], []).append(("", chave, num, txt))
+
+    # Estado de cada equipamento remoto, e as derivadas dele.
+    for sub_id, cad in por_sub_cadastro.items():
+        valores = por_sub.get(sub_id)
+        if valores is None:
+            continue     # o gateway nao falou deste equipamento nesta mensagem
+        bruto = str(valores.get("status", "")).strip().lower()
+        estados[cad["id"]] = bruto if bruto in ESTADOS_REPORTADOS else "on"
+        for amostra in _derivadas(cad, valores):
+            por_dispositivo.setdefault(cad["id"], []).append(amostra)
+
+    # Sensor que fala sozinho: nao ha para onde rotear, so derivar.
+    if proprio is not None:
+        for amostra in _derivadas(proprio, por_sub.get("", {})):
+            por_dispositivo[dispositivo_id].append(amostra)
+
+    return por_dispositivo, estados
+
+
+def _derivadas(cadastro, valores):
+    """As telemetrias CALCULADAS a partir da medida bruta, ja no formato de
+    amostra e sempre em sub_id vazio (dentro do cadastro do sensor, ele e o
+    proprio dispositivo).
+
+    Antes quem fazia estas contas era o firmware do gateway. Passaram para ca
+    porque recalibrar um reservatorio nao pode exigir regravar um ESP32 a
+    centenas de quilometros -- ver server/sensores.py."""
+    if not valores:
+        return []
+    saida = []
+    for chave, valor in sensores.derivar(cadastro["subtipo"],
+                                         cadastro["config"], valores):
+        if valor is None:
+            continue
+        if isinstance(valor, bool):
+            saida.append(("", chave, 1.0 if valor else 0.0,
+                          "true" if valor else "false"))
+        else:
+            saida.append(("", chave, float(valor), None))
+    return saida
 
 
 # ============================================================================
@@ -279,9 +347,40 @@ class AlarmeEdicaoPayload(BaseModel):
     ativo: bool | None = None
 
 
+def limpar_catalogos_migrados():
+    """Tira do catalogo dos gateways as medidas que agora sao dos sensores.
+
+    Roda uma vez, na subida. Sem isto, quem ja usava a versao anterior abriria
+    o seletor de widgets do gateway e continuaria vendo `cota_atual`,
+    `volume_m3` e companhia -- chaves que deixaram de ser gravadas ali e nunca
+    mais atualizariam. A serie historica nao e tocada: ela e o registro do que
+    aconteceu na barragem.
+
+    Uma falha aqui nao pode impedir o servidor de subir: e arrumacao, nao
+    funcionamento."""
+    try:
+        ligados = db.sensores_com_gateway()
+    except Exception as e:
+        print(f"[telemetria] nao consegui conferir os catalogos: {e}")
+        return
+    total = 0
+    for l in ligados:
+        try:
+            total += db.limpar_catalogo_do_gateway(
+                str(l["gateway_id"]), l["sub_id"], CHAVES_DO_ENLACE)
+        except Exception as e:
+            print(f"[telemetria] catalogo de {l['gateway_id']}/{l['sub_id']}: {e}")
+    if total:
+        print(f">> Catalogo: {total} chave(s) movidas do gateway para o sensor.")
+
+
 def instalar(app, manager=None):
     global ctx_manager
     ctx_manager = manager
+
+    @app.on_event("startup")
+    def _arrumar_catalogos():
+        limpar_catalogos_migrados()
 
     @app.get("/monitoramento")
     def pagina_monitoramento():
@@ -334,24 +433,58 @@ def instalar(app, manager=None):
 
         amostras = separar(valores, e_gateway, conhecidos, explicitos)
         amostras = [a for a in amostras if a[1]]      # descarta chave vazia
-        # As derivadas entram ANTES da gravacao, para irem no mesmo INSERT e
-        # com o mesmo carimbo de hora da medida que as originou. Gravar em
-        # dois momentos deixaria a cota e a distancia com instantes
-        # diferentes, e um grafico das duas juntas ficaria em degrau.
-        amostras += derivar_amostras(device.id, amostras)
-        db.gravar_telemetria(device.id, amostras)
+
+        # Cada telemetria vai para o cadastro do seu dono, e as derivadas
+        # entram na MESMA gravacao -- com o mesmo carimbo de hora da medida
+        # que as originou. Gravar em dois momentos deixaria a cota e a
+        # distancia com instantes diferentes, e um grafico das duas juntas
+        # ficaria em degrau.
+        por_dispositivo, estados = distribuir_amostras(device.id, amostras)
+        gravadas = 0
+        for alvo, lote in por_dispositivo.items():
+            if not lote:
+                continue
+            db.gravar_telemetria(alvo, lote)
+            gravadas += len(lote)
         rd.marcar_visto(device)
 
-        eventos = avaliar_alarmes(device.id, amostras)
+        # Presenca de cada equipamento remoto. Um sensor atras de um gateway
+        # nunca abre conexao com o servidor: quem diz que ele esta vivo -- ou
+        # que esta mudo, ou com defeito -- e o gateway, e e este carimbo que
+        # tira o sensor do "eternamente offline".
+        for alvo, estado in estados.items():
+            try:
+                db.marcar_estado_sensor(alvo, estado)
+            except Exception as e:
+                print(f"[telemetria] nao consegui carimbar o sensor {alvo}: {e}")
+
+        # Alarmes por DISPOSITIVO: uma regra criada no cadastro do sensor tem
+        # de ser avaliada contra as amostras dele, nao contra as do gateway.
+        eventos = []
+        for alvo, lote in por_dispositivo.items():
+            if not lote:
+                continue
+            for ev in avaliar_alarmes(alvo, lote):
+                ev["device_id"] = alvo
+                eventos.append(ev)
+
         if ctx_manager is not None:
-            await ctx_manager.broadcast({"type": "telemetria",
-                                         "device_id": device.id,
-                                         "amostras": len(amostras)})
+            for alvo in por_dispositivo:
+                if por_dispositivo[alvo]:
+                    await ctx_manager.broadcast({"type": "telemetria",
+                                                 "device_id": alvo,
+                                                 "amostras": len(por_dispositivo[alvo])})
             for ev in eventos:
+                alvo = ev["device_id"]
+                nome = device.nome
+                if alvo != device.id:
+                    linha = db.dispositivo_por_id(alvo)
+                    if linha is not None:
+                        nome = linha["nome"]
                 await ctx_manager.broadcast({
                     "type": "alarme",
-                    "device_id": device.id,
-                    "dispositivo_nome": device.nome,
+                    "device_id": alvo,
+                    "dispositivo_nome": nome,
                     "titulo": ev["titulo"] or ev["chave"],
                     "sub_id": ev["sub_id"],
                     "chave": ev["chave"],
@@ -360,7 +493,7 @@ def instalar(app, manager=None):
                     "severidade": ev["severidade"],
                 })
 
-        return {"status": "ok", "gravadas": len(amostras),
+        return {"status": "ok", "gravadas": gravadas,
                 "alarmes": len(eventos),
                 "estado": device.estado.snapshot()}
 
@@ -422,7 +555,7 @@ def instalar(app, manager=None):
         _, erro = _dispositivo(p.device_id, usuario)
         if erro:
             return erro
-        if p.tipo not in ("area", "barras", "card", "radial", "status", "alarmes"):
+        if p.tipo not in TIPOS_WIDGET:
             return JSONResponse({"error": f"tipo de widget inválido: {p.tipo}"},
                                 status_code=400)
         w = db.criar_widget(p.device_id, p.tipo, p.titulo, p.sub_id,

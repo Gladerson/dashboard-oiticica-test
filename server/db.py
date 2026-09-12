@@ -182,6 +182,27 @@ ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS gateway_id UUID REFERENCES dis
 ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS sub_id TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS ix_dispositivos_gateway ON dispositivos(gateway_id);
 
+-- Ultimo estado que o GATEWAY reportou sobre este equipamento remoto:
+-- 'on' (medindo), 'erro' (o controlador fala, mas o sensor fisico falhou) ou
+-- 'off' (o controlador nao fala). Um sensor atras de um gateway nunca abre
+-- conexao com o servidor -- quem sabe se ele esta vivo e o gateway.
+--
+-- Sem esta coluna, um sensor cadastrado ficava eternamente offline no painel:
+-- a telemetria dele chegava com o token do GATEWAY, entao o visto_em do
+-- sensor nunca era carimbado.
+ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS estado_reportado TEXT;
+
+-- Widget novo: 'equipamentos' -- a lista dos equipamentos remotos de um
+-- gateway, com o status de cada um. Nao escolhe telemetria nenhuma (como o
+-- widget 'alarmes'), porque a pergunta que ele responde e "quais controladores
+-- estao falando com este gateway, e como".
+--
+-- DROP + ADD porque um CHECK nao se estende: quem ja tem o banco criado ficou
+-- com a lista antiga gravada na constraint.
+ALTER TABLE widgets DROP CONSTRAINT IF EXISTS widgets_tipo_check;
+ALTER TABLE widgets ADD CONSTRAINT widgets_tipo_check
+    CHECK (tipo IN ('area','barras','card','radial','status','alarmes','equipamentos'));
+
 -- Serie historica. sub_id = '' quer dizer "o proprio dispositivo" (sensor
 -- direto); num gateway e o identificador do equipamento remoto
 -- ("nivel-rd01"). Guardamos numero E texto porque o gateway manda os dois
@@ -620,25 +641,79 @@ def sensores_de(dispositivo_id):
     Para um gateway sao os equipamentos remotos dele, cada um com o seu
     `sub_id`. Para um sensor que fala sozinho e ele proprio, com sub_id ''.
 
-    Devolve so o que a derivacao precisa -- e uma consulta no caminho quente
-    da ingestao, e trazer a linha inteira do dispositivo seria desperdicio."""
+    Traz TODOS os sensores ligados ao gateway, mesmo sem subtipo: um sensor
+    sem calibracao nao deriva nada, mas as medidas dele ainda precisam ser
+    roteadas para o cadastro certo -- senao ele fica eternamente offline.
+
+    Devolve so o que a ingestao precisa -- e uma consulta no caminho quente,
+    e trazer a linha inteira do dispositivo seria desperdicio."""
     with pool.connection() as conn:
         proprios = conn.execute(
-            "SELECT sub_id, subtipo, config_sensor FROM dispositivos "
-            "WHERE gateway_id = %s AND subtipo IS NOT NULL",
+            "SELECT id, sub_id, subtipo, config_sensor FROM dispositivos "
+            "WHERE gateway_id = %s",
             (dispositivo_id,),
         ).fetchall()
         eu = conn.execute(
-            "SELECT sub_id, subtipo, config_sensor FROM dispositivos "
+            "SELECT id, sub_id, subtipo, config_sensor FROM dispositivos "
             "WHERE id = %s AND gateway_id IS NULL AND subtipo IS NOT NULL",
             (dispositivo_id,),
         ).fetchall()
     # Um sensor que fala sozinho manda tudo em sub_id '' -- o `sub_id` do
-    # cadastro dele so vale quando ha um gateway no meio.
-    return ([{"sub_id": "", "subtipo": l["subtipo"], "config": l["config_sensor"]}
+    # cadastro dele so vale quando ha um gateway no meio. Nesse caso `id` e o
+    # proprio dispositivo, e nao ha para onde rotear.
+    return ([{"id": str(l["id"]), "proprio": True, "sub_id": "",
+              "subtipo": l["subtipo"], "config": l["config_sensor"]}
              for l in eu]
-            + [{"sub_id": l["sub_id"] or "", "subtipo": l["subtipo"],
-                "config": l["config_sensor"]} for l in proprios])
+            + [{"id": str(l["id"]), "proprio": False, "sub_id": l["sub_id"] or "",
+                "subtipo": l["subtipo"], "config": l["config_sensor"]}
+               for l in proprios if (l["sub_id"] or "")])
+
+
+def marcar_estado_sensor(dispositivo_id, estado):
+    """Carimba visto_em E o estado que o gateway acabou de reportar.
+
+    Os dois juntos de proposito: sao a mesma informacao vista de dois
+    angulos. `visto_em` diz "o gateway falou deste equipamento agora";
+    `estado_reportado` diz o que ele falou. Um sem o outro engana -- um
+    estado 'on' de tres dias atras nao significa que o sensor esta medindo."""
+    with pool.connection() as conn:
+        conn.execute(
+            "UPDATE dispositivos SET visto_em = now(), estado_reportado = %s "
+            "WHERE id = %s",
+            (estado, dispositivo_id),
+        )
+
+
+def limpar_catalogo_do_gateway(gateway_id, sub_id, manter):
+    """Tira do catalogo do GATEWAY as chaves daquele sub_id que passaram a
+    ser do dispositivo sensor.
+
+    So o catalogo -- a serie historica fica intacta, porque ela e o registro
+    do que aconteceu na barragem e nao pode ser reescrita.
+
+    Existe por causa da migracao: quem ja rodava a versao anterior tem
+    `cota_atual`, `volume_m3` e companhia gravados sob o gateway, e sem esta
+    limpeza o seletor de widgets do gateway continuaria oferecendo medidas
+    que agora pertencem ao sensor."""
+    if not manter:
+        return 0
+    with pool.connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM telemetria_chaves "
+            "WHERE dispositivo_id = %s AND sub_id = %s AND NOT (chave = ANY(%s))",
+            (gateway_id, sub_id, list(manter)),
+        )
+        return cur.rowcount
+
+
+def sensores_com_gateway():
+    """Todo sensor cadastrado que fala por um gateway. Usado uma vez, na
+    subida do servidor, para limpar catalogos de instalacoes antigas."""
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT id, gateway_id, sub_id FROM dispositivos "
+            "WHERE gateway_id IS NOT NULL AND sub_id <> ''"
+        ).fetchall()
 
 
 def marcar_dispositivo_visto(dispositivo_id):
