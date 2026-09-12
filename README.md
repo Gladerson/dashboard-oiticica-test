@@ -119,6 +119,7 @@ dashboard_oiticica_test/
 │   ├── sensores.py                 # subtipos de sensor e as contas que derivam cota/volume/% da medida bruta
 │   ├── testes/teste_sensores.py    # confere a derivação com os números reais de Oiticica (sem banco)
 │   ├── testes/teste_ingestao.py    # separação do payload + derivação, no caminho de /api/edge/dados
+│   ├── testes/teste_banco.py       # o SQL contra um PostgreSQL de verdade (banco descartável — ver §Testes)
 │   ├── migrar_dispositivo_legado.py  # cadastra o dispositivo/localidade que antes eram hardcoded (§9-bis)
 │   ├── prepare_model.sh            # remove compressão Draco do .glb (rodar uma vez, uso manual)
 │   ├── static/layout.css           # casca visual comum: menu lateral, barra de título, cartões, tabelas
@@ -1360,6 +1361,101 @@ Três coisas mudaram para isso funcionar:
   estavam ligadas. **Só o catálogo: a série histórica fica intacta**, porque
   ela é o registro do que aconteceu na barragem e não pode ser reescrita.
 
+### A opção só existe para quem pode usá-la
+
+O widget `equipamentos` **só aparece quando o equipamento escolhido é um
+gateway**. Num sensor ele não tem sentido — um sensor não fala por ninguém — e
+antes aparecia mesmo assim, oferecendo ao operador uma escolha que produziria
+um widget permanentemente vazio.
+
+A regra está nos **dois lados**, de propósito:
+
+- na tela, a opção carrega `data-so-gateway="1"` e é escondida quando o
+  equipamento não é gateway (se ela estava selecionada, o tipo volta para
+  *Gráfico de área*);
+- no servidor, `POST /api/widgets` responde **400** para `tipo=equipamentos`
+  num equipamento que não é gateway.
+
+Esconder na tela é conforto; recusar no servidor é a garantia. A tela pode
+estar velha no navegador de alguém, e a API é pública para quem tem sessão.
+
+### A telemetria do próprio gateway estava invisível
+
+O gateway manda dois tipos de coisa no mesmo pacote: o que ele diz **de si**
+(`enlace`, `sinal`, `uptime_s`, `envios_ok`…) e o que ele diz **de cada
+controlador** (`status`, `pacotes`). A primeira é gravada em `sub_id` vazio —
+"o próprio dispositivo".
+
+O seletor **Equipamento (deviceID dentro do gateway)** listava apenas os
+`sub_id` **não vazios**. Resultado: não havia como chegar à telemetria do
+próprio gateway pela tela — inclusive `enlace`, que é justamente a resposta
+para "ele está em Wi-Fi ou em 4G agora?". O dado sempre esteve no banco; faltava
+uma linha no formulário.
+
+Agora a lista começa com **(o próprio gateway)**, e a mesma função monta o
+seletor do formulário de widgets e o de alarmes — um lugar só para manter:
+
+```js
+function opcoesDeSub() {
+  return '<option value="">(o próprio gateway)</option>'
+    + (catalogo.sub_ids || []).map(
+        s => `<option value="${escapar(s)}">${escapar(s)}</option>`).join("");
+}
+```
+
+> **Para ver o canal**, escolha *(o próprio gateway)* e um widget que aceite
+> texto — **card** ou **indicador de status**. Em gráfico de área, barras ou
+> radial a chave `enlace` **não é oferecida**: o valor é a palavra `wifi` ou
+> `4g`, e não há eixo onde desenhá-la. Para acompanhar a alternância ao longo
+> do tempo existe `trocas_de_enlace` (um contador, numérico) e
+> `segundos_no_enlace`.
+
+### Gráfico de área: a linha do tempo inteira
+
+O período padrão do gráfico de área é **Tudo** — do primeiro registro daquele
+equipamento até agora. Não há corte: enquanto o equipamento existir, o desenho
+cobre a vida dele inteira; quando ele é excluído, a telemetria vai junto
+(`ON DELETE CASCADE`).
+
+Pedir "tudo" com um `LIMIT` faria o **oposto** do que se quer. A consulta por
+janela devolve os N pontos **mais recentes**, então um ano de dados viraria o
+desenho das últimas horas — com o eixo afirmando que aquilo é a história toda.
+É uma mentira difícil de perceber olhando o gráfico.
+
+Em vez disso, a faixa inteira é dividida em **600 baldes de tempo iguais** e
+cada balde vira a **média** do seu intervalo (`db.serie_completa()`):
+
+```sql
+SELECT to_timestamp(floor(extract(epoch FROM em) / :passo) * :passo) AS em,
+       avg(valor_num) AS valor_num
+FROM telemetria
+WHERE dispositivo_id = :id AND sub_id = :sub AND chave = :chave
+  AND valor_num IS NOT NULL
+GROUP BY 1 ORDER BY 1
+```
+
+Três consequências, todas deliberadas:
+
+- **a média suaviza picos.** Uma cota máxima instantânea pode não aparecer no
+  desenho de um ano. Por isso a legenda do widget diz *"média por 72 min"*
+  quando houve reamostragem — um número que parece leitura e não é seria pior
+  que não mostrar. Para o instante exato, use uma janela curta (6 h, 24 h, 7
+  dias, 30 dias continuam no mesmo seletor);
+- **o balde é de tempo, não de contagem.** Um equipamento parado três dias
+  vira um **vão** no gráfico, não uma linha reta ligando os dois lados — que é
+  exatamente o que a operação precisa enxergar;
+- **faixa curta não é reamostrada.** Se os baldes sairiam menores que 1 s, a
+  série volta como está e a legenda não aparece.
+
+O resultado é guardado num **cache de 60 s** por `(dispositivo, sub_id, chave)`
+(no máximo 200 entradas). Sem ele, cada atualização automática da tela varreria
+a tabela inteira. O preço é que dados recém-chegados podem demorar até um
+minuto para entrar no desenho de *Tudo* — nas janelas curtas, não.
+
+Medido aqui, num PostgreSQL de verdade: **43.200 leituras** (uma por minuto
+durante 30 dias) viram **601 pontos** em **72 ms**, cobrindo os 30 dias
+inteiros no eixo.
+
 ### Identificador no gateway: escolher, não digitar
 
 No cadastro de um sensor que fala por um gateway, o campo **Identificador no
@@ -1933,6 +2029,44 @@ estouro de buffer, NaN, texto que quebraria o documento).
 **Gateway inteiro**, com dublês de Arduino/ESP32/TinyGSM — ver *Testar o
 firmware sem hardware*, acima. As contas de nível, que eram testadas aqui,
 mudaram de casa junto com a regra: `server/testes/teste_sensores.py`.
+
+**Do lado do servidor** são três suítes:
+
+```bash
+python3 server/testes/teste_sensores.py    # as contas, com os números de Oiticica
+python3 server/testes/teste_ingestao.py    # separação do payload e roteamento
+```
+
+As duas acima rodam sem banco, sem servidor e sem rede. A terceira precisa de
+um **PostgreSQL descartável**, porque exercita o SQL de verdade:
+
+```bash
+initdb -D /tmp/pg/data -U hydro --auth=trust
+pg_ctl -D /tmp/pg/data -o '-k /tmp/pg -p 55432 -c listen_addresses=' -w start
+createdb -h /tmp/pg -p 55432 -U hydro hydro_teste
+
+DATABASE_URL="postgresql://hydro@/hydro_teste?host=/tmp/pg&port=55432" \
+    python3 server/testes/teste_banco.py
+```
+
+`teste_banco.py` **insere e apaga linhas**, então se recusa a rodar se o nome
+do banco não contiver `teste`. **Não remova essa trava** — apontada para o
+banco de produção, a suíte destruiria histórico.
+
+Ela existe porque as outras duas deixavam um buraco: o SQL nunca era
+executado. Dois defeitos passaram por ali:
+
+- um `ALTER TABLE widgets` que estava escrito **antes** do `CREATE TABLE
+  widgets` no mesmo `SCHEMA`. Em quem já tinha o banco, nada acontecia —
+  a tabela existia. Num banco **novo**, o `SCHEMA` inteiro abortava e o
+  servidor não subia, com uma mensagem de erro de banco. Quem instalasse o
+  HydroConecta pela primeira vez batia nisso;
+- a reamostragem por baldes de `serie_completa()`, que não tem como ser
+  conferida sem rodar.
+
+> Ordem no `SCHEMA` de `server/db.py`: **toda migração de uma tabela vem
+> depois do `CREATE TABLE IF NOT EXISTS` dela.** O bloco é executado de uma
+> vez; um `ALTER` órfão derruba tudo o que vem depois.
 
 ### Limitações conhecidas
 
@@ -2894,6 +3028,19 @@ Pontos de atenção:
   widgets para de oferecê-los), mas a série não é movida: reescrever o
   histórico de uma barragem seria pior que a duplicidade. Os gráficos novos
   começam do zero no cadastro do sensor.
+- **O gráfico de *Tudo* tem até 60 s de atraso.** O resultado da
+  reamostragem fica num cache de 60 s (`CACHE_SERIE_S` em
+  `server/telemetria.py`), senão cada atualização automática da tela varreria
+  a tabela inteira. Leituras recém-chegadas entram no desenho no próximo
+  ciclo. As janelas curtas não passam pelo cache e são sempre ao vivo.
+- **A média de *Tudo* esconde picos instantâneos.** Com 30 dias na tela cada
+  ponto é a média de ~72 min. A legenda diz isso, mas um pico de cota de
+  poucos minutos pode não aparecer — para laudo, use a janela curta em torno
+  do instante, ou consulte a tabela direto.
+- **600 pontos é um número fixo** (`pontos=600` em `db.serie_completa`). Não
+  acompanha a largura do widget: uma caixa estreita recebe mais pontos do que
+  consegue desenhar, e uma caixa larga em tela grande poderia mostrar mais
+  detalhe do que recebe.
 - **A posição das janelas flutuantes do Painel SHM vive no `localStorage`.**
   É por navegador: o operador que arruma o painel na sala de controle não
   encontra o mesmo arranjo no notebook. Foi escolha deliberada (é o arranjo

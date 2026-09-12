@@ -192,17 +192,6 @@ CREATE INDEX IF NOT EXISTS ix_dispositivos_gateway ON dispositivos(gateway_id);
 -- sensor nunca era carimbado.
 ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS estado_reportado TEXT;
 
--- Widget novo: 'equipamentos' -- a lista dos equipamentos remotos de um
--- gateway, com o status de cada um. Nao escolhe telemetria nenhuma (como o
--- widget 'alarmes'), porque a pergunta que ele responde e "quais controladores
--- estao falando com este gateway, e como".
---
--- DROP + ADD porque um CHECK nao se estende: quem ja tem o banco criado ficou
--- com a lista antiga gravada na constraint.
-ALTER TABLE widgets DROP CONSTRAINT IF EXISTS widgets_tipo_check;
-ALTER TABLE widgets ADD CONSTRAINT widgets_tipo_check
-    CHECK (tipo IN ('area','barras','card','radial','status','alarmes','equipamentos'));
-
 -- Serie historica. sub_id = '' quer dizer "o proprio dispositivo" (sensor
 -- direto); num gateway e o identificador do equipamento remoto
 -- ("nivel-rd01"). Guardamos numero E texto porque o gateway manda os dois
@@ -247,6 +236,20 @@ CREATE TABLE IF NOT EXISTS widgets (
     criado_em       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_widgets_disp ON widgets(dispositivo_id, ordem);
+
+-- Widget novo: 'equipamentos' -- a lista dos equipamentos remotos de um
+-- gateway, com o status de cada um. Nao escolhe telemetria nenhuma (como o
+-- widget 'alarmes'), porque a pergunta que ele responde e "quais controladores
+-- estao falando com este gateway, e como".
+--
+-- DROP + ADD porque um CHECK nao se estende: quem ja tem o banco criado ficou
+-- com a lista antiga gravada na constraint. E TEM DE VIR DEPOIS do CREATE
+-- TABLE acima: num banco novo, um ALTER antes da criacao aborta o SCHEMA
+-- inteiro e o servidor nao sobe.
+ALTER TABLE widgets DROP CONSTRAINT IF EXISTS widgets_tipo_check;
+ALTER TABLE widgets ADD CONSTRAINT widgets_tipo_check
+    CHECK (tipo IN ('area','barras','card','radial','status','alarmes','equipamentos'));
+
 
 -- 'disparado' guarda o estado ATUAL da regra. Sem ele, um sensor que fica
 -- 10 minutos acima do limite geraria um evento a cada leitura e afogaria o
@@ -829,9 +832,9 @@ def listar_chaves_telemetria(dispositivo_id):
 
 
 def serie_telemetria(dispositivo_id, sub_id, chave, desde_minutos=1440, limite=2000):
-    """Serie de um ponto, mais antigo primeiro (e a ordem que o grafico quer).
-    O ORDER BY do SELECT interno e DESC para usar o indice e pegar os N mais
-    RECENTES; a inversao acontece depois."""
+    """Serie de um ponto numa JANELA, mais antigo primeiro (a ordem que o
+    grafico quer). O ORDER BY do SELECT interno e DESC para usar o indice e
+    pegar os N mais RECENTES; a inversao acontece depois."""
     with pool.connection() as conn:
         linhas = conn.execute(
             "SELECT em, valor_num, valor_txt FROM telemetria "
@@ -841,6 +844,59 @@ def serie_telemetria(dispositivo_id, sub_id, chave, desde_minutos=1440, limite=2
             (dispositivo_id, sub_id, chave, str(int(desde_minutos)), int(limite)),
         ).fetchall()
     return list(reversed(linhas))
+
+
+def serie_completa(dispositivo_id, sub_id, chave, pontos=600):
+    """A serie INTEIRA daquela telemetria -- do primeiro registro ao ultimo --
+    reamostrada para caber num grafico.
+
+    Por que reamostrar em vez de cortar: a consulta por janela devolve os N
+    pontos mais RECENTES. Pedir "tudo" com um LIMIT faria exatamente o
+    contrario do que se quer -- um ano de dados viraria o desenho das ultimas
+    horas, com o eixo mentindo que aquilo e a historia toda.
+
+    Entao a faixa e dividida em `pontos` baldes de tempo iguais e cada balde
+    vira a MEDIA do periodo. Duas consequencias que precisam ser ditas:
+
+      * a media suaviza picos. Uma cota maxima instantanea pode nao aparecer
+        no desenho de um ano. Para o instante exato existe a janela curta;
+      * o balde e calculado sobre o tempo, nao sobre a contagem, entao uma
+        parada do equipamento aparece como um vao no grafico -- que e
+        justamente o que se quer ver.
+
+    Devolve (linhas, passo_s). `passo_s` = 0 quando nao houve reamostragem."""
+    with pool.connection() as conn:
+        faixa = conn.execute(
+            "SELECT min(em) AS ini, max(em) AS fim FROM telemetria "
+            "WHERE dispositivo_id = %s AND sub_id = %s AND chave = %s "
+            "  AND valor_num IS NOT NULL",
+            (dispositivo_id, sub_id, chave),
+        ).fetchone()
+        if faixa is None or faixa["ini"] is None:
+            return [], 0.0
+
+        duracao = (faixa["fim"] - faixa["ini"]).total_seconds()
+        passo = duracao / float(max(1, pontos))
+        if passo < 1.0:
+            # Faixa curta demais para valer um balde: devolve tudo como esta.
+            linhas = conn.execute(
+                "SELECT em, valor_num, valor_txt FROM telemetria "
+                "WHERE dispositivo_id = %s AND sub_id = %s AND chave = %s "
+                "  AND valor_num IS NOT NULL ORDER BY em LIMIT %s",
+                (dispositivo_id, sub_id, chave, int(pontos) * 4),
+            ).fetchall()
+            return linhas, 0.0
+
+        linhas = conn.execute(
+            "SELECT to_timestamp(floor(extract(epoch FROM em) / %s) * %s) AS em, "
+            "       avg(valor_num) AS valor_num, NULL::text AS valor_txt "
+            "FROM telemetria "
+            "WHERE dispositivo_id = %s AND sub_id = %s AND chave = %s "
+            "  AND valor_num IS NOT NULL "
+            "GROUP BY 1 ORDER BY 1",
+            (passo, passo, dispositivo_id, sub_id, chave),
+        ).fetchall()
+        return linhas, passo
 
 
 def ultimos_valores(dispositivo_id):

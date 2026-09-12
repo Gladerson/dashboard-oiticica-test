@@ -59,3 +59,6 @@
 .wgt-corpo .legenda i {
   width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 4px;
 }
+/* Aviso de que os pontos sao medias por intervalo, e nao leituras. Discreto
+   de proposito -- e uma ressalva, nao um dado. */
+.wgt-corpo .legenda .nota { margin-left: auto; font-style: italic; opacity: .8; }

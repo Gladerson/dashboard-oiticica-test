@@ -158,7 +158,7 @@
         <option value="radial">Medidor radial (com mínimo e máximo)</option>
         <option value="status">Indicador de status</option>
         <option value="alarmes">Tabela de alarmes</option>
-        <option value="equipamentos">Equipamentos do gateway (lista com status)</option>
+        <option value="equipamentos" data-so-gateway="1">Equipamentos do gateway (lista com status)</option>
       </select>
     </div>
     <div class="campo" id="campo-sub" hidden>
@@ -175,6 +175,20 @@
     <div class="campo">
       <label for="w-titulo">Título (opcional)</label>
       <input id="w-titulo" placeholder="ex.: Nível do reservatório" />
+    </div>
+    <div class="campo" id="campo-periodo">
+      <label for="w-periodo">Período do gráfico</label>
+      <select id="w-periodo">
+        <option value="0">Tudo (desde o primeiro registro)</option>
+        <option value="360">Últimas 6 horas</option>
+        <option value="1440">Últimas 24 horas</option>
+        <option value="10080">Últimos 7 dias</option>
+        <option value="43200">Últimos 30 dias</option>
+      </select>
+      <div class="dica">Com <b>Tudo</b>, a faixa inteira é dividida em
+        intervalos iguais e cada ponto do desenho é a <b>média</b> do seu
+        intervalo — é o que permite ver meses num gráfico só. Para a leitura
+        exata de um instante, use uma janela curta.</div>
     </div>
     <div class="duas" id="campos-escala">
       <div class="campo">
@@ -584,13 +598,33 @@ function chavesDoSub(sub) {
   return catalogo.itens.filter(i => (i.sub_id || "") === (sub || ""));
 }
 
+/** As opcoes do seletor "de qual equipamento" de um gateway.
+ *
+ *  A PRIMEIRA e o proprio gateway (sub_id vazio), e ela faltava. Sem ela, as
+ *  telemetrias que o gateway publica sobre SI MESMO -- o canal em uso
+ *  (`enlace`), o sinal, o tempo ligado, a conta de envios -- existiam no
+ *  catalogo e eram inalcancaveis pelo formulario: o seletor so listava os
+ *  equipamentos remotos, e as chaves eram filtradas por aquele sub_id. Foi
+ *  por isso que "por onde o gateway esta falando" nunca aparecia como
+ *  widget. */
+function opcoesDeSub() {
+  return '<option value="">(o próprio gateway)</option>'
+    + (catalogo.sub_ids || []).map(
+        s => `<option value="${escapar(s)}">${escapar(s)}</option>`).join("");
+}
+
 function preencherSeletoresWidget() {
   const eGw = catalogo.e_gateway;
   $("campo-sub").hidden = !eGw;
-  if (eGw) {
-    $("w-sub").innerHTML = (catalogo.sub_ids || []).map(
-      s => `<option value="${escapar(s)}">${escapar(s)}</option>`).join("")
-      || '<option value="">(nenhum equipamento visto ainda)</option>';
+  if (eGw) $("w-sub").innerHTML = opcoesDeSub();
+  // Alguns widgets so fazem sentido num gateway. "Equipamentos" e a lista dos
+  // controladores REMOTOS daquele gateway: num sensor, que fala por si, ela
+  // seria sempre vazia -- oferecer e convidar a criar um widget morto.
+  [...$("w-tipo").options].forEach(o => {
+    if (o.dataset.soGateway) o.hidden = !eGw;
+  });
+  if ($("w-tipo").selectedOptions[0] && $("w-tipo").selectedOptions[0].hidden) {
+    $("w-tipo").value = "area";
   }
   atualizarChavesWidget();
 }
@@ -620,6 +654,8 @@ function atualizarChavesWidget() {
   $("campo-chaves").hidden = semChaves;
   $("campo-sub").hidden = !catalogo.e_gateway || semChaves;
   $("campos-escala").style.display = ["radial", "area", "barras"].includes(tipo) ? "" : "none";
+  // O periodo so existe para quem desenha o tempo.
+  $("campo-periodo").hidden = tipo !== "area";
 }
 
 // Widget em edicao. null = o formulario esta criando um novo. E o mesmo
@@ -651,6 +687,7 @@ function abrirEdicaoWidget(w) {
   $("w-casas").value = Number.isFinite(+cfg.casas) ? cfg.casas : 2;
   $("w-min").value = Number.isFinite(+cfg.min) ? cfg.min : "";
   $("w-max").value = Number.isFinite(+cfg.max) ? cfg.max : "";
+  $("w-periodo").value = String(Number.isFinite(+cfg.minutos) ? cfg.minutos : 0);
   $("modal-widget").classList.add("open");
 }
 
@@ -666,6 +703,9 @@ async function salvarWidget() {
     unidade: $("w-unidade").value.trim() || null,
     casas: parseInt($("w-casas").value || "2", 10),
   };
+  // 0 = tudo. E o padrao: o operador de uma barragem quer a historia, e
+  // recortar 24 h por conta propria era esconder justamente a tendencia.
+  if (tipo === "area") cfg.minutos = parseInt($("w-periodo").value || "0", 10);
   if ($("w-min").value !== "") cfg.min = parseFloat($("w-min").value);
   if ($("w-max").value !== "") cfg.max = parseFloat($("w-max").value);
   // Posicao e tamanho: preserva o que o operador ja arrastou, em vez de
@@ -713,10 +753,10 @@ async function removerWidget(w) {
 function preencherSeletoresAlarme() {
   const eGw = catalogo.e_gateway;
   $("campo-alarme-sub").hidden = !eGw;
-  if (eGw) {
-    $("a-sub").innerHTML = (catalogo.sub_ids || []).map(
-      s => `<option value="${escapar(s)}">${escapar(s)}</option>`).join("");
-  }
+  // Mesma lista do formulario de widget, inclusive o proprio gateway: um
+  // alarme em `envios_falha` ou em `trocas_de_enlace` e exatamente o tipo de
+  // coisa que se quer saber antes de viajar ate a barragem.
+  if (eGw) $("a-sub").innerHTML = opcoesDeSub();
   atualizarChavesAlarme();
 }
 
@@ -776,6 +816,7 @@ $("sel-dispositivo").addEventListener("change", async (e) => {
 
 $("btn-widget").addEventListener("click", () => {
   editando = null;
+  $("w-periodo").value = "0";
   $("titulo-modal-widget").textContent = "Novo widget";
   $("w-salvar").textContent = "Criar";
   $("msg-widget").textContent = "";
